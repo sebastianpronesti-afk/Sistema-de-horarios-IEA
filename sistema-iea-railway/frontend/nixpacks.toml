@@ -5,4 +5,4 @@ nixPkgs = ["nodejs-18_x"]
 cmds = ["npm install", "npm run build"]
 
 [start]
-cmd = "npx serve -s build -l $PORT"
+cmd = "npm start"
