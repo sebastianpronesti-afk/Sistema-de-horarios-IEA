@@ -6,16 +6,3 @@ cmds = ["npm install", "npm run build"]
 
 [start]
 cmd = "npx serve -s build -l $PORT"
-```
-
-4. Hacé clic en **"Commit changes"**
-
----
-
-### PASO 2: Editar `Procfile`
-
-1. En GitHub, andá a: `sistema-iea-railway/frontend/Procfile`
-2. Hacé clic en el **lápiz ✏️** para editar
-3. **Borrá todo** y pegá:
-```
-web: npx serve -s build -l $PORT
