@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-import pandas as pd
+from openpyxl import load_workbook
 import io
 import re
 
@@ -17,7 +17,7 @@ app = FastAPI(title="Sistema Horarios IEA", version="2.0")
 # CORS - permitir frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especificar el dominio del frontend
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,13 +72,11 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     catedras = db.query(Catedra).all()
     result = []
     for c in catedras:
-        # Contar inscriptos
         inscriptos = db.query(Inscripcion).filter(Inscripcion.catedra_id == c.id)
         if cuatrimestre_id:
             inscriptos = inscriptos.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
         inscriptos_count = inscriptos.count()
         
-        # Obtener asignaciones
         asignaciones = db.query(Asignacion).filter(Asignacion.catedra_id == c.id)
         if cuatrimestre_id:
             asignaciones = asignaciones.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -239,10 +237,9 @@ def crear_docente(data: dict, db: Session = Depends(get_db)):
     db.commit()
     return {"id": docente.id, "message": "Docente creado"}
 
-# ==================== IMPORTACIÓN ====================
+# ==================== IMPORTACIÓN (usando openpyxl) ====================
 
 def detectar_sede(texto):
-    """Detecta la sede a partir del nombre del curso"""
     if not texto:
         return None
     texto = texto.lower()
@@ -265,22 +262,23 @@ def detectar_sede(texto):
 @app.post("/api/importar/catedras")
 async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await file.read()
-    df = pd.read_excel(io.BytesIO(content))
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+    ws = wb.active
     
     creadas = 0
     actualizadas = 0
     
-    for _, row in df.iterrows():
-        # Buscar columna que contenga el código (c.1, c.2, etc)
+    for row in ws.iter_rows(min_row=2, values_only=True):
         codigo = None
         nombre = None
         
-        for col in df.columns:
-            val = str(row[col]) if pd.notna(row[col]) else ""
-            if re.match(r'^c\.\d+', val.lower()):
-                codigo = val.strip()
-            elif len(val) > 5 and not re.match(r'^c\.\d+', val.lower()):
-                nombre = val.strip()
+        for cell in row:
+            if cell:
+                val = str(cell).strip()
+                if re.match(r'^c\.\d+', val.lower()):
+                    codigo = val
+                elif len(val) > 5 and not re.match(r'^c\.\d+', val.lower()):
+                    nombre = val
         
         if codigo:
             existente = db.query(Catedra).filter(Catedra.codigo == codigo).first()
@@ -294,21 +292,24 @@ async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(
                 creadas += 1
     
     db.commit()
+    wb.close()
     return {"creadas": creadas, "actualizadas": actualizadas}
 
 @app.post("/api/importar/cursos")
 async def importar_cursos(file: UploadFile = File(...), db: Session = Depends(get_db)):
     content = await file.read()
-    df = pd.read_excel(io.BytesIO(content))
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+    ws = wb.active
     
     creados = 0
-    for _, row in df.iterrows():
+    for row in ws.iter_rows(min_row=2, values_only=True):
         nombre = None
-        for col in df.columns:
-            val = str(row[col]) if pd.notna(row[col]) else ""
-            if len(val) > 10:
-                nombre = val.strip()
-                break
+        for cell in row:
+            if cell:
+                val = str(cell).strip()
+                if len(val) > 10:
+                    nombre = val
+                    break
         
         if nombre and "no disponible" not in nombre.lower() and "baja" not in nombre.lower():
             existente = db.query(Curso).filter(Curso.nombre == nombre).first()
@@ -320,6 +321,7 @@ async def importar_cursos(file: UploadFile = File(...), db: Session = Depends(ge
                 creados += 1
     
     db.commit()
+    wb.close()
     return {"creados": creados}
 
 @app.post("/api/importar/inscripciones")
@@ -330,40 +332,44 @@ async def importar_inscripciones(
     db: Session = Depends(get_db)
 ):
     content = await file.read()
-    df = pd.read_excel(io.BytesIO(content))
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+    ws = wb.active
     
-    # Detectar cátedra del código
     catedra = None
     if catedra_codigo:
         catedra = db.query(Catedra).filter(Catedra.codigo == catedra_codigo).first()
     
+    headers = []
+    for cell in ws[1]:
+        headers.append(str(cell.value).lower() if cell.value else "")
+    
     alumnos_creados = 0
     inscripciones_creadas = 0
     
-    for _, row in df.iterrows():
+    for row in ws.iter_rows(min_row=2, values_only=True):
         dni = None
         nombre = None
         apellido = None
         email = None
         curso_nombre = None
         
-        for col in df.columns:
-            col_lower = col.lower()
-            val = str(row[col]) if pd.notna(row[col]) else ""
-            
-            if "dni" in col_lower or "documento" in col_lower:
-                dni = val.strip().replace(".", "")
-            elif "nombre" in col_lower and "apellido" not in col_lower:
-                nombre = val.strip()
-            elif "apellido" in col_lower:
-                apellido = val.strip()
-            elif "mail" in col_lower or "email" in col_lower:
-                email = val.strip()
-            elif "carrera" in col_lower or "curso" in col_lower:
-                curso_nombre = val.strip()
+        for i, cell in enumerate(row):
+            if i < len(headers) and cell:
+                val = str(cell).strip()
+                col = headers[i]
+                
+                if "dni" in col or "documento" in col:
+                    dni = val.replace(".", "")
+                elif "nombre" in col and "apellido" not in col:
+                    nombre = val
+                elif "apellido" in col:
+                    apellido = val
+                elif "mail" in col or "email" in col:
+                    email = val
+                elif "carrera" in col or "curso" in col:
+                    curso_nombre = val
         
         if dni and len(dni) >= 7:
-            # Crear o encontrar alumno
             alumno = db.query(Alumno).filter(Alumno.dni == dni).first()
             if not alumno:
                 alumno = Alumno(dni=dni, nombre=nombre, apellido=apellido, email=email)
@@ -371,7 +377,6 @@ async def importar_inscripciones(
                 db.flush()
                 alumnos_creados += 1
             
-            # Detectar cátedra del nombre del curso si no se especificó
             catedra_inscripcion = catedra
             if not catedra_inscripcion and curso_nombre:
                 match = re.search(r'c\.(\d+)', curso_nombre.lower())
@@ -380,7 +385,6 @@ async def importar_inscripciones(
                     catedra_inscripcion = db.query(Catedra).filter(Catedra.codigo == cod).first()
             
             if catedra_inscripcion:
-                # Verificar si ya existe la inscripción
                 existe = db.query(Inscripcion).filter(
                     Inscripcion.alumno_id == alumno.id,
                     Inscripcion.catedra_id == catedra_inscripcion.id,
@@ -399,6 +403,7 @@ async def importar_inscripciones(
                     inscripciones_creadas += 1
     
     db.commit()
+    wb.close()
     return {
         "alumnos_creados": alumnos_creados,
         "inscripciones_creadas": inscripciones_creadas
@@ -461,11 +466,8 @@ def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     
     return solapamientos
 
-# ==================== EXPORTACIÓN ====================
-
 @app.get("/api/exportar/horarios")
 def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
-    # Retorna datos para generar Excel en el frontend
     return get_horarios(cuatrimestre_id, db)
 
 if __name__ == "__main__":
