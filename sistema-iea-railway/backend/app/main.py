@@ -1,18 +1,22 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_
 from openpyxl import load_workbook
+from typing import List, Optional
 import io
 import re
 
 from app.database import engine, get_db, Base
-from app.models.models import Sede, Cuatrimestre, Catedra, Docente, Alumno, Curso, Asignacion, Inscripcion
+from app.models.models import (
+    Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
+    Alumno, Curso, Asignacion, Inscripcion
+)
 
 # Crear tablas
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="2.0")
+app = FastAPI(title="Sistema Horarios IEA", version="3.0")
 
 # CORS - permitir frontend
 app.add_middleware(
@@ -38,6 +42,7 @@ async def startup():
         ("Monte Grande", "bg-cyan-500"),
         ("La Plata", "bg-indigo-500"),
         ("Pilar", "bg-rose-500"),
+        ("Remoto", "bg-gray-500"),  # Para docentes que trabajan 100% desde casa
     ]
     for nombre, color in sedes_default:
         if not db.query(Sede).filter(Sede.nombre == nombre).first():
@@ -55,7 +60,7 @@ async def startup():
 
 @app.get("/")
 def root():
-    return {"status": "ok", "sistema": "IEA Horarios v2.0"}
+    return {"status": "ok", "sistema": "IEA Horarios v3.0"}
 
 @app.get("/api/sedes")
 def get_sedes(db: Session = Depends(get_db)):
@@ -85,17 +90,24 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
         for a in asignaciones.all():
             docente = None
             if a.docente:
+                # Obtener sedes del docente
+                sedes_docente = [ds.sede.nombre for ds in a.docente.sedes]
                 docente = {
                     "id": a.docente.id,
                     "nombre": f"{a.docente.nombre} {a.docente.apellido}",
-                    "sede": a.docente.sede.nombre if a.docente.sede else None
+                    "sedes": sedes_docente,
+                    "tipo_modalidad": calcular_tipo_modalidad(a.docente, db)
                 }
             asig_list.append({
                 "id": a.id,
                 "modalidad": a.modalidad,
                 "docente": docente,
                 "dia": a.dia,
-                "hora": a.hora,
+                "hora_inicio": a.hora_inicio,
+                "hora_fin": a.hora_fin,
+                "sede_id": a.sede_id,
+                "sede_nombre": a.sede.nombre if a.sede else None,
+                "recibe_alumnos_presenciales": a.recibe_alumnos_presenciales,
                 "cuatrimestre_id": a.cuatrimestre_id
             })
         
@@ -103,6 +115,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             "id": c.id,
             "codigo": c.codigo,
             "nombre": c.nombre,
+            "link_meet": c.link_meet,
             "inscriptos": inscriptos_count,
             "asignaciones": asig_list
         })
@@ -134,17 +147,52 @@ def get_catedras_stats(cuatrimestre_id: int = None, db: Session = Depends(get_db
         "inscriptos": total_inscriptos
     }
 
+@app.put("/api/catedras/{catedra_id}")
+def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db)):
+    catedra = db.query(Catedra).filter(Catedra.id == catedra_id).first()
+    if not catedra:
+        raise HTTPException(status_code=404, detail="Cátedra no encontrada")
+    
+    if "link_meet" in data:
+        catedra.link_meet = data["link_meet"]
+    if "nombre" in data:
+        catedra.nombre = data["nombre"]
+    
+    db.commit()
+    return {"message": "Cátedra actualizada"}
+
 # ==================== ASIGNACIONES ====================
 
 @app.post("/api/asignaciones")
 def crear_asignacion(data: dict, db: Session = Depends(get_db)):
+    # Verificar solapamiento antes de crear
+    if data.get("dia") and data.get("hora_inicio"):
+        solapamiento = verificar_solapamiento_catedra(
+            db=db,
+            catedra_id=data["catedra_id"],
+            dia=data["dia"],
+            hora_inicio=data["hora_inicio"],
+            hora_fin=data.get("hora_fin"),
+            cuatrimestre_id=data["cuatrimestre_id"],
+            excluir_asignacion_id=None
+        )
+        if solapamiento:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"SOLAPAMIENTO: La cátedra ya tiene una clase programada el {data['dia']} a las {data['hora_inicio']}. "
+                       f"Como comparten el link de Meet, no pueden darse al mismo tiempo."
+            )
+    
     asignacion = Asignacion(
         catedra_id=data["catedra_id"],
         cuatrimestre_id=data["cuatrimestre_id"],
         modalidad=data["modalidad"],
         docente_id=data.get("docente_id"),
         dia=data.get("dia"),
-        hora=data.get("hora")
+        hora_inicio=data.get("hora_inicio"),
+        hora_fin=data.get("hora_fin"),
+        sede_id=data.get("sede_id"),
+        recibe_alumnos_presenciales=data.get("recibe_alumnos_presenciales", False)
     )
     db.add(asignacion)
     db.commit()
@@ -157,14 +205,40 @@ def actualizar_asignacion(asignacion_id: int, data: dict, db: Session = Depends(
     if not asig:
         raise HTTPException(status_code=404, detail="Asignación no encontrada")
     
+    # Verificar solapamiento si se cambia día/hora
+    nuevo_dia = data.get("dia", asig.dia)
+    nueva_hora = data.get("hora_inicio", asig.hora_inicio)
+    
+    if nuevo_dia and nueva_hora:
+        solapamiento = verificar_solapamiento_catedra(
+            db=db,
+            catedra_id=asig.catedra_id,
+            dia=nuevo_dia,
+            hora_inicio=nueva_hora,
+            hora_fin=data.get("hora_fin", asig.hora_fin),
+            cuatrimestre_id=asig.cuatrimestre_id,
+            excluir_asignacion_id=asignacion_id
+        )
+        if solapamiento:
+            raise HTTPException(
+                status_code=400,
+                detail=f"SOLAPAMIENTO: La cátedra ya tiene otra clase el {nuevo_dia} a las {nueva_hora}."
+            )
+    
     if "docente_id" in data:
         asig.docente_id = data["docente_id"]
     if "dia" in data:
         asig.dia = data["dia"]
-    if "hora" in data:
-        asig.hora = data["hora"]
+    if "hora_inicio" in data:
+        asig.hora_inicio = data["hora_inicio"]
+    if "hora_fin" in data:
+        asig.hora_fin = data["hora_fin"]
     if "modalidad" in data:
         asig.modalidad = data["modalidad"]
+    if "sede_id" in data:
+        asig.sede_id = data["sede_id"]
+    if "recibe_alumnos_presenciales" in data:
+        asig.recibe_alumnos_presenciales = data["recibe_alumnos_presenciales"]
     
     asig.modificada = True
     db.commit()
@@ -181,11 +255,40 @@ def eliminar_asignacion(asignacion_id: int, db: Session = Depends(get_db)):
 
 # ==================== DOCENTES ====================
 
+def calcular_tipo_modalidad(docente: Docente, db: Session) -> str:
+    """
+    Deduce el tipo de modalidad del docente basándose en sus asignaciones:
+    - PRESENCIAL_VIRTUAL: tiene asignaciones con recibe_alumnos_presenciales=True
+    - SEDE_VIRTUAL: tiene asignaciones con sede pero ninguna recibe alumnos presenciales
+    - REMOTO: todas sus asignaciones son sin sede física
+    - SIN_ASIGNACIONES: no tiene asignaciones aún
+    """
+    asignaciones = db.query(Asignacion).filter(
+        Asignacion.docente_id == docente.id,
+        Asignacion.modalidad != "asincronica"
+    ).all()
+    
+    if not asignaciones:
+        return "SIN_ASIGNACIONES"
+    
+    tiene_presencial = any(a.recibe_alumnos_presenciales for a in asignaciones)
+    tiene_sede = any(a.sede_id is not None for a in asignaciones)
+    
+    if tiene_presencial:
+        return "PRESENCIAL_VIRTUAL"
+    elif tiene_sede:
+        return "SEDE_VIRTUAL"
+    else:
+        return "REMOTO"
+
 @app.get("/api/docentes")
 def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     docentes = db.query(Docente).all()
     result = []
     for d in docentes:
+        # Obtener sedes del docente
+        sedes = [{"id": ds.sede.id, "nombre": ds.sede.nombre, "color": ds.sede.color} for ds in d.sedes]
+        
         asignaciones = db.query(Asignacion).filter(Asignacion.docente_id == d.id)
         if cuatrimestre_id:
             asignaciones = asignaciones.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -206,7 +309,11 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "catedra_nombre": catedra.nombre if catedra else None,
                 "modalidad": a.modalidad,
                 "dia": a.dia,
-                "hora": a.hora
+                "hora_inicio": a.hora_inicio,
+                "hora_fin": a.hora_fin,
+                "sede_id": a.sede_id,
+                "sede_nombre": a.sede.nombre if a.sede else "Remoto",
+                "recibe_alumnos_presenciales": a.recibe_alumnos_presenciales
             })
         
         result.append({
@@ -215,44 +322,209 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             "apellido": d.apellido,
             "dni": d.dni,
             "email": d.email,
-            "sede": d.sede.nombre if d.sede else None,
-            "sede_color": d.sede.color if d.sede else None,
+            "sedes": sedes,  # Ahora es una lista de sedes
+            "tipo_modalidad": calcular_tipo_modalidad(d, db),
             "asignaciones": asig_list,
-            "horas": len(asig_list) * 2,
-            "alumnos": total_alumnos
+            "total_horas": len(asig_list) * 2,
+            "total_alumnos": total_alumnos
         })
     return result
 
 @app.post("/api/docentes")
 def crear_docente(data: dict, db: Session = Depends(get_db)):
-    sede = db.query(Sede).filter(Sede.nombre == data.get("sede")).first() if data.get("sede") else None
+    # Verificar DNI único
+    existente = db.query(Docente).filter(Docente.dni == data["dni"]).first()
+    if existente:
+        raise HTTPException(status_code=400, detail="Ya existe un docente con ese DNI")
+    
     docente = Docente(
+        dni=data["dni"],
         nombre=data["nombre"],
         apellido=data["apellido"],
-        dni=data["dni"],
-        email=data.get("email"),
-        sede_id=sede.id if sede else None
+        email=data.get("email")
     )
     db.add(docente)
     db.commit()
+    db.refresh(docente)
+    
     return {"id": docente.id, "message": "Docente creado"}
 
-# ==================== IMPORTACIÓN (usando openpyxl) ====================
+@app.put("/api/docentes/{docente_id}")
+def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    docente = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    
+    if "nombre" in data:
+        docente.nombre = data["nombre"]
+    if "apellido" in data:
+        docente.apellido = data["apellido"]
+    if "email" in data:
+        docente.email = data["email"]
+    
+    db.commit()
+    return {"message": "Docente actualizado"}
 
-def detectar_sede(texto):
-    if not texto:
-        return None
+@app.delete("/api/docentes/{docente_id}")
+def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
+    docente = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    db.delete(docente)
+    db.commit()
+    return {"message": "Docente eliminado"}
+
+# ==================== DOCENTE - SEDES ====================
+
+@app.post("/api/docentes/{docente_id}/sedes")
+def agregar_sede_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    """Agregar una sede a un docente"""
+    docente = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    
+    sede = db.query(Sede).filter(Sede.id == data["sede_id"]).first()
+    if not sede:
+        raise HTTPException(status_code=404, detail="Sede no encontrada")
+    
+    # Verificar si ya tiene esa sede
+    existe = db.query(DocenteSede).filter(
+        DocenteSede.docente_id == docente_id,
+        DocenteSede.sede_id == data["sede_id"]
+    ).first()
+    if existe:
+        raise HTTPException(status_code=400, detail="El docente ya tiene asignada esa sede")
+    
+    docente_sede = DocenteSede(docente_id=docente_id, sede_id=data["sede_id"])
+    db.add(docente_sede)
+    db.commit()
+    
+    return {"message": f"Sede {sede.nombre} agregada al docente"}
+
+@app.delete("/api/docentes/{docente_id}/sedes/{sede_id}")
+def quitar_sede_docente(docente_id: int, sede_id: int, db: Session = Depends(get_db)):
+    """Quitar una sede de un docente"""
+    docente_sede = db.query(DocenteSede).filter(
+        DocenteSede.docente_id == docente_id,
+        DocenteSede.sede_id == sede_id
+    ).first()
+    
+    if not docente_sede:
+        raise HTTPException(status_code=404, detail="El docente no tiene asignada esa sede")
+    
+    db.delete(docente_sede)
+    db.commit()
+    
+    return {"message": "Sede removida del docente"}
+
+@app.put("/api/docentes/{docente_id}/sedes")
+def actualizar_sedes_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    """Reemplazar todas las sedes de un docente"""
+    docente = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not docente:
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    
+    # Eliminar sedes actuales
+    db.query(DocenteSede).filter(DocenteSede.docente_id == docente_id).delete()
+    
+    # Agregar nuevas sedes
+    for sede_id in data.get("sede_ids", []):
+        docente_sede = DocenteSede(docente_id=docente_id, sede_id=sede_id)
+        db.add(docente_sede)
+    
+    db.commit()
+    return {"message": "Sedes actualizadas"}
+
+# ==================== IMPORTAR ====================
+
+@app.post("/api/importar/docentes")
+async def importar_docentes(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Importar docentes desde Excel.
+    Columnas esperadas: DNI, Nombre, Apellido, Email
+    NO se asigna sede por defecto.
+    """
+    content = await file.read()
+    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+    ws = wb.active
+    
+    # Detectar headers
+    headers = []
+    for cell in ws[1]:
+        headers.append(str(cell.value).lower().strip() if cell.value else "")
+    
+    creados = 0
+    actualizados = 0
+    errores = []
+    
+    for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        dni = None
+        nombre = None
+        apellido = None
+        email = None
+        
+        for i, cell in enumerate(row):
+            if i < len(headers) and cell:
+                val = str(cell).strip()
+                col = headers[i]
+                
+                if "dni" in col or "documento" in col:
+                    dni = val.replace(".", "").replace("-", "")
+                elif col == "nombre" or col == "nombres":
+                    nombre = val
+                elif "apellido" in col:
+                    apellido = val
+                elif "mail" in col or "email" in col or "correo" in col:
+                    email = val
+        
+        if dni and len(dni) >= 7:
+            existente = db.query(Docente).filter(Docente.dni == dni).first()
+            if existente:
+                # Actualizar si hay datos nuevos
+                if nombre and nombre != existente.nombre:
+                    existente.nombre = nombre
+                if apellido and apellido != existente.apellido:
+                    existente.apellido = apellido
+                if email and email != existente.email:
+                    existente.email = email
+                actualizados += 1
+            else:
+                if not nombre:
+                    errores.append(f"Fila {row_num}: DNI {dni} sin nombre")
+                    continue
+                
+                docente = Docente(
+                    dni=dni,
+                    nombre=nombre,
+                    apellido=apellido or "",
+                    email=email
+                )
+                db.add(docente)
+                creados += 1
+    
+    db.commit()
+    wb.close()
+    return {
+        "creados": creados,
+        "actualizados": actualizados,
+        "errores": errores[:10]  # Solo primeros 10 errores
+    }
+
+def detectar_sede(texto: str) -> str | None:
     texto = texto.lower()
     sedes_map = {
         "avellaneda": "Avellaneda",
         "caballito": "Caballito",
-        "vicente": "Vicente López",
+        "vicente lopez": "Vicente López",
+        "vicente lópez": "Vicente López",
+        "vte lopez": "Vicente López",
+        "vte lópez": "Vicente López",
         "liniers": "Liniers",
         "monte grande": "Monte Grande",
         "la plata": "La Plata",
         "pilar": "Pilar",
-        "online": "Online - Interior",
         "interior": "Online - Interior",
+        "online": "Online - Interior",
     }
     for key, value in sedes_map.items():
         if key in texto:
@@ -412,14 +684,16 @@ async def importar_inscripciones(
 # ==================== HORARIOS ====================
 
 @app.get("/api/horarios")
-def get_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+def get_horarios(cuatrimestre_id: int = None, sede_id: int = None, db: Session = Depends(get_db)):
     asignaciones = db.query(Asignacion).filter(
         Asignacion.dia != None,
-        Asignacion.hora != None,
+        Asignacion.hora_inicio != None,
         Asignacion.docente_id != None
     )
     if cuatrimestre_id:
         asignaciones = asignaciones.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    if sede_id:
+        asignaciones = asignaciones.filter(Asignacion.sede_id == sede_id)
     
     result = []
     for a in asignaciones.all():
@@ -430,19 +704,54 @@ def get_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             "catedra_codigo": catedra.codigo if catedra else None,
             "catedra_nombre": catedra.nombre if catedra else None,
             "docente_nombre": f"{docente.nombre} {docente.apellido}" if docente else None,
-            "docente_sede": docente.sede.nombre if docente and docente.sede else None,
+            "docente_tipo": calcular_tipo_modalidad(docente, db) if docente else None,
+            "sede_nombre": a.sede.nombre if a.sede else "Remoto",
             "modalidad": a.modalidad,
             "dia": a.dia,
-            "hora": a.hora
+            "hora_inicio": a.hora_inicio,
+            "hora_fin": a.hora_fin,
+            "recibe_alumnos_presenciales": a.recibe_alumnos_presenciales
         })
     return result
 
+# ==================== SOLAPAMIENTOS ====================
+
+def verificar_solapamiento_catedra(
+    db: Session,
+    catedra_id: int,
+    dia: str,
+    hora_inicio: str,
+    hora_fin: str,
+    cuatrimestre_id: int,
+    excluir_asignacion_id: int = None
+) -> bool:
+    """
+    Verifica si hay solapamiento para una cátedra.
+    REGLA: La misma cátedra NO puede tener dos clases en el mismo día y hora,
+    sin importar la sede (porque comparten el link de Meet).
+    """
+    query = db.query(Asignacion).filter(
+        Asignacion.catedra_id == catedra_id,
+        Asignacion.cuatrimestre_id == cuatrimestre_id,
+        Asignacion.dia == dia,
+        Asignacion.hora_inicio == hora_inicio
+    )
+    
+    if excluir_asignacion_id:
+        query = query.filter(Asignacion.id != excluir_asignacion_id)
+    
+    return query.first() is not None
+
 @app.get("/api/horarios/solapamientos")
 def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    """
+    Detecta dos tipos de solapamientos:
+    1. SOLAPAMIENTO DE CÁTEDRA: misma cátedra en mismo día/hora (crítico - comparten Meet)
+    2. SOLAPAMIENTO DE DOCENTE: mismo docente en mismo día/hora
+    """
     asignaciones = db.query(Asignacion).filter(
         Asignacion.dia != None,
-        Asignacion.hora != None,
-        Asignacion.docente_id != None
+        Asignacion.hora_inicio != None
     )
     if cuatrimestre_id:
         asignaciones = asignaciones.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -452,14 +761,52 @@ def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     
     for i, a1 in enumerate(asigs):
         for a2 in asigs[i+1:]:
-            if a1.docente_id == a2.docente_id and a1.dia == a2.dia and a1.hora == a2.hora:
+            # SOLAPAMIENTO DE CÁTEDRA (crítico)
+            if (a1.catedra_id == a2.catedra_id and 
+                a1.dia == a2.dia and 
+                a1.hora_inicio == a2.hora_inicio):
+                
+                cat = db.query(Catedra).filter(Catedra.id == a1.catedra_id).first()
+                doc1 = db.query(Docente).filter(Docente.id == a1.docente_id).first() if a1.docente_id else None
+                doc2 = db.query(Docente).filter(Docente.id == a2.docente_id).first() if a2.docente_id else None
+                
+                solapamientos.append({
+                    "tipo": "CATEDRA",
+                    "severidad": "CRITICO",
+                    "mensaje": f"La cátedra {cat.codigo} tiene dos clases el mismo día/hora. Comparten link de Meet.",
+                    "catedra": cat.codigo if cat else None,
+                    "dia": a1.dia,
+                    "hora": a1.hora_inicio,
+                    "asignacion1": {
+                        "id": a1.id,
+                        "docente": f"{doc1.nombre} {doc1.apellido}" if doc1 else "Sin docente",
+                        "sede": a1.sede.nombre if a1.sede else "Remoto",
+                        "modalidad": a1.modalidad
+                    },
+                    "asignacion2": {
+                        "id": a2.id,
+                        "docente": f"{doc2.nombre} {doc2.apellido}" if doc2 else "Sin docente",
+                        "sede": a2.sede.nombre if a2.sede else "Remoto",
+                        "modalidad": a2.modalidad
+                    }
+                })
+            
+            # SOLAPAMIENTO DE DOCENTE
+            elif (a1.docente_id and a1.docente_id == a2.docente_id and 
+                  a1.dia == a2.dia and 
+                  a1.hora_inicio == a2.hora_inicio):
+                
                 docente = db.query(Docente).filter(Docente.id == a1.docente_id).first()
                 cat1 = db.query(Catedra).filter(Catedra.id == a1.catedra_id).first()
                 cat2 = db.query(Catedra).filter(Catedra.id == a2.catedra_id).first()
+                
                 solapamientos.append({
+                    "tipo": "DOCENTE",
+                    "severidad": "ALTO",
+                    "mensaje": f"{docente.nombre} {docente.apellido} tiene dos clases el mismo día/hora",
                     "docente": f"{docente.nombre} {docente.apellido}" if docente else None,
                     "dia": a1.dia,
-                    "hora": a1.hora,
+                    "hora": a1.hora_inicio,
                     "catedra1": cat1.codigo if cat1 else None,
                     "catedra2": cat2.codigo if cat2 else None
                 })
@@ -468,7 +815,35 @@ def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)
 
 @app.get("/api/exportar/horarios")
 def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
-    return get_horarios(cuatrimestre_id, db)
+    return get_horarios(cuatrimestre_id, db=db)
+
+# ==================== ESTADÍSTICAS DOCENTES ====================
+
+@app.get("/api/docentes/estadisticas")
+def get_estadisticas_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    """Estadísticas de docentes por tipo de modalidad"""
+    docentes = db.query(Docente).all()
+    
+    stats = {
+        "total": len(docentes),
+        "presencial_virtual": 0,
+        "sede_virtual": 0,
+        "remoto": 0,
+        "sin_asignaciones": 0
+    }
+    
+    for d in docentes:
+        tipo = calcular_tipo_modalidad(d, db)
+        if tipo == "PRESENCIAL_VIRTUAL":
+            stats["presencial_virtual"] += 1
+        elif tipo == "SEDE_VIRTUAL":
+            stats["sede_virtual"] += 1
+        elif tipo == "REMOTO":
+            stats["remoto"] += 1
+        else:
+            stats["sin_asignaciones"] += 1
+    
+    return stats
 
 if __name__ == "__main__":
     import uvicorn
