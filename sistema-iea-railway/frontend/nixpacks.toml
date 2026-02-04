@@ -5,4 +5,4 @@ nixPkgs = ["nodejs-18_x"]
 cmds = ["npm install", "npm run build"]
 
 [start]
-cmd = "npm start"
+cmd = "node server.js"
