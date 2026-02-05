@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // ============ CONFIGURACIÓN API ============
-const API_URL = 'https://sistema-de-horarios-iea-production.up.railway.app';
+// Vacío = usa el proxy del server.js (mismo dominio, sin CORS)
+const API_URL = '';
 
 // ============ CONSTANTES ============
 const SEDE_COLORS = {
   'Online - Interior': 'bg-purple-500', 'Online - Exterior': 'bg-violet-500', 
   'Online - Cursos': 'bg-fuchsia-500', 'Online': 'bg-purple-400',
   'Avellaneda': 'bg-blue-500', 'Caballito': 'bg-emerald-500',
-  'Vicente Lopez': 'bg-amber-500', 'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
+  'Vicente Lopez': 'bg-amber-500', 'Vicente López': 'bg-amber-500', 'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
   'La Plata': 'bg-indigo-500', 'Pilar': 'bg-rose-500',
   'BCE': 'bg-lime-500', 'BEA': 'bg-teal-500', 'Remoto': 'bg-gray-500',
 };
@@ -31,7 +32,7 @@ const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','18:00','19:00','20:00','21:00','22:00'];
 
 // Sedes que se muestran en dropdowns de asignación y edición
-const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente Lopez', 'Vicente López', 'Online - Interior'];
+const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
 
 // ============ FETCH HELPER ============
 async function apiFetch(endpoint, options = {}) {
@@ -88,7 +89,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
       </nav>
       <div className="mt-4 p-3 bg-slate-800/50 rounded-lg">
         <p className="text-xs text-slate-400 mb-2">Sedes operativas</p>
-        {sedes.filter(s => ['Avellaneda','Caballito','Vicente Lopez','Vicente López','Online - Interior'].includes(s.nombre)).map(s => (
+        {sedes.filter(s => ['Avellaneda','Caballito','Vicente López','Online - Interior'].includes(s.nombre)).map(s => (
           <div key={s.id} className="flex items-center gap-2 mb-1">
             <div className={`w-2 h-2 rounded-full ${s.color || SEDE_COLORS[s.nombre] || 'bg-gray-500'}`}></div>
             <span className="text-[10px] text-slate-300">{s.nombre}</span>
