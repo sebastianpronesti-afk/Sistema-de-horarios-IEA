@@ -5,9 +5,12 @@ const API_URL = process.env.REACT_APP_API_URL || '';
 
 // ============ CONSTANTES ============
 const SEDE_COLORS = {
-  'Online - Interior': 'bg-purple-500', 'Avellaneda': 'bg-blue-500', 'Caballito': 'bg-emerald-500',
-  'Vicente López': 'bg-amber-500', 'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
-  'La Plata': 'bg-indigo-500', 'Pilar': 'bg-rose-500', 'Remoto': 'bg-gray-500',
+  'Online - Interior': 'bg-purple-500', 'Online - Exterior': 'bg-violet-500', 
+  'Online - Cursos': 'bg-fuchsia-500', 'Online': 'bg-purple-400',
+  'Avellaneda': 'bg-blue-500', 'Caballito': 'bg-emerald-500',
+  'Vicente Lopez': 'bg-amber-500', 'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
+  'La Plata': 'bg-indigo-500', 'Pilar': 'bg-rose-500',
+  'BCE': 'bg-lime-500', 'BEA': 'bg-teal-500', 'Remoto': 'bg-gray-500',
 };
 
 const MODALIDAD_CONFIG = {
@@ -539,7 +542,7 @@ function SolapamientosView({ solapamientos }) {
 }
 
 // ============ VISTA IMPORTAR ============
-function ImportarView({ stats, recargar }) {
+function ImportarView({ recargar }) {
   const [uploading, setUploading] = useState('');
   const [resultado, setResultado] = useState(null);
 
@@ -554,42 +557,78 @@ function ImportarView({ stats, recargar }) {
       try {
         const res = await fetch(`${API_URL}${endpoint}`, { method: 'POST', body: formData });
         const data = await res.json();
-        setResultado({ ok: true, data, label });
-        recargar();
+        if (res.ok) {
+          setResultado({ ok: true, data, label });
+          recargar();
+        } else {
+          setResultado({ ok: false, error: data.detail || 'Error desconocido', label });
+        }
       } catch (err) { setResultado({ ok: false, error: err.message, label }); }
       setUploading('');
     };
     input.click();
   };
 
+  const importadores = [
+    {
+      id: 'catedras', icon: '📚', titulo: 'Importar Cátedras',
+      desc: 'Excel con columnas: Número + "c.XX Nombre"',
+      ejemplo: 'Ej: | 1 | c.1 Administración |',
+      endpoint: '/api/importar/catedras', color: 'bg-slate-800 text-white',
+    },
+    {
+      id: 'cursos', icon: '🎓', titulo: 'Importar Cursos',
+      desc: 'Excel con columnas: Sede + Nombre del curso',
+      ejemplo: 'Ej: | Avellaneda | Marketing (Avellaneda) |',
+      endpoint: '/api/importar/cursos', color: 'bg-blue-600 text-white',
+    },
+    {
+      id: 'docentes', icon: '👨‍🏫', titulo: 'Importar Docentes',
+      desc: 'Excel con columnas: DNI, Nombre, Apellido, Email',
+      ejemplo: 'Ej: | 20345678 | María | García | maria@iea.edu |',
+      endpoint: '/api/importar/docentes', color: 'bg-amber-500 text-slate-900',
+    },
+  ];
+
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Importar Datos</h2></div>
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
-        <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente en la base de datos PostgreSQL.</p>
+        <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
       </div>
-      <div className="grid grid-cols-2 gap-6 mb-6">
-        <div className="bg-white rounded-xl border p-6">
-          <h3 className="font-semibold mb-3">👨‍🏫 Importar Docentes</h3>
-          <p className="text-sm text-slate-500 mb-4">Excel: DNI, Nombre, Apellido, Email</p>
-          <button onClick={() => subirArchivo('/api/importar/docentes', 'Docentes')} disabled={uploading==='Docentes'}
-            className="w-full py-2 bg-amber-500 text-slate-900 rounded-lg font-medium disabled:opacity-50">
-            {uploading === 'Docentes' ? '⏳ Importando...' : '📤 Subir Excel'}
-          </button>
-        </div>
-        <div className="bg-white rounded-xl border p-6">
-          <h3 className="font-semibold mb-3">📚 Importar Cátedras</h3>
-          <p className="text-sm text-slate-500 mb-4">Excel con código (c.XX) y nombre</p>
-          <button onClick={() => subirArchivo('/api/importar/catedras', 'Cátedras')} disabled={uploading==='Cátedras'}
-            className="w-full py-2 bg-slate-800 text-white rounded-lg disabled:opacity-50">
-            {uploading === 'Cátedras' ? '⏳ Importando...' : '📤 Subir Excel'}
-          </button>
-        </div>
+      <div className="grid grid-cols-3 gap-6 mb-6">
+        {importadores.map(imp => (
+          <div key={imp.id} className="bg-white rounded-xl border p-6">
+            <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
+            <p className="text-sm text-slate-500 mb-1">{imp.desc}</p>
+            <p className="text-xs text-slate-400 mb-4 font-mono">{imp.ejemplo}</p>
+            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)}
+              disabled={uploading === imp.titulo}
+              className={`w-full py-2.5 rounded-lg font-medium disabled:opacity-50 ${imp.color}`}>
+              {uploading === imp.titulo ? '⏳ Importando...' : '📤 Subir Excel (.xlsx)'}
+            </button>
+          </div>
+        ))}
       </div>
       {resultado && (
-        <div className={`p-4 rounded-xl border mb-4 ${resultado.ok ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}`}>
-          <p className="font-medium">{resultado.ok ? '✅' : '❌'} {resultado.label}</p>
-          <pre className="text-sm mt-2">{JSON.stringify(resultado.data || resultado.error, null, 2)}</pre>
+        <div className={`p-4 rounded-xl border ${resultado.ok ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}`}>
+          <p className="font-medium text-lg">{resultado.ok ? '✅' : '❌'} {resultado.label}</p>
+          {resultado.ok && resultado.data && (
+            <div className="mt-2 text-sm">
+              {resultado.data.creadas !== undefined && <p>Creadas: <strong>{resultado.data.creadas}</strong></p>}
+              {resultado.data.creados !== undefined && <p>Creados: <strong>{resultado.data.creados}</strong></p>}
+              {resultado.data.actualizadas !== undefined && <p>Actualizadas: <strong>{resultado.data.actualizadas}</strong></p>}
+              {resultado.data.actualizados !== undefined && <p>Actualizados: <strong>{resultado.data.actualizados}</strong></p>}
+              {resultado.data.omitidos !== undefined && <p>Omitidos: <strong>{resultado.data.omitidos}</strong></p>}
+              {resultado.data.errores?.length > 0 && (
+                <div className="mt-2 text-xs text-orange-600">
+                  <p>Advertencias:</p>
+                  {resultado.data.errores.map((e, i) => <p key={i}>• {e}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+          {!resultado.ok && <p className="mt-2 text-sm text-red-600">{resultado.error}</p>}
         </div>
       )}
     </div>
@@ -608,8 +647,52 @@ function ExportarView() {
   );
 }
 
+// ============ PANTALLA DE LOGIN ============
+function LoginScreen({ onLogin }) {
+  const [clave, setClave] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const intentarLogin = async () => {
+    setError(''); setLoading(true);
+    try {
+      await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
+      localStorage.setItem('iea_auth', 'true');
+      onLogin();
+    } catch (e) {
+      setError('Contraseña incorrecta');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
+          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios v3.1</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-slate-600 font-medium">Contraseña de acceso:</label>
+            <input type="password" className="w-full border-2 rounded-lg px-4 py-3 mt-1 text-lg focus:border-amber-500 focus:outline-none"
+              value={clave} onChange={e => setClave(e.target.value)} placeholder="Ingresá la contraseña"
+              onKeyDown={e => e.key === 'Enter' && intentarLogin()} autoFocus />
+          </div>
+          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+          <button onClick={intentarLogin} disabled={loading || !clave}
+            className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold text-lg disabled:opacity-50 hover:bg-amber-400">
+            {loading ? '⏳ Verificando...' : 'Ingresar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============ APP PRINCIPAL ============
 export default function App() {
+  const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
   const [activeView, setActiveView] = useState('catedras');
   const [cuatrimestre, setCuatrimestre] = useState('1');
   const [catedras, setCatedras] = useState([]);
@@ -634,8 +717,9 @@ export default function App() {
     setLoading(false);
   }, [cuatrimestre]);
 
-  useEffect(() => { cargarDatos(); }, [cargarDatos]);
+  useEffect(() => { if (autenticado) cargarDatos(); }, [cargarDatos, autenticado]);
 
+  if (!autenticado) return <LoginScreen onLogin={() => setAutenticado(true)} />;
   if (loading) return <div className="flex items-center justify-center min-h-screen"><p className="text-xl">⏳ Cargando sistema...</p></div>;
 
   return (
