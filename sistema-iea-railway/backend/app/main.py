@@ -459,6 +459,7 @@ def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
     if not d:
         raise HTTPException(status_code=404, detail="No encontrado")
     db.query(Asignacion).filter(Asignacion.docente_id == docente_id).update({"docente_id": None})
+    db.query(DocenteSede).filter(DocenteSede.docente_id == docente_id).delete()
     db.delete(d)
     db.commit()
     return {"ok": True}
