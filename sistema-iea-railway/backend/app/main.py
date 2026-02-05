@@ -21,7 +21,7 @@ app = FastAPI(title="Sistema Horarios IEA", version="3.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -483,11 +483,27 @@ def get_cursos(sede_id: int = None, db: Session = Depends(get_db)):
     if sede_id:
         q = q.filter(Curso.sede_id == sede_id)
     cursos = q.order_by(Curso.nombre).all()
-    return [{
-        "id": c.id, "nombre": c.nombre,
-        "sede_id": c.sede_id, "sede_nombre": c.sede.nombre if c.sede else None,
-        "cant_catedras": len(c.catedras) if c.catedras else 0,
-    } for c in cursos]
+    result = []
+    for c in cursos:
+        catedras_vinc = []
+        try:
+            for cc in (c.catedras or []):
+                catedras_vinc.append({
+                    "id": cc.id,
+                    "catedra_id": cc.catedra_id,
+                    "catedra_codigo": cc.catedra.codigo if cc.catedra else None,
+                    "catedra_nombre": cc.catedra.nombre if cc.catedra else None,
+                    "turno": cc.turno,
+                })
+        except Exception:
+            pass
+        result.append({
+            "id": c.id, "nombre": c.nombre,
+            "sede_id": c.sede_id, "sede_nombre": c.sede.nombre if c.sede else None,
+            "cant_catedras": len(catedras_vinc),
+            "catedras": catedras_vinc,
+        })
+    return result
 
 # ==================== IMPORTADORES ====================
 
