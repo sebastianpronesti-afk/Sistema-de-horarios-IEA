@@ -16,7 +16,7 @@ from app.models.models import (
 # Crear tablas
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="3.1")
+app = FastAPI(title="Sistema Horarios IEA", version="3.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,35 +28,140 @@ app.add_middleware(
 
 # ==================== STARTUP: MIGRACIÓN + SEED ====================
 
-@app.on_event("startup")
-async def startup():
-    db = next(get_db())
-    
-    # --- Migrar estructura de BD (agregar columnas/tablas faltantes) ---
+def run_migration(db):
+    """Migración robusta que arregla todos los problemas de esquema."""
     from sqlalchemy import text, inspect
+    resultado = []
+    
     try:
         inspector = inspect(engine)
         tables = inspector.get_table_names()
+        resultado.append(f"Tablas existentes: {tables}")
         
+        # 1. Crear TODAS las tablas que falten
+        Base.metadata.create_all(bind=engine)
+        resultado.append("✅ create_all ejecutado")
+        
+        # Refrescar inspector después de crear tablas
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        
+        # 2. Migrar tabla catedras
         if 'catedras' in tables:
             cols = [c['name'] for c in inspector.get_columns('catedras')]
             if 'link_meet' not in cols:
                 db.execute(text("ALTER TABLE catedras ADD COLUMN link_meet VARCHAR"))
                 db.commit()
+                resultado.append("✅ catedras.link_meet agregado")
         
+        # 3. Migrar tabla asignaciones (CRÍTICO - causa de los errores 500)
         if 'asignaciones' in tables:
             cols = [c['name'] for c in inspector.get_columns('asignaciones')]
-            for col, tipo in [('recibe_alumnos_presenciales', 'BOOLEAN DEFAULT FALSE'),
-                              ('hora_inicio', 'VARCHAR'), ('hora_fin', 'VARCHAR'),
-                              ('modificada', 'BOOLEAN DEFAULT FALSE')]:
-                if col not in cols:
-                    db.execute(text(f"ALTER TABLE asignaciones ADD COLUMN {col} {tipo}"))
+            resultado.append(f"Columnas asignaciones: {cols}")
+            
+            # Si existe la columna vieja "hora" pero no "hora_inicio", renombrar
+            if 'hora' in cols and 'hora_inicio' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE asignaciones RENAME COLUMN hora TO hora_inicio"))
                     db.commit()
+                    resultado.append("✅ asignaciones.hora → hora_inicio (renombrado)")
+                    cols = [c['name'] for c in inspector.get_columns('asignaciones')]
+                except Exception as e:
+                    resultado.append(f"⚠️ Renombrar hora: {e}")
+                    db.rollback()
+            
+            # Agregar columnas faltantes una por una
+            columns_needed = [
+                ('hora_inicio', 'VARCHAR'),
+                ('hora_fin', 'VARCHAR'),
+                ('modalidad', "VARCHAR DEFAULT 'virtual_tm'"),
+                ('sede_id', 'INTEGER REFERENCES sedes(id)'),
+                ('recibe_alumnos_presenciales', 'BOOLEAN DEFAULT FALSE'),
+                ('modificada', 'BOOLEAN DEFAULT FALSE'),
+            ]
+            for col, tipo in columns_needed:
+                if col not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE asignaciones ADD COLUMN {col} {tipo}"))
+                        db.commit()
+                        resultado.append(f"✅ asignaciones.{col} agregado")
+                    except Exception as e:
+                        resultado.append(f"⚠️ asignaciones.{col}: {e}")
+                        db.rollback()
         
-        # Crear tablas nuevas si no existen
-        Base.metadata.create_all(bind=engine)
+        # 4. Asegurar tabla docente_sede existe
+        if 'docente_sede' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS docente_sede (
+                        id SERIAL PRIMARY KEY,
+                        docente_id INTEGER REFERENCES docentes(id) ON DELETE CASCADE,
+                        sede_id INTEGER REFERENCES sedes(id) ON DELETE CASCADE
+                    )
+                """))
+                db.commit()
+                resultado.append("✅ Tabla docente_sede creada")
+            except Exception as e:
+                resultado.append(f"⚠️ docente_sede: {e}")
+                db.rollback()
+        
+        # 5. Asegurar tabla catedra_curso existe
+        if 'catedra_curso' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS catedra_curso (
+                        id SERIAL PRIMARY KEY,
+                        catedra_id INTEGER REFERENCES catedras(id) ON DELETE CASCADE,
+                        curso_id INTEGER REFERENCES cursos(id) ON DELETE CASCADE,
+                        turno VARCHAR,
+                        sede_id INTEGER REFERENCES sedes(id)
+                    )
+                """))
+                db.commit()
+                resultado.append("✅ Tabla catedra_curso creada")
+            except Exception as e:
+                resultado.append(f"⚠️ catedra_curso: {e}")
+                db.rollback()
+        
+        # 6. Limpiar sedes duplicadas (Vicente Lopez / Vicente López)
+        try:
+            sede_sin_tilde = db.query(Sede).filter(Sede.nombre == "Vicente Lopez").first()
+            sede_con_tilde = db.query(Sede).filter(Sede.nombre == "Vicente López").first()
+            
+            if sede_sin_tilde and sede_con_tilde:
+                keeper = sede_con_tilde
+                dupe = sede_sin_tilde
+                db.execute(text(f"UPDATE cursos SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                db.execute(text(f"UPDATE asignaciones SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                db.execute(text(f"DELETE FROM docente_sede WHERE sede_id = {dupe.id} AND docente_id IN (SELECT docente_id FROM docente_sede WHERE sede_id = {keeper.id})"))
+                db.execute(text(f"UPDATE docente_sede SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                if 'catedra_curso' in tables:
+                    db.execute(text(f"UPDATE catedra_curso SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                db.execute(text(f"DELETE FROM sedes WHERE id = {dupe.id}"))
+                db.commit()
+                resultado.append(f"✅ Sedes fusionadas: Vicente Lopez → Vicente López")
+            elif sede_sin_tilde and not sede_con_tilde:
+                sede_sin_tilde.nombre = "Vicente López"
+                db.commit()
+                resultado.append("✅ Sede renombrada a Vicente López")
+        except Exception as e:
+            resultado.append(f"⚠️ Limpieza sedes: {e}")
+            db.rollback()
+        
     except Exception as e:
-        print(f"⚠️ Migración: {e}")
+        resultado.append(f"❌ Error migración: {e}")
+    
+    return resultado
+
+
+@app.on_event("startup")
+async def startup():
+    db = next(get_db())
+    
+    # --- Migración robusta ---
+    migr = run_migration(db)
+    for m in migr:
+        print(f"  [MIGRACIÓN] {m}")
     
     # --- Cargar datos iniciales desde seed_data ---
     try:
@@ -76,27 +181,27 @@ async def startup():
             for codigo, nombre in CATEDRAS:
                 db.add(Catedra(codigo=codigo, nombre=nombre))
             db.commit()
-            print(f"✅ {len(CATEDRAS)} cátedras cargadas")
+            print(f"  ✅ {len(CATEDRAS)} cátedras cargadas")
         
         if db.query(Curso).count() == 0:
             for sede_nombre, nombre in CURSOS:
                 sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first()
                 db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None))
             db.commit()
-            print(f"✅ {len(CURSOS)} cursos cargados")
+            print(f"  ✅ {len(CURSOS)} cursos cargados")
         
         if db.query(Docente).count() == 0:
             for dni, nombre, apellido in DOCENTES:
                 db.add(Docente(dni=dni, nombre=nombre, apellido=apellido))
             db.commit()
-            print(f"✅ {len(DOCENTES)} docentes cargados")
+            print(f"  ✅ {len(DOCENTES)} docentes cargados")
     except ImportError:
-        print("⚠️ seed_data.py no encontrado")
+        print("  ⚠️ seed_data.py no encontrado")
     except Exception as e:
-        print(f"⚠️ Seed error: {e}")
+        print(f"  ⚠️ Seed error: {e}")
     
     db.close()
-    print("🚀 IEA Horarios v3.1 iniciado")
+    print("🚀 IEA Horarios v3.2 iniciado")
 
 # ==================== AUTH ====================
 
@@ -109,134 +214,80 @@ def root():
 @app.get("/api/reparar")
 def reparar_bd(db: Session = Depends(get_db)):
     """Visitar esta URL para reparar la BD y cargar datos"""
-    from sqlalchemy import text, inspect
-    resultado = []
+    resultado = run_migration(db)
     
+    # Cargar datos seed
     try:
-        inspector = inspect(engine)
+        from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
         
-        # 1. Agregar columnas faltantes
-        if 'catedras' in inspector.get_table_names():
-            cols = [c['name'] for c in inspector.get_columns('catedras')]
-            if 'link_meet' not in cols:
-                db.execute(text("ALTER TABLE catedras ADD COLUMN link_meet VARCHAR"))
-                db.commit()
-                resultado.append("✅ Columna link_meet agregada a catedras")
-            else:
-                resultado.append("OK link_meet ya existe")
+        nuevas_sedes = 0
+        for nombre, color in SEDES:
+            if not db.query(Sede).filter(Sede.nombre == nombre).first():
+                db.add(Sede(nombre=nombre, color=color))
+                nuevas_sedes += 1
+        if nuevas_sedes > 0:
+            db.commit()
+            resultado.append(f"✅ {nuevas_sedes} sedes nuevas")
         
-        if 'asignaciones' in inspector.get_table_names():
-            cols = [c['name'] for c in inspector.get_columns('asignaciones')]
-            for col, tipo in [('recibe_alumnos_presenciales', 'BOOLEAN DEFAULT FALSE'),
-                              ('hora_inicio', 'VARCHAR'), ('hora_fin', 'VARCHAR'),
-                              ('modificada', 'BOOLEAN DEFAULT FALSE')]:
-                if col not in cols:
-                    db.execute(text(f"ALTER TABLE asignaciones ADD COLUMN {col} {tipo}"))
-                    db.commit()
-                    resultado.append(f"✅ Columna {col} agregada")
+        total_cat = db.query(Catedra).count()
+        if total_cat < 10:
+            for codigo, nombre in CATEDRAS:
+                if not db.query(Catedra).filter(Catedra.codigo == codigo).first():
+                    db.add(Catedra(codigo=codigo, nombre=nombre))
+            db.commit()
+            resultado.append(f"✅ Cátedras: {total_cat} → {db.query(Catedra).count()}")
+        else:
+            resultado.append(f"OK {total_cat} cátedras ya existen")
         
-        # 2. Crear tablas que falten
-        Base.metadata.create_all(bind=engine)
-        resultado.append("OK tablas verificadas")
+        total_cur = db.query(Curso).count()
+        if total_cur < 10:
+            for sede_nombre, nombre in CURSOS:
+                if not db.query(Curso).filter(Curso.nombre == nombre).first():
+                    sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first()
+                    db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None))
+            db.commit()
+            resultado.append(f"✅ Cursos: {total_cur} → {db.query(Curso).count()}")
+        else:
+            resultado.append(f"OK {total_cur} cursos ya existen")
         
-        # 2.5 Limpiar sedes duplicadas (Vicente Lopez / Vicente López)
-        try:
-            sede_sin_tilde = db.query(Sede).filter(Sede.nombre == "Vicente Lopez").first()
-            sede_con_tilde = db.query(Sede).filter(Sede.nombre == "Vicente López").first()
-            
-            if sede_sin_tilde and sede_con_tilde:
-                # Mover todo a "Vicente López" (con tilde) y eliminar la otra
-                keeper = sede_con_tilde
-                dupe = sede_sin_tilde
-                
-                # Mover cursos
-                db.execute(text(f"UPDATE cursos SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
-                # Mover asignaciones
-                db.execute(text(f"UPDATE asignaciones SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
-                # Mover docente_sede
-                db.execute(text(f"DELETE FROM docente_sede WHERE sede_id = {dupe.id} AND docente_id IN (SELECT docente_id FROM docente_sede WHERE sede_id = {keeper.id})"))
-                db.execute(text(f"UPDATE docente_sede SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
-                # Mover catedra_curso
-                if 'catedra_curso' in inspector.get_table_names():
-                    db.execute(text(f"UPDATE catedra_curso SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
-                # Eliminar duplicada
-                db.execute(text(f"DELETE FROM sedes WHERE id = {dupe.id}"))
-                db.commit()
-                resultado.append(f"✅ Sedes fusionadas: 'Vicente Lopez' → 'Vicente López' (id {keeper.id})")
-            elif sede_sin_tilde and not sede_con_tilde:
-                sede_sin_tilde.nombre = "Vicente López"
-                db.commit()
-                resultado.append("✅ Sede renombrada a 'Vicente López'")
-            else:
-                resultado.append("OK Vicente López sin duplicados")
-        except Exception as e:
-            resultado.append(f"⚠️ Limpieza sedes: {str(e)}")
+        total_doc = db.query(Docente).count()
+        if total_doc < 5:
+            for dni, nombre, apellido in DOCENTES:
+                if not db.query(Docente).filter(Docente.dni == dni).first():
+                    db.add(Docente(dni=dni, nombre=nombre, apellido=apellido))
+            db.commit()
+            resultado.append(f"✅ Docentes: {total_doc} → {db.query(Docente).count()}")
+        else:
+            resultado.append(f"OK {total_doc} docentes ya existen")
         
-        # 3. Cargar datos
-        try:
-            from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
-            
-            # Sedes
-            nuevas_sedes = 0
-            for nombre, color in SEDES:
-                if not db.query(Sede).filter(Sede.nombre == nombre).first():
-                    db.add(Sede(nombre=nombre, color=color))
-                    nuevas_sedes += 1
-            if nuevas_sedes > 0:
-                db.commit()
-                resultado.append(f"✅ {nuevas_sedes} sedes nuevas")
-            
-            # Cátedras
-            total_cat = db.query(Catedra).count()
-            if total_cat < 10:
-                for codigo, nombre in CATEDRAS:
-                    if not db.query(Catedra).filter(Catedra.codigo == codigo).first():
-                        db.add(Catedra(codigo=codigo, nombre=nombre))
-                db.commit()
-                nuevo_total = db.query(Catedra).count()
-                resultado.append(f"✅ Cátedras: {total_cat} → {nuevo_total}")
-            else:
-                resultado.append(f"OK {total_cat} cátedras ya existen")
-            
-            # Cursos
-            total_cur = db.query(Curso).count()
-            if total_cur < 10:
-                for sede_nombre, nombre in CURSOS:
-                    if not db.query(Curso).filter(Curso.nombre == nombre).first():
-                        sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first()
-                        db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None))
-                db.commit()
-                nuevo_total = db.query(Curso).count()
-                resultado.append(f"✅ Cursos: {total_cur} → {nuevo_total}")
-            else:
-                resultado.append(f"OK {total_cur} cursos ya existen")
-            
-            # Docentes
-            total_doc = db.query(Docente).count()
-            if total_doc < 5:
-                for dni, nombre, apellido in DOCENTES:
-                    if not db.query(Docente).filter(Docente.dni == dni).first():
-                        db.add(Docente(dni=dni, nombre=nombre, apellido=apellido))
-                db.commit()
-                nuevo_total = db.query(Docente).count()
-                resultado.append(f"✅ Docentes: {total_doc} → {nuevo_total}")
-            else:
-                resultado.append(f"OK {total_doc} docentes ya existen")
-            
-            # Cuatrimestres
-            if not db.query(Cuatrimestre).first():
-                db.add(Cuatrimestre(nombre="1er Cuatrimestre 2026", anio=2026, numero=1, activo=True))
-                db.add(Cuatrimestre(nombre="2do Cuatrimestre 2026", anio=2026, numero=2, activo=False))
-                db.commit()
-                resultado.append("✅ Cuatrimestres creados")
-        
-        except ImportError:
-            resultado.append("⚠️ seed_data.py no encontrado")
-    
+        if not db.query(Cuatrimestre).first():
+            db.add(Cuatrimestre(nombre="1er Cuatrimestre 2026", anio=2026, numero=1, activo=True))
+            db.add(Cuatrimestre(nombre="2do Cuatrimestre 2026", anio=2026, numero=2, activo=False))
+            db.commit()
+            resultado.append("✅ Cuatrimestres creados")
+    except ImportError:
+        resultado.append("⚠️ seed_data.py no encontrado")
     except Exception as e:
-        resultado.append(f"❌ Error: {str(e)}")
+        resultado.append(f"❌ Seed error: {str(e)}")
     
     return {"resultado": resultado}
+
+@app.get("/api/diagnostico")
+def diagnostico_bd(db: Session = Depends(get_db)):
+    """Endpoint de diagnóstico para ver el estado real de la BD"""
+    from sqlalchemy import text, inspect
+    info = {}
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        info["tablas"] = tables
+        for t in tables:
+            cols = [c['name'] for c in inspector.get_columns(t)]
+            count = db.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+            info[t] = {"columnas": cols, "registros": count}
+    except Exception as e:
+        info["error"] = str(e)
+    return info
 
 @app.post("/api/login")
 def login(data: dict):
@@ -347,51 +398,65 @@ def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db
 
 @app.post("/api/asignaciones")
 def crear_asignacion(data: dict, db: Session = Depends(get_db)):
-    cat_id = data.get("catedra_id")
-    cuat_id = data.get("cuatrimestre_id", 1)
-    modalidad = data.get("modalidad", "virtual_tm")
-    dia = data.get("dia")
-    hora = data.get("hora_inicio")
-    sede_id = data.get("sede_id")
-    
-    if dia and hora and modalidad != 'asincronica':
-        conflict = verificar_solapamiento_catedra(cat_id, dia, hora, cuat_id, None, db)
-        if conflict:
-            raise HTTPException(status_code=400, detail=conflict)
-    
-    asig = Asignacion(
-        catedra_id=cat_id, cuatrimestre_id=cuat_id,
-        docente_id=data.get("docente_id"), modalidad=modalidad,
-        dia=dia, hora_inicio=hora, hora_fin=data.get("hora_fin"),
-        sede_id=sede_id if sede_id else None,
-        recibe_alumnos_presenciales=data.get("recibe_alumnos_presenciales", False),
-    )
-    db.add(asig)
-    db.commit()
-    return {"id": asig.id, "ok": True}
+    try:
+        cat_id = data.get("catedra_id")
+        cuat_id = data.get("cuatrimestre_id", 1)
+        modalidad = data.get("modalidad", "virtual_tm")
+        dia = data.get("dia")
+        hora = data.get("hora_inicio")
+        sede_id = data.get("sede_id")
+        
+        if dia and hora and modalidad != 'asincronica':
+            conflict = verificar_solapamiento_catedra(cat_id, dia, hora, cuat_id, None, db)
+            if conflict:
+                raise HTTPException(status_code=400, detail=conflict)
+        
+        asig = Asignacion(
+            catedra_id=cat_id, cuatrimestre_id=cuat_id,
+            docente_id=data.get("docente_id"), modalidad=modalidad,
+            dia=dia, hora_inicio=hora, hora_fin=data.get("hora_fin"),
+            sede_id=sede_id if sede_id else None,
+            recibe_alumnos_presenciales=data.get("recibe_alumnos_presenciales", False),
+        )
+        db.add(asig)
+        db.commit()
+        return {"id": asig.id, "ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error creando asignación: {e}")
+        raise HTTPException(status_code=500, detail=f"Error de base de datos: {str(e)}. Probá visitar /api/reparar primero.")
 
 @app.put("/api/asignaciones/{asignacion_id}")
 def actualizar_asignacion(asignacion_id: int, data: dict, db: Session = Depends(get_db)):
-    asig = db.query(Asignacion).filter(Asignacion.id == asignacion_id).first()
-    if not asig:
-        raise HTTPException(status_code=404, detail="Asignación no encontrada")
-    
-    dia = data.get("dia", asig.dia)
-    hora = data.get("hora_inicio", asig.hora_inicio)
-    
-    if dia and hora and data.get("modalidad", asig.modalidad) != 'asincronica':
-        conflict = verificar_solapamiento_catedra(
-            asig.catedra_id, dia, hora, asig.cuatrimestre_id, asig.id, db)
-        if conflict:
-            raise HTTPException(status_code=400, detail=conflict)
-    
-    for field in ["docente_id", "modalidad", "dia", "hora_inicio", "hora_fin",
-                   "sede_id", "recibe_alumnos_presenciales"]:
-        if field in data:
-            setattr(asig, field, data[field] if data[field] else None)
-    asig.modificada = True
-    db.commit()
-    return {"ok": True}
+    try:
+        asig = db.query(Asignacion).filter(Asignacion.id == asignacion_id).first()
+        if not asig:
+            raise HTTPException(status_code=404, detail="Asignación no encontrada")
+        
+        dia = data.get("dia", asig.dia)
+        hora = data.get("hora_inicio", asig.hora_inicio)
+        
+        if dia and hora and data.get("modalidad", asig.modalidad) != 'asincronica':
+            conflict = verificar_solapamiento_catedra(
+                asig.catedra_id, dia, hora, asig.cuatrimestre_id, asig.id, db)
+            if conflict:
+                raise HTTPException(status_code=400, detail=conflict)
+        
+        for field in ["docente_id", "modalidad", "dia", "hora_inicio", "hora_fin",
+                       "sede_id", "recibe_alumnos_presenciales"]:
+            if field in data:
+                setattr(asig, field, data[field] if data[field] else None)
+        asig.modificada = True
+        db.commit()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error actualizando asignación {asignacion_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.delete("/api/asignaciones/{asignacion_id}")
 def eliminar_asignacion(asignacion_id: int, db: Session = Depends(get_db)):
@@ -488,14 +553,32 @@ def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db
 
 @app.delete("/api/docentes/{docente_id}")
 def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
-    d = db.query(Docente).filter(Docente.id == docente_id).first()
-    if not d:
-        raise HTTPException(status_code=404, detail="No encontrado")
-    db.query(Asignacion).filter(Asignacion.docente_id == docente_id).update({"docente_id": None})
-    db.query(DocenteSede).filter(DocenteSede.docente_id == docente_id).delete()
-    db.delete(d)
-    db.commit()
-    return {"ok": True}
+    try:
+        d = db.query(Docente).filter(Docente.id == docente_id).first()
+        if not d:
+            raise HTTPException(status_code=404, detail="No encontrado")
+        # Desasignar de asignaciones
+        try:
+            db.query(Asignacion).filter(Asignacion.docente_id == docente_id).update({"docente_id": None})
+        except Exception as e:
+            print(f"⚠️ Error desasignando docente de asignaciones: {e}")
+            db.rollback()
+        # Eliminar relaciones docente-sede
+        try:
+            db.query(DocenteSede).filter(DocenteSede.docente_id == docente_id).delete()
+        except Exception as e:
+            print(f"⚠️ Error eliminando docente_sede: {e}")
+            db.rollback()
+        # Eliminar docente
+        db.delete(d)
+        db.commit()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error eliminando docente {docente_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error eliminando docente: {str(e)}")
 
 @app.put("/api/docentes/{docente_id}/sedes")
 def actualizar_sedes_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
@@ -823,44 +906,63 @@ def verificar_solapamiento_catedra(catedra_id, dia, hora_inicio, cuatrimestre_id
 
 @app.get("/api/horarios/solapamientos")
 def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
-    q = db.query(Asignacion).filter(
-        Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None),
-        Asignacion.modalidad != 'asincronica'
-    )
-    if cuatrimestre_id:
-        q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
-    asigs = q.all()
-    
-    solapamientos = []
-    checked = set()
-    
-    for i, a1 in enumerate(asigs):
-        for a2 in asigs[i+1:]:
-            if a1.dia != a2.dia or a1.hora_inicio != a2.hora_inicio:
-                continue
-            pair = tuple(sorted([a1.id, a2.id]))
-            if pair in checked:
-                continue
-            checked.add(pair)
-            
-            cat1 = a1.catedra
-            cat2 = a2.catedra
-            
-            if a1.catedra_id == a2.catedra_id:
-                solapamientos.append({
-                    "tipo": "CATEDRA", "severidad": "CRITICO",
-                    "mensaje": f"Cátedra {cat1.codigo} tiene dos clases {a1.dia} {a1.hora_inicio}. Comparten link Meet.",
-                    "catedra": cat1.codigo, "dia": a1.dia, "hora": a1.hora_inicio,
-                })
-            elif a1.docente_id and a1.docente_id == a2.docente_id:
-                doc = a1.docente
-                solapamientos.append({
-                    "tipo": "DOCENTE", "severidad": "ALTO",
-                    "mensaje": f"{doc.nombre} {doc.apellido} tiene {cat1.codigo} y {cat2.codigo} el {a1.dia} {a1.hora_inicio}.",
-                    "docente": f"{doc.nombre} {doc.apellido}", "dia": a1.dia, "hora": a1.hora_inicio,
-                })
-    
-    return solapamientos
+    try:
+        from sqlalchemy import text
+        # Verificar que la tabla tiene las columnas necesarias
+        try:
+            test = db.execute(text("SELECT id, catedra_id, docente_id, dia, hora_inicio, modalidad FROM asignaciones LIMIT 1"))
+        except Exception as col_err:
+            print(f"⚠️ Solapamientos - columnas faltantes: {col_err}")
+            db.rollback()
+            return []
+        
+        q = db.query(Asignacion).filter(
+            Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None),
+            Asignacion.modalidad != 'asincronica'
+        )
+        if cuatrimestre_id:
+            q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+        asigs = q.all()
+        
+        solapamientos = []
+        checked = set()
+        
+        for i, a1 in enumerate(asigs):
+            for a2 in asigs[i+1:]:
+                if a1.dia != a2.dia or a1.hora_inicio != a2.hora_inicio:
+                    continue
+                pair = tuple(sorted([a1.id, a2.id]))
+                if pair in checked:
+                    continue
+                checked.add(pair)
+                
+                try:
+                    cat1 = a1.catedra
+                    cat2 = a2.catedra
+                except Exception:
+                    continue
+                
+                if a1.catedra_id == a2.catedra_id:
+                    solapamientos.append({
+                        "tipo": "CATEDRA", "severidad": "CRITICO",
+                        "mensaje": f"Cátedra {cat1.codigo if cat1 else '?'} tiene dos clases {a1.dia} {a1.hora_inicio}. Comparten link Meet.",
+                        "catedra": cat1.codigo if cat1 else "?", "dia": a1.dia, "hora": a1.hora_inicio,
+                    })
+                elif a1.docente_id and a1.docente_id == a2.docente_id:
+                    try:
+                        doc = a1.docente
+                        solapamientos.append({
+                            "tipo": "DOCENTE", "severidad": "ALTO",
+                            "mensaje": f"{doc.nombre} {doc.apellido} tiene {cat1.codigo if cat1 else '?'} y {cat2.codigo if cat2 else '?'} el {a1.dia} {a1.hora_inicio}.",
+                            "docente": f"{doc.nombre} {doc.apellido}" if doc else "?", "dia": a1.dia, "hora": a1.hora_inicio,
+                        })
+                    except Exception:
+                        pass
+        
+        return solapamientos
+    except Exception as e:
+        print(f"❌ Error en solapamientos: {e}")
+        return []
 
 # ==================== ESTADÍSTICAS ====================
 
