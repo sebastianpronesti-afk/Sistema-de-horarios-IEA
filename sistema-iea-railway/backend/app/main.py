@@ -35,14 +35,19 @@ async def startup():
     # Crear sedes por defecto
     sedes_default = [
         ("Online - Interior", "bg-purple-500"),
+        ("Online - Exterior", "bg-violet-500"),
+        ("Online - Cursos", "bg-fuchsia-500"),
+        ("Online", "bg-purple-400"),
         ("Avellaneda", "bg-blue-500"),
         ("Caballito", "bg-emerald-500"),
-        ("Vicente López", "bg-amber-500"),
+        ("Vicente Lopez", "bg-amber-500"),
         ("Liniers", "bg-pink-500"),
         ("Monte Grande", "bg-cyan-500"),
         ("La Plata", "bg-indigo-500"),
         ("Pilar", "bg-rose-500"),
-        ("Remoto", "bg-gray-500"),  # Para docentes que trabajan 100% desde casa
+        ("BCE", "bg-lime-500"),
+        ("BEA", "bg-teal-500"),
+        ("Remoto", "bg-gray-500"),
     ]
     for nombre, color in sedes_default:
         if not db.query(Sede).filter(Sede.nombre == nombre).first():
@@ -60,7 +65,19 @@ async def startup():
 
 @app.get("/")
 def root():
-    return {"status": "ok", "sistema": "IEA Horarios v3.0"}
+    return {"status": "ok", "sistema": "IEA Horarios v3.1"}
+
+# ==================== AUTENTICACIÓN SIMPLE ====================
+
+CLAVE_ACCESO = "IEA2026"  # Cambiar esta contraseña por la que quieras
+
+@app.post("/api/login")
+def login(data: dict):
+    """Login con contraseña única compartida"""
+    clave = data.get("clave", "")
+    if clave == CLAVE_ACCESO:
+        return {"ok": True, "mensaje": "Acceso autorizado"}
+    raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
 @app.get("/api/sedes")
 def get_sedes(db: Session = Depends(get_db)):
@@ -441,46 +458,64 @@ def actualizar_sedes_docente(docente_id: int, data: dict, db: Session = Depends(
 async def importar_docentes(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     Importar docentes desde Excel.
-    Columnas esperadas: DNI, Nombre, Apellido, Email
+    Detecta automáticamente las columnas por nombre de header.
+    Headers aceptados: DNI/Documento, Nombre/Nombres, Apellido/Apellidos, Email/Mail/Correo
     NO se asigna sede por defecto.
     """
-    content = await file.read()
-    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-    ws = wb.active
-    
-    # Detectar headers
-    headers = []
-    for cell in ws[1]:
-        headers.append(str(cell.value).lower().strip() if cell.value else "")
-    
-    creados = 0
-    actualizados = 0
-    errores = []
-    
-    for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        dni = None
-        nombre = None
-        apellido = None
-        email = None
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
         
-        for i, cell in enumerate(row):
-            if i < len(headers) and cell:
-                val = str(cell).strip()
-                col = headers[i]
-                
-                if "dni" in col or "documento" in col:
-                    dni = val.replace(".", "").replace("-", "")
-                elif col == "nombre" or col == "nombres":
-                    nombre = val
-                elif "apellido" in col:
-                    apellido = val
-                elif "mail" in col or "email" in col or "correo" in col:
-                    email = val
+        # Detectar headers de forma flexible
+        headers_raw = []
+        for cell in ws[1]:
+            headers_raw.append(str(cell.value).lower().strip() if cell.value else "")
         
-        if dni and len(dni) >= 7:
+        # Mapear columnas
+        col_map = {"dni": -1, "nombre": -1, "apellido": -1, "email": -1}
+        for i, h in enumerate(headers_raw):
+            if any(x in h for x in ["dni", "documento", "doc.", "nro doc"]):
+                col_map["dni"] = i
+            elif h in ["nombre", "nombres", "name"] or h == "nombre/s":
+                col_map["nombre"] = i
+            elif any(x in h for x in ["apellido", "apellidos", "surname"]):
+                col_map["apellido"] = i
+            elif any(x in h for x in ["mail", "email", "correo", "e-mail"]):
+                col_map["email"] = i
+        
+        # Si no detectó columnas por header, intentar por posición estándar
+        if col_map["dni"] == -1:
+            col_map = {"dni": 0, "nombre": 1, "apellido": 2, "email": 3}
+        
+        creados = 0
+        actualizados = 0
+        errores = []
+        
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            
+            def get_val(key):
+                idx = col_map.get(key, -1)
+                return vals[idx] if 0 <= idx < len(vals) and vals[idx] else None
+            
+            dni = get_val("dni")
+            nombre = get_val("nombre")
+            apellido = get_val("apellido")
+            email = get_val("email")
+            
+            # Limpiar DNI
+            if dni:
+                dni = dni.replace(".", "").replace("-", "").replace(" ", "")
+                # Si es un número con decimales (Excel), quitar el .0
+                if dni.endswith(".0"):
+                    dni = dni[:-2]
+            
+            if not dni or len(dni) < 7:
+                continue
+            
             existente = db.query(Docente).filter(Docente.dni == dni).first()
             if existente:
-                # Actualizar si hay datos nuevos
                 if nombre and nombre != existente.nombre:
                     existente.nombre = nombre
                 if apellido and apellido != existente.apellido:
@@ -501,30 +536,39 @@ async def importar_docentes(file: UploadFile = File(...), db: Session = Depends(
                 )
                 db.add(docente)
                 creados += 1
-    
-    db.commit()
-    wb.close()
-    return {
-        "creados": creados,
-        "actualizados": actualizados,
-        "errores": errores[:10]  # Solo primeros 10 errores
-    }
+        
+        db.commit()
+        wb.close()
+        return {
+            "creados": creados,
+            "actualizados": actualizados,
+            "total_procesados": creados + actualizados,
+            "errores": errores[:10]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando archivo: {str(e)}")
 
 def detectar_sede(texto: str) -> str | None:
     texto = texto.lower()
     sedes_map = {
         "avellaneda": "Avellaneda",
         "caballito": "Caballito",
-        "vicente lopez": "Vicente López",
-        "vicente lópez": "Vicente López",
-        "vte lopez": "Vicente López",
-        "vte lópez": "Vicente López",
+        "vicente lopez": "Vicente Lopez",
+        "vicente lópez": "Vicente Lopez",
+        "vte lopez": "Vicente Lopez",
+        "vte lópez": "Vicente Lopez",
         "liniers": "Liniers",
         "monte grande": "Monte Grande",
         "la plata": "La Plata",
         "pilar": "Pilar",
+        "online - interior": "Online - Interior",
+        "online - exterior": "Online - Exterior",
+        "online - cursos": "Online - Cursos",
         "interior": "Online - Interior",
-        "online": "Online - Interior",
+        "exterior": "Online - Exterior",
+        "bce": "BCE",
+        "bea": "BEA",
+        "online": "Online",
     }
     for key, value in sedes_map.items():
         if key in texto:
@@ -533,68 +577,144 @@ def detectar_sede(texto: str) -> str | None:
 
 @app.post("/api/importar/catedras")
 async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    content = await file.read()
-    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-    ws = wb.active
-    
-    creadas = 0
-    actualizadas = 0
-    
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        codigo = None
-        nombre = None
+    """
+    Importar cátedras desde Excel.
+    Acepta estos formatos:
+    - Columna A: número, Columna B: "c.XX NombreDeLaCatedra"
+    - Columna A: "c.XX", Columna B: nombre
+    - Columna A: "c.XX NombreDeLaCatedra" (todo junto)
+    """
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
         
-        for cell in row:
-            if cell:
-                val = str(cell).strip()
-                if re.match(r'^c\.\d+', val.lower()):
-                    codigo = val
-                elif len(val) > 5 and not re.match(r'^c\.\d+', val.lower()):
-                    nombre = val
+        # Buscar la hoja correcta (priorizar "cátedras" o la primera)
+        ws = None
+        for name in wb.sheetnames:
+            if "catedr" in name.lower() or "cátedr" in name.lower():
+                ws = wb[name]
+                break
+        if ws is None:
+            ws = wb[wb.sheetnames[0]]
         
-        if codigo:
-            existente = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-            if existente:
-                if nombre and nombre != existente.nombre:
-                    existente.nombre = nombre
-                    actualizadas += 1
-            else:
-                nueva = Catedra(codigo=codigo, nombre=nombre or f"Cátedra {codigo}")
-                db.add(nueva)
-                creadas += 1
-    
-    db.commit()
-    wb.close()
-    return {"creadas": creadas, "actualizadas": actualizadas}
+        creadas = 0
+        actualizadas = 0
+        errores = []
+        
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            codigo = None
+            nombre = None
+            
+            # Obtener valores de las celdas
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            
+            # Formato 1: col_A=número, col_B="c.XX Nombre"
+            if len(vals) >= 2 and vals[1]:
+                text = vals[1].strip()
+                match = re.match(r'^(c\.\d+)\s+(.+)', text, re.IGNORECASE)
+                if match:
+                    codigo = match.group(1)
+                    nombre = match.group(2).strip()
+                else:
+                    # Formato 2: col_A="c.XX", col_B="Nombre"
+                    if re.match(r'^c\.\d+$', vals[0], re.IGNORECASE):
+                        codigo = vals[0]
+                        nombre = vals[1]
+                    elif re.match(r'^c\.\d+$', text, re.IGNORECASE):
+                        codigo = text
+                        nombre = vals[0] if vals[0] and not vals[0].replace('.','').isdigit() else f"Cátedra {text}"
+            
+            # Formato 3: col_A es un número que usamos como c.XX
+            if not codigo and len(vals) >= 2:
+                try:
+                    num = int(float(vals[0]))
+                    if num > 0 and vals[1]:
+                        text = vals[1].strip()
+                        match = re.match(r'^(c\.\d+)\s+(.+)', text, re.IGNORECASE)
+                        if match:
+                            codigo = match.group(1)
+                            nombre = match.group(2).strip()
+                        else:
+                            codigo = f"c.{num}"
+                            nombre = text
+                except (ValueError, TypeError):
+                    pass
+            
+            if codigo:
+                existente = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+                if existente:
+                    if nombre and nombre != existente.nombre:
+                        existente.nombre = nombre
+                        actualizadas += 1
+                else:
+                    nueva = Catedra(codigo=codigo, nombre=nombre or f"Cátedra {codigo}")
+                    db.add(nueva)
+                    creadas += 1
+        
+        db.commit()
+        wb.close()
+        return {"creadas": creadas, "actualizadas": actualizadas, "errores": errores[:5]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando archivo: {str(e)}")
 
 @app.post("/api/importar/cursos")
 async def importar_cursos(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    content = await file.read()
-    wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-    ws = wb.active
-    
-    creados = 0
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        nombre = None
-        for cell in row:
-            if cell:
-                val = str(cell).strip()
-                if len(val) > 10:
-                    nombre = val
-                    break
+    """
+    Importar cursos desde Excel.
+    Formato esperado: Columna A = Sede, Columna B = Nombre del curso
+    Filtra automáticamente los cursos marcados como NO DISPONIBLE o BAJAS.
+    """
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
         
-        if nombre and "no disponible" not in nombre.lower() and "baja" not in nombre.lower():
+        creados = 0
+        omitidos = 0
+        errores = []
+        
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            
+            sede_texto = vals[0] if len(vals) > 0 else ""
+            nombre = vals[1] if len(vals) > 1 else vals[0] if len(vals) > 0 else ""
+            
+            if not nombre or len(nombre) < 3:
+                continue
+            
+            # Filtrar cursos no disponibles
+            nombre_lower = nombre.lower()
+            if any(x in nombre_lower for x in ["no disponible", "baja", "//bajas//", "test ", "prueba"]):
+                omitidos += 1
+                continue
+            
+            # Buscar sede
+            sede = None
+            if sede_texto:
+                sede = db.query(Sede).filter(Sede.nombre == sede_texto).first()
+                if not sede:
+                    # Intentar con detectar_sede
+                    sede_nombre = detectar_sede(sede_texto)
+                    if sede_nombre:
+                        sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first()
+                    
+                    # Si no existe, crear la sede
+                    if not sede and len(sede_texto) > 2:
+                        sede = Sede(nombre=sede_texto, color="bg-gray-500")
+                        db.add(sede)
+                        db.flush()
+            
             existente = db.query(Curso).filter(Curso.nombre == nombre).first()
             if not existente:
-                sede_nombre = detectar_sede(nombre)
-                sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first() if sede_nombre else None
                 curso = Curso(nombre=nombre, sede_id=sede.id if sede else None)
                 db.add(curso)
                 creados += 1
-    
-    db.commit()
-    wb.close()
-    return {"creados": creados}
+        
+        db.commit()
+        wb.close()
+        return {"creados": creados, "omitidos": omitidos, "errores": errores[:5]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando archivo: {str(e)}")
 
 @app.post("/api/importar/inscripciones")
 async def importar_inscripciones(
@@ -844,6 +964,51 @@ def get_estadisticas_docentes(cuatrimestre_id: int = None, db: Session = Depends
             stats["sin_asignaciones"] += 1
     
     return stats
+
+# ==================== IMPORTACIÓN MASIVA POR JSON ====================
+
+@app.post("/api/importar/masivo")
+async def importar_masivo(data: dict, db: Session = Depends(get_db)):
+    """Importar sedes, cátedras y cursos en un solo request JSON"""
+    resultado = {"sedes": 0, "catedras": 0, "cursos": 0, "errores": []}
+    
+    # Importar sedes
+    for sede_nombre in data.get("sedes", []):
+        if not db.query(Sede).filter(Sede.nombre == sede_nombre).first():
+            db.add(Sede(nombre=sede_nombre, color="bg-gray-500"))
+            resultado["sedes"] += 1
+    db.commit()
+    
+    # Importar cátedras
+    for cat in data.get("catedras", []):
+        codigo = cat.get("codigo", "").strip()
+        nombre = cat.get("nombre", "").strip()
+        if not codigo:
+            continue
+        existente = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+        if existente:
+            if nombre and nombre != existente.nombre:
+                existente.nombre = nombre
+        else:
+            db.add(Catedra(codigo=codigo, nombre=nombre or f"Cátedra {codigo}"))
+            resultado["catedras"] += 1
+    db.commit()
+    
+    # Importar cursos
+    for cur in data.get("cursos", []):
+        nombre = cur.get("nombre", "").strip()
+        sede_nombre = cur.get("sede", "").strip()
+        if not nombre:
+            continue
+        existente = db.query(Curso).filter(Curso.nombre == nombre).first()
+        if not existente:
+            sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first() if sede_nombre else None
+            db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None))
+            resultado["cursos"] += 1
+    db.commit()
+    
+    return resultado
+
 
 if __name__ == "__main__":
     import uvicorn
