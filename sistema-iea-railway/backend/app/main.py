@@ -106,6 +106,105 @@ CLAVE_ACCESO = "IEA2026"
 def root():
     return {"status": "ok", "sistema": "IEA Horarios v3.1"}
 
+@app.get("/api/reparar")
+def reparar_bd(db: Session = Depends(get_db)):
+    """Visitar esta URL para reparar la BD y cargar datos"""
+    from sqlalchemy import text, inspect
+    resultado = []
+    
+    try:
+        inspector = inspect(engine)
+        
+        # 1. Agregar columnas faltantes
+        if 'catedras' in inspector.get_table_names():
+            cols = [c['name'] for c in inspector.get_columns('catedras')]
+            if 'link_meet' not in cols:
+                db.execute(text("ALTER TABLE catedras ADD COLUMN link_meet VARCHAR"))
+                db.commit()
+                resultado.append("✅ Columna link_meet agregada a catedras")
+            else:
+                resultado.append("OK link_meet ya existe")
+        
+        if 'asignaciones' in inspector.get_table_names():
+            cols = [c['name'] for c in inspector.get_columns('asignaciones')]
+            for col, tipo in [('recibe_alumnos_presenciales', 'BOOLEAN DEFAULT FALSE'),
+                              ('hora_inicio', 'VARCHAR'), ('hora_fin', 'VARCHAR'),
+                              ('modificada', 'BOOLEAN DEFAULT FALSE')]:
+                if col not in cols:
+                    db.execute(text(f"ALTER TABLE asignaciones ADD COLUMN {col} {tipo}"))
+                    db.commit()
+                    resultado.append(f"✅ Columna {col} agregada")
+        
+        # 2. Crear tablas que falten
+        Base.metadata.create_all(bind=engine)
+        resultado.append("OK tablas verificadas")
+        
+        # 3. Cargar datos
+        try:
+            from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+            
+            # Sedes
+            nuevas_sedes = 0
+            for nombre, color in SEDES:
+                if not db.query(Sede).filter(Sede.nombre == nombre).first():
+                    db.add(Sede(nombre=nombre, color=color))
+                    nuevas_sedes += 1
+            if nuevas_sedes > 0:
+                db.commit()
+                resultado.append(f"✅ {nuevas_sedes} sedes nuevas")
+            
+            # Cátedras
+            total_cat = db.query(Catedra).count()
+            if total_cat < 10:
+                for codigo, nombre in CATEDRAS:
+                    if not db.query(Catedra).filter(Catedra.codigo == codigo).first():
+                        db.add(Catedra(codigo=codigo, nombre=nombre))
+                db.commit()
+                nuevo_total = db.query(Catedra).count()
+                resultado.append(f"✅ Cátedras: {total_cat} → {nuevo_total}")
+            else:
+                resultado.append(f"OK {total_cat} cátedras ya existen")
+            
+            # Cursos
+            total_cur = db.query(Curso).count()
+            if total_cur < 10:
+                for sede_nombre, nombre in CURSOS:
+                    if not db.query(Curso).filter(Curso.nombre == nombre).first():
+                        sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first()
+                        db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None))
+                db.commit()
+                nuevo_total = db.query(Curso).count()
+                resultado.append(f"✅ Cursos: {total_cur} → {nuevo_total}")
+            else:
+                resultado.append(f"OK {total_cur} cursos ya existen")
+            
+            # Docentes
+            total_doc = db.query(Docente).count()
+            if total_doc < 5:
+                for dni, nombre, apellido in DOCENTES:
+                    if not db.query(Docente).filter(Docente.dni == dni).first():
+                        db.add(Docente(dni=dni, nombre=nombre, apellido=apellido))
+                db.commit()
+                nuevo_total = db.query(Docente).count()
+                resultado.append(f"✅ Docentes: {total_doc} → {nuevo_total}")
+            else:
+                resultado.append(f"OK {total_doc} docentes ya existen")
+            
+            # Cuatrimestres
+            if not db.query(Cuatrimestre).first():
+                db.add(Cuatrimestre(nombre="1er Cuatrimestre 2026", anio=2026, numero=1, activo=True))
+                db.add(Cuatrimestre(nombre="2do Cuatrimestre 2026", anio=2026, numero=2, activo=False))
+                db.commit()
+                resultado.append("✅ Cuatrimestres creados")
+        
+        except ImportError:
+            resultado.append("⚠️ seed_data.py no encontrado")
+    
+    except Exception as e:
+        resultado.append(f"❌ Error: {str(e)}")
+    
+    return {"resultado": resultado}
+
 @app.post("/api/login")
 def login(data: dict):
     if data.get("clave", "") == CLAVE_ACCESO:
