@@ -44,7 +44,7 @@ async function apiFetch(endpoint, options = {}) {
 }
 
 // ============ SIDEBAR ============
-function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, solapamientosCount }) {
+function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount }) {
   const menuItems = [
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
@@ -58,15 +58,16 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v3.1</p>
+        <p className="text-slate-500 text-sm">Sistema v3.2</p>
       </div>
       <div className="mb-6 px-2">
         <label className="text-xs text-slate-400 block mb-1">Ver cuatrimestre</label>
         <select className="w-full bg-slate-800 text-white rounded px-3 py-2 text-sm border border-slate-700"
           value={cuatrimestre} onChange={e => setCuatrimestre(e.target.value)}>
-          <option value="todos">Todos</option>
-          <option value="1">1er Cuatrimestre 2026</option>
-          <option value="2">2do Cuatrimestre 2026</option>
+          <option value="todos">Todos los cuatrimestres</option>
+          {(cuatrimestres || []).map(c => (
+            <option key={c.id} value={c.id}>{c.nombre}</option>
+          ))}
         </select>
       </div>
       <nav className="flex-1 space-y-1">
@@ -82,8 +83,8 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
         ))}
       </nav>
       <div className="mt-4 p-3 bg-slate-800/50 rounded-lg">
-        <p className="text-xs text-slate-400 mb-2">Sedes</p>
-        {sedes.map(s => (
+        <p className="text-xs text-slate-400 mb-2">Sedes operativas</p>
+        {sedes.filter(s => ['Avellaneda','Caballito','Vicente Lopez','Vicente López','Online - Interior'].includes(s.nombre)).map(s => (
           <div key={s.id} className="flex items-center gap-2 mb-1">
             <div className={`w-2 h-2 rounded-full ${s.color || SEDE_COLORS[s.nombre] || 'bg-gray-500'}`}></div>
             <span className="text-[10px] text-slate-300">{s.nombre}</span>
@@ -95,19 +96,24 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
 }
 
 // ============ VISTA CÁTEDRAS ============
-function CatedrasView({ catedras, docentes, sedes, cuatrimestre, recargar }) {
+function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
   const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
   const [modalCatedra, setModalCatedra] = useState(null);
   const [paginaActual, setPaginaActual] = useState(1);
   const porPagina = 20;
 
   const catedrasFiltradas = useMemo(() => {
+    const sortNum = (a, b) => {
+      const na = parseInt(a.codigo.replace(/[^0-9]/g, '')) || 0;
+      const nb = parseInt(b.codigo.replace(/[^0-9]/g, '')) || 0;
+      return na - nb;
+    };
     return catedras.filter(c => {
       if (filtros.buscar && !c.nombre.toLowerCase().includes(filtros.buscar.toLowerCase()) &&
           !c.codigo.toLowerCase().includes(filtros.buscar.toLowerCase())) return false;
       if (filtros.soloSinAsignar && c.asignaciones?.length > 0) return false;
       return true;
-    });
+    }).sort(sortNum);
   }, [catedras, filtros]);
 
   const totalPaginas = Math.ceil(catedrasFiltradas.length / porPagina);
@@ -220,24 +226,26 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, recargar }) {
         <button onClick={() => setPaginaActual(Math.min(totalPaginas, paginaActual + 1))} disabled={paginaActual >= totalPaginas} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">Siguiente →</button>
       </div>
       {/* Modal */}
-      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} onClose={() => setModalCatedra(null)} recargar={recargar} />}
+      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
     </div>
   );
 }
 
 // ============ MODAL ASIGNAR DESDE CÁTEDRA ============
-function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, onClose, recargar }) {
-  const [form, setForm] = useState({ docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
+function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
+  const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
+  const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
   const [error, setError] = useState('');
 
   const crear = async () => {
     setError('');
+    if (!form.cuatrimestre_id) { setError('Seleccioná un cuatrimestre'); return; }
     try {
       await apiFetch('/api/asignaciones', {
         method: 'POST',
         body: JSON.stringify({
           catedra_id: catedra.id,
-          cuatrimestre_id: parseInt(cuatrimestre) || 1,
+          cuatrimestre_id: parseInt(form.cuatrimestre_id),
           docente_id: form.docente_id ? parseInt(form.docente_id) : null,
           modalidad: form.modalidad,
           sede_id: form.sede_id ? parseInt(form.sede_id) : null,
@@ -256,6 +264,10 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, onClose, 
         <h3 className="text-lg font-bold mb-2">Agregar Asignación</h3>
         <p className="text-slate-600 mb-4">{catedra.codigo} - {catedra.nombre}</p>
         <div className="space-y-3">
+          <div><label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
+            <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50" value={form.cuatrimestre_id} onChange={e => setForm({...form, cuatrimestre_id: e.target.value})}>
+              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            </select></div>
           <div><label className="text-sm text-slate-600">Docente:</label>
             <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
               <option value="">Sin asignar</option>
@@ -304,12 +316,21 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, onClose, 
 // ============ VISTA DOCENTES ============
 function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
   const [modalSedes, setModalSedes] = useState(null);
+  const [modalEditar, setModalEditar] = useState(null);
+  const [modalNuevo, setModalNuevo] = useState(false);
+  const [buscar, setBuscar] = useState('');
 
   const stats = useMemo(() => {
     const s = { PRESENCIAL_VIRTUAL: 0, SEDE_VIRTUAL: 0, REMOTO: 0, SIN_ASIGNACIONES: 0 };
     docentes.forEach(d => { if (s[d.tipo_modalidad] !== undefined) s[d.tipo_modalidad]++; });
     return s;
   }, [docentes]);
+
+  const docentesFiltrados = useMemo(() => {
+    if (!buscar) return docentes;
+    const b = buscar.toLowerCase();
+    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b) || d.dni.includes(b));
+  }, [docentes, buscar]);
 
   const guardarSedes = async (docenteId, sedeIds) => {
     try {
@@ -318,10 +339,35 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
     } catch (e) { alert(e.message); }
   };
 
+  const guardarDocente = async (docenteId, data) => {
+    try {
+      await apiFetch(`/api/docentes/${docenteId}`, { method: 'PUT', body: JSON.stringify(data) });
+      recargar(); setModalEditar(null);
+    } catch (e) { alert(e.message); }
+  };
+
+  const crearDocente = async (data) => {
+    try {
+      await apiFetch('/api/docentes', { method: 'POST', body: JSON.stringify(data) });
+      recargar(); setModalNuevo(false);
+    } catch (e) { alert(e.message); }
+  };
+
+  const eliminarDocente = async (d) => {
+    if (!window.confirm(`¿Eliminar a ${d.nombre} ${d.apellido} (DNI: ${d.dni})? Esta acción no se puede deshacer.`)) return;
+    try {
+      await apiFetch(`/api/docentes/${d.id}`, { method: 'DELETE' });
+      recargar();
+    } catch (e) { alert(e.message); }
+  };
+
   return (
     <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Docentes</h2>
-        <p className="text-slate-500 text-sm">Tipo deducido automáticamente de las asignaciones</p></div>
+      <div className="flex justify-between items-center mb-6">
+        <div><h2 className="text-2xl font-bold text-slate-800">Docentes</h2>
+          <p className="text-slate-500 text-sm">Tipo deducido automáticamente de las asignaciones</p></div>
+        <button onClick={() => setModalNuevo(true)} className="px-4 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium hover:bg-amber-400">+ Agregar Docente</button>
+      </div>
       <div className="grid grid-cols-4 gap-4 mb-6">
         {Object.entries(TIPO_DOCENTE_CONFIG).map(([key, cfg]) => (
           <div key={key} className={`p-4 rounded-xl border ${cfg.bg}`}>
@@ -330,6 +376,10 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           </div>
         ))}
       </div>
+      <div className="bg-white rounded-xl border p-3 mb-4">
+        <input type="text" placeholder="Buscar por nombre, apellido o DNI..." className="w-full px-3 py-2 border rounded-lg text-sm"
+          value={buscar} onChange={e => setBuscar(e.target.value)} />
+      </div>
       <div className="bg-white rounded-xl border shadow-sm">
         <table className="w-full">
           <thead><tr className="bg-slate-50 border-b">
@@ -337,16 +387,18 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-center p-4 text-sm font-semibold">Tipo</th>
             <th className="text-center p-4 text-sm font-semibold">Sedes</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
+            <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
           <tbody>
-            {docentes.map(d => {
+            {docentesFiltrados.map(d => {
               const tipoCfg = TIPO_DOCENTE_CONFIG[d.tipo_modalidad] || TIPO_DOCENTE_CONFIG.SIN_ASIGNACIONES;
               return (
                 <tr key={d.id} className="border-b hover:bg-slate-50">
                   <td className="p-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold">{d.nombre[0]}{d.apellido[0]}</div>
-                      <div><p className="font-medium">{d.nombre} {d.apellido}</p><p className="text-xs text-slate-500">DNI: {d.dni}</p></div>
+                      <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">{(d.nombre||'?')[0]}{(d.apellido||'?')[0]}</div>
+                      <div><p className="font-medium">{d.nombre} {d.apellido}</p><p className="text-xs text-slate-500">DNI: {d.dni}</p>
+                        {d.email && <p className="text-xs text-slate-400">{d.email}</p>}</div>
                     </div>
                   </td>
                   <td className="p-4 text-center"><span className={`px-3 py-1 rounded-full text-xs font-medium ${tipoCfg.bg} ${tipoCfg.color}`}>{tipoCfg.icon} {tipoCfg.label}</span></td>
@@ -355,7 +407,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                       {d.sedes?.length > 0 ? d.sedes.map(s => <span key={s.id} className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}>{s.nombre}</span>)
                         : <span className="text-slate-400 text-xs">Sin sedes</span>}
                     </div>
-                    <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar</button>
+                    <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -364,9 +416,14 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                         <span className={mod.color}>{mod.icon}</span>
                         <span className="font-mono bg-slate-100 px-1 rounded text-xs">{a.catedra_codigo}</span>
                         <span className="text-slate-500 text-xs">{a.dia||''} {a.hora_inicio||''}</span>
-                        {a.recibe_alumnos_presenciales && <span>👥</span>}
                       </div>);
                     }) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
+                  </td>
+                  <td className="p-4 text-center">
+                    <div className="flex gap-1 justify-center">
+                      <button onClick={() => setModalEditar(d)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">✏️ Editar</button>
+                      <button onClick={() => eliminarDocente(d)} className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200">🗑️</button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -374,7 +431,61 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           </tbody>
         </table>
       </div>
+      <p className="text-sm text-slate-500 mt-3 text-center">{docentesFiltrados.length} docentes</p>
       {modalSedes && <ModalEditarSedes docente={modalSedes} sedes={sedes} onSave={guardarSedes} onClose={() => setModalSedes(null)} />}
+      {modalEditar && <ModalEditarDocente docente={modalEditar} onSave={guardarDocente} onClose={() => setModalEditar(null)} />}
+      {modalNuevo && <ModalNuevoDocente onSave={crearDocente} onClose={() => setModalNuevo(false)} />}
+    </div>
+  );
+}
+
+function ModalEditarDocente({ docente, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: docente.nombre, apellido: docente.apellido, dni: docente.dni, email: docente.email || '' });
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-bold mb-4">Editar Docente</h3>
+        <div className="space-y-3">
+          <div><label className="text-sm text-slate-600">DNI</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dni} onChange={e => setForm({...form, dni: e.target.value})} /></div>
+          <div><label className="text-sm text-slate-600">Nombre</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.nombre} onChange={e => setForm({...form, nombre: e.target.value})} /></div>
+          <div><label className="text-sm text-slate-600">Apellido</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.apellido} onChange={e => setForm({...form, apellido: e.target.value})} /></div>
+          <div><label className="text-sm text-slate-600">Email</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.email} onChange={e => setForm({...form, email: e.target.value})} /></div>
+        </div>
+        <div className="flex gap-2 mt-4">
+          <button onClick={() => onSave(docente.id, form)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
+          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalNuevoDocente({ onSave, onClose }) {
+  const [form, setForm] = useState({ dni: '', nombre: '', apellido: '', email: '' });
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-bold mb-4">Agregar Docente</h3>
+        <div className="space-y-3">
+          <div><label className="text-sm text-slate-600">DNI *</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dni} onChange={e => setForm({...form, dni: e.target.value})} placeholder="Ej: 20345678" /></div>
+          <div><label className="text-sm text-slate-600">Nombre *</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.nombre} onChange={e => setForm({...form, nombre: e.target.value})} /></div>
+          <div><label className="text-sm text-slate-600">Apellido *</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.apellido} onChange={e => setForm({...form, apellido: e.target.value})} /></div>
+          <div><label className="text-sm text-slate-600">Email</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.email} onChange={e => setForm({...form, email: e.target.value})} /></div>
+        </div>
+        <div className="flex gap-2 mt-4">
+          <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }} 
+            className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Crear</button>
+          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -701,7 +812,7 @@ function LoginScreen({ onLogin }) {
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios v3.1</p>
+          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios v3.2</p>
         </div>
         <div className="space-y-4">
           <div>
@@ -725,10 +836,11 @@ function LoginScreen({ onLogin }) {
 export default function App() {
   const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
   const [activeView, setActiveView] = useState('catedras');
-  const [cuatrimestre, setCuatrimestre] = useState('1');
+  const [cuatrimestre, setCuatrimestre] = useState('todos');
   const [catedras, setCatedras] = useState([]);
   const [docentes, setDocentes] = useState([]);
   const [sedes, setSedes] = useState([]);
+  const [cuatrimestres, setCuatrimestres] = useState([]);
   const [solapamientos, setSolapamientos] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -736,8 +848,8 @@ export default function App() {
     const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
     const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
     
-    // Cargar cada dato independientemente - si uno falla, los demás siguen
     try { const r = await apiFetch('/api/sedes'); setSedes(r); } catch (e) { console.error('Sedes:', e); }
+    try { const r = await apiFetch('/api/cuatrimestres'); setCuatrimestres(r); } catch (e) { console.error('Cuats:', e); }
     try { const r = await apiFetch(`/api/catedras${qParam}`); setCatedras(r); } catch (e) { console.error('Cátedras:', e); }
     try { const r = await apiFetch(`/api/docentes${qParam}`); setDocentes(r); } catch (e) { console.error('Docentes:', e); }
     try { const r = await apiFetch(`/api/horarios/solapamientos${qParam}`); setSolapamientos(r); } catch (e) { console.error('Solapamientos:', e); }
@@ -753,9 +865,9 @@ export default function App() {
   return (
     <div className="flex min-h-screen bg-slate-100">
       <Sidebar activeView={activeView} setActiveView={setActiveView} cuatrimestre={cuatrimestre}
-        setCuatrimestre={setCuatrimestre} sedes={sedes} solapamientosCount={solapamientos.length} />
+        setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres} solapamientosCount={solapamientos.length} />
       <main className="flex-1 overflow-auto">
-        {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
+        {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
