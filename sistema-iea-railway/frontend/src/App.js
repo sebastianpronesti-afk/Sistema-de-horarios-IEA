@@ -584,9 +584,24 @@ function ImportarView({ recargar }) {
     },
     {
       id: 'docentes', icon: '👨‍🏫', titulo: 'Importar Docentes',
-      desc: 'Excel con columnas: DNI, Nombre, Apellido, Email',
-      ejemplo: 'Ej: | 20345678 | María | García | maria@iea.edu |',
+      desc: 'Excel: DNI + "APELLIDO, NOMBRE" ó DNI/Nombre/Apellido/Email',
+      ejemplo: 'Ej: | 20345678 | GARCÍA, MARÍA |',
       endpoint: '/api/importar/docentes', color: 'bg-amber-500 text-slate-900',
+    },
+  ];
+
+  const importadoresFuturos = [
+    {
+      id: 'catedra-cursos', icon: '🔗', titulo: 'Vincular Cátedras ↔ Cursos',
+      desc: 'Excel: Código | Materia (c.XX Nombre - Turno) | Curso | Sede',
+      ejemplo: 'Ej: | 1 | c.1 Administración - Mañana | Marketing (Avellaneda) | Avellaneda |',
+      endpoint: '/api/importar/catedra-cursos', color: 'bg-teal-600 text-white',
+    },
+    {
+      id: 'links-meet', icon: '📹', titulo: 'Importar Links de Meet',
+      desc: 'Excel: Código de cátedra + Link de Google Meet',
+      ejemplo: 'Ej: | c.1 | https://meet.google.com/xxx |',
+      endpoint: '/api/importar/links-meet', color: 'bg-green-600 text-white',
     },
   ];
 
@@ -596,9 +611,25 @@ function ImportarView({ recargar }) {
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
         <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
       </div>
-      <div className="grid grid-cols-3 gap-6 mb-6">
+      <h3 className="font-semibold text-slate-600 mb-3">Datos base</h3>
+      <div className="grid grid-cols-3 gap-6 mb-8">
         {importadores.map(imp => (
           <div key={imp.id} className="bg-white rounded-xl border p-6">
+            <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
+            <p className="text-sm text-slate-500 mb-1">{imp.desc}</p>
+            <p className="text-xs text-slate-400 mb-4 font-mono">{imp.ejemplo}</p>
+            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)}
+              disabled={uploading === imp.titulo}
+              className={`w-full py-2.5 rounded-lg font-medium disabled:opacity-50 ${imp.color}`}>
+              {uploading === imp.titulo ? '⏳ Importando...' : '📤 Subir Excel (.xlsx)'}
+            </button>
+          </div>
+        ))}
+      </div>
+      <h3 className="font-semibold text-slate-600 mb-3">Vinculaciones</h3>
+      <div className="grid grid-cols-2 gap-6 mb-6">
+        {importadoresFuturos.map(imp => (
+          <div key={imp.id} className="bg-white rounded-xl border p-6 border-dashed border-slate-300">
             <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
             <p className="text-sm text-slate-500 mb-1">{imp.desc}</p>
             <p className="text-xs text-slate-400 mb-4 font-mono">{imp.ejemplo}</p>
