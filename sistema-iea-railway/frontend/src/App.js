@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // ============ CONFIGURACIÓN API ============
-const API_URL = process.env.REACT_APP_API_URL || '';
+const API_URL = 'https://sistema-de-horarios-iea-production.up.railway.app';
 
 // ============ CONSTANTES ============
 const SEDE_COLORS = {
@@ -733,18 +733,15 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   const cargarDatos = useCallback(async () => {
-    try {
-      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
-      const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-      
-      const [catRes, docRes, sedesRes, solapRes] = await Promise.all([
-        apiFetch(`/api/catedras${qParam}`),
-        apiFetch(`/api/docentes${qParam}`),
-        apiFetch('/api/sedes'),
-        apiFetch(`/api/horarios/solapamientos${qParam}`),
-      ]);
-      setCatedras(catRes); setDocentes(docRes); setSedes(sedesRes); setSolapamientos(solapRes);
-    } catch (e) { console.error('Error cargando datos:', e); }
+    const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
+    const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+    
+    // Cargar cada dato independientemente - si uno falla, los demás siguen
+    try { const r = await apiFetch('/api/sedes'); setSedes(r); } catch (e) { console.error('Sedes:', e); }
+    try { const r = await apiFetch(`/api/catedras${qParam}`); setCatedras(r); } catch (e) { console.error('Cátedras:', e); }
+    try { const r = await apiFetch(`/api/docentes${qParam}`); setDocentes(r); } catch (e) { console.error('Docentes:', e); }
+    try { const r = await apiFetch(`/api/horarios/solapamientos${qParam}`); setSolapamientos(r); } catch (e) { console.error('Solapamientos:', e); }
+    
     setLoading(false);
   }, [cuatrimestre]);
 
