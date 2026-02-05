@@ -30,6 +30,9 @@ const TIPO_DOCENTE_CONFIG = {
 const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','18:00','19:00','20:00','21:00','22:00'];
 
+// Sedes que se muestran en dropdowns de asignación y edición
+const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente Lopez', 'Vicente López', 'Online - Interior'];
+
 // ============ FETCH HELPER ============
 async function apiFetch(endpoint, options = {}) {
   const res = await fetch(`${API_URL}${endpoint}`, {
@@ -47,6 +50,7 @@ async function apiFetch(endpoint, options = {}) {
 function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount }) {
   const menuItems = [
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
+    { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
@@ -281,7 +285,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
             <div><label className="text-sm text-slate-600">Sede física:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
                 <option value="">🏠 Remoto</option>
-                {sedes.filter(s => s.nombre !== 'Remoto').map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
               </select></div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -498,7 +502,7 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
       <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
         <h3 className="text-lg font-bold mb-4">Editar Sedes: {docente.nombre} {docente.apellido}</h3>
         <div className="space-y-2 mb-4">
-          {sedes.filter(s => s.nombre !== 'Remoto').map(s => (
+          {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
             <label key={s.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${sel.includes(s.id) ? 'border-amber-500 bg-amber-50' : 'hover:bg-slate-50'}`}>
               <input type="checkbox" checked={sel.includes(s.id)} onChange={() => toggle(s.id)} />
               <span className={`w-3 h-3 rounded-full ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}></span>
@@ -545,7 +549,7 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
         <div><label className="text-sm text-slate-600 font-medium">Sede:</label>
           <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
             <option value="">Todas</option>
-            {sedes.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+            {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
             <option value="remoto">🏠 Solo Remotos</option>
           </select></div>
         <div><label className="text-sm text-slate-600 font-medium">Docente:</label>
@@ -648,6 +652,110 @@ function SolapamientosView({ solapamientos }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============ VISTA CURSOS ============
+function CursosView({ cursos, sedes, recargar }) {
+  const [buscar, setBuscar] = useState('');
+  const [filtroSede, setFiltroSede] = useState('');
+  const [expandido, setExpandido] = useState(null);
+
+  const cursosFiltrados = useMemo(() => {
+    return cursos.filter(c => {
+      if (buscar && !c.nombre.toLowerCase().includes(buscar.toLowerCase())) return false;
+      if (filtroSede && c.sede_id !== parseInt(filtroSede)) return false;
+      return true;
+    });
+  }, [cursos, buscar, filtroSede]);
+
+  const stats = useMemo(() => {
+    const porSede = {};
+    cursos.forEach(c => {
+      const sede = c.sede_nombre || 'Sin sede';
+      porSede[sede] = (porSede[sede] || 0) + 1;
+    });
+    return { total: cursos.length, conCatedras: cursos.filter(c => c.cant_catedras > 0).length, porSede };
+  }, [cursos]);
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">Cursos / Carreras</h2>
+        <p className="text-slate-500 text-sm">Cursos vinculados a cátedras. Importá desde la sección Importar.</p>
+      </div>
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="bg-white rounded-xl border p-4 text-center">
+          <p className="text-slate-500 text-xs">Total Cursos</p>
+          <p className="text-2xl font-bold">{stats.total}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4 text-center">
+          <p className="text-slate-500 text-xs">Con Cátedras Vinculadas</p>
+          <p className="text-2xl font-bold text-emerald-600">{stats.conCatedras}</p>
+        </div>
+        <div className="bg-white rounded-xl border p-4 text-center">
+          <p className="text-slate-500 text-xs">Sin Cátedras</p>
+          <p className="text-2xl font-bold text-orange-600">{stats.total - stats.conCatedras}</p>
+        </div>
+      </div>
+      <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
+        <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm"
+          value={buscar} onChange={e => setBuscar(e.target.value)} />
+        <select className="border rounded-lg px-3 py-2 text-sm" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
+          <option value="">Todas las sedes</option>
+          {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+        </select>
+      </div>
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full">
+          <thead><tr className="bg-slate-50 border-b">
+            <th className="text-left p-4 text-sm font-semibold">Curso / Carrera</th>
+            <th className="text-center p-4 text-sm font-semibold">Sede</th>
+            <th className="text-center p-4 text-sm font-semibold">Cátedras</th>
+            <th className="text-center p-4 text-sm font-semibold w-24">Ver</th>
+          </tr></thead>
+          <tbody>
+            {cursosFiltrados.map(c => (
+              <React.Fragment key={c.id}>
+                <tr className="border-b hover:bg-slate-50">
+                  <td className="p-4"><span className="font-medium">{c.nombre}</span></td>
+                  <td className="p-4 text-center">
+                    {c.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[c.sede_nombre]||'bg-gray-500'}`}>{c.sede_nombre}</span>
+                      : <span className="text-slate-400 text-xs">Sin sede</span>}
+                  </td>
+                  <td className="p-4 text-center">
+                    <span className={`text-lg font-bold ${c.cant_catedras > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{c.cant_catedras}</span>
+                  </td>
+                  <td className="p-4 text-center">
+                    {c.cant_catedras > 0 && (
+                      <button onClick={() => setExpandido(expandido === c.id ? null : c.id)}
+                        className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">
+                        {expandido === c.id ? '▲ Ocultar' : '▼ Ver cátedras'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                {expandido === c.id && c.catedras?.length > 0 && (
+                  <tr><td colSpan="4" className="bg-slate-50 px-8 py-3">
+                    <p className="text-xs text-slate-500 mb-2 font-medium">Cátedras de {c.nombre}:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {c.catedras.map(cat => (
+                        <span key={cat.id} className="px-3 py-1 bg-white border rounded-lg text-sm">
+                          <span className="font-mono bg-slate-800 text-white px-1 rounded text-xs mr-1">{cat.catedra_codigo}</span>
+                          {cat.catedra_nombre}
+                          {cat.turno && <span className="text-slate-400 ml-1">({cat.turno})</span>}
+                        </span>
+                      ))}
+                    </div>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-sm text-slate-500 mt-3 text-center">{cursosFiltrados.length} cursos</p>
     </div>
   );
 }
@@ -838,6 +946,7 @@ export default function App() {
   const [activeView, setActiveView] = useState('catedras');
   const [cuatrimestre, setCuatrimestre] = useState('todos');
   const [catedras, setCatedras] = useState([]);
+  const [cursos, setCursos] = useState([]);
   const [docentes, setDocentes] = useState([]);
   const [sedes, setSedes] = useState([]);
   const [cuatrimestres, setCuatrimestres] = useState([]);
@@ -851,6 +960,7 @@ export default function App() {
     try { const r = await apiFetch('/api/sedes'); setSedes(r); } catch (e) { console.error('Sedes:', e); }
     try { const r = await apiFetch('/api/cuatrimestres'); setCuatrimestres(r); } catch (e) { console.error('Cuats:', e); }
     try { const r = await apiFetch(`/api/catedras${qParam}`); setCatedras(r); } catch (e) { console.error('Cátedras:', e); }
+    try { const r = await apiFetch('/api/cursos'); setCursos(r); } catch (e) { console.error('Cursos:', e); }
     try { const r = await apiFetch(`/api/docentes${qParam}`); setDocentes(r); } catch (e) { console.error('Docentes:', e); }
     try { const r = await apiFetch(`/api/horarios/solapamientos${qParam}`); setSolapamientos(r); } catch (e) { console.error('Solapamientos:', e); }
     
@@ -868,6 +978,7 @@ export default function App() {
         setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres} solapamientosCount={solapamientos.length} />
       <main className="flex-1 overflow-auto">
         {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
