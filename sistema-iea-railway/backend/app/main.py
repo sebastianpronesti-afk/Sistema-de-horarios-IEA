@@ -139,6 +139,39 @@ def reparar_bd(db: Session = Depends(get_db)):
         Base.metadata.create_all(bind=engine)
         resultado.append("OK tablas verificadas")
         
+        # 2.5 Limpiar sedes duplicadas (Vicente Lopez / Vicente López)
+        try:
+            sede_sin_tilde = db.query(Sede).filter(Sede.nombre == "Vicente Lopez").first()
+            sede_con_tilde = db.query(Sede).filter(Sede.nombre == "Vicente López").first()
+            
+            if sede_sin_tilde and sede_con_tilde:
+                # Mover todo a "Vicente López" (con tilde) y eliminar la otra
+                keeper = sede_con_tilde
+                dupe = sede_sin_tilde
+                
+                # Mover cursos
+                db.execute(text(f"UPDATE cursos SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                # Mover asignaciones
+                db.execute(text(f"UPDATE asignaciones SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                # Mover docente_sede
+                db.execute(text(f"DELETE FROM docente_sede WHERE sede_id = {dupe.id} AND docente_id IN (SELECT docente_id FROM docente_sede WHERE sede_id = {keeper.id})"))
+                db.execute(text(f"UPDATE docente_sede SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                # Mover catedra_curso
+                if 'catedra_curso' in inspector.get_table_names():
+                    db.execute(text(f"UPDATE catedra_curso SET sede_id = {keeper.id} WHERE sede_id = {dupe.id}"))
+                # Eliminar duplicada
+                db.execute(text(f"DELETE FROM sedes WHERE id = {dupe.id}"))
+                db.commit()
+                resultado.append(f"✅ Sedes fusionadas: 'Vicente Lopez' → 'Vicente López' (id {keeper.id})")
+            elif sede_sin_tilde and not sede_con_tilde:
+                sede_sin_tilde.nombre = "Vicente López"
+                db.commit()
+                resultado.append("✅ Sede renombrada a 'Vicente López'")
+            else:
+                resultado.append("OK Vicente López sin duplicados")
+        except Exception as e:
+            resultado.append(f"⚠️ Limpieza sedes: {str(e)}")
+        
         # 3. Cargar datos
         try:
             from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
