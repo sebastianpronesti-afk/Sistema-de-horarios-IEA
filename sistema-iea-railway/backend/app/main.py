@@ -229,38 +229,58 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     catedras = db.query(Catedra).order_by(Catedra.codigo).all()
     result = []
     for cat in catedras:
-        asigs = cat.asignaciones
-        if cuatrimestre_id:
-            asigs = [a for a in asigs if a.cuatrimestre_id == cuatrimestre_id]
-        
-        inscrip = cat.inscripciones
-        if cuatrimestre_id:
-            inscrip = [i for i in inscrip if i.cuatrimestre_id == cuatrimestre_id]
-        
-        # Cursos vinculados
-        cursos_vinc = []
-        for cc in (cat.cursos or []):
-            cursos_vinc.append({
-                "id": cc.id, "curso_id": cc.curso_id,
-                "curso_nombre": cc.curso.nombre if cc.curso else None,
-                "turno": cc.turno,
-                "sede_nombre": cc.sede.nombre if cc.sede else None,
+        try:
+            asigs = []
+            try:
+                all_asigs = cat.asignaciones or []
+                if cuatrimestre_id:
+                    all_asigs = [a for a in all_asigs if a.cuatrimestre_id == cuatrimestre_id]
+                for a in all_asigs:
+                    asigs.append({
+                        "id": a.id, "modalidad": a.modalidad, "dia": a.dia,
+                        "hora_inicio": a.hora_inicio, "hora_fin": a.hora_fin,
+                        "sede_id": a.sede_id,
+                        "sede_nombre": a.sede.nombre if a.sede else None,
+                        "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
+                        "docente": {"id": a.docente.id, "nombre": f"{a.docente.nombre} {a.docente.apellido}"} if a.docente else None,
+                    })
+            except Exception:
+                pass
+            
+            inscriptos = 0
+            try:
+                inscrip = cat.inscripciones or []
+                if cuatrimestre_id:
+                    inscrip = [i for i in inscrip if i.cuatrimestre_id == cuatrimestre_id]
+                inscriptos = len(inscrip)
+            except Exception:
+                pass
+            
+            cursos_vinc = []
+            try:
+                for cc in (cat.cursos or []):
+                    cursos_vinc.append({
+                        "id": cc.id, "curso_id": cc.curso_id,
+                        "curso_nombre": cc.curso.nombre if cc.curso else None,
+                        "turno": cc.turno,
+                        "sede_nombre": cc.sede.nombre if cc.sede else None,
+                    })
+            except Exception:
+                pass
+            
+            result.append({
+                "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+                "link_meet": getattr(cat, 'link_meet', None),
+                "inscriptos": inscriptos,
+                "cursos_vinculados": cursos_vinc,
+                "asignaciones": asigs,
             })
-        
-        result.append({
-            "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
-            "link_meet": cat.link_meet,
-            "inscriptos": len(inscrip),
-            "cursos_vinculados": cursos_vinc,
-            "asignaciones": [{
-                "id": a.id, "modalidad": a.modalidad, "dia": a.dia,
-                "hora_inicio": a.hora_inicio, "hora_fin": a.hora_fin,
-                "sede_id": a.sede_id,
-                "sede_nombre": a.sede.nombre if a.sede else None,
-                "recibe_alumnos_presenciales": a.recibe_alumnos_presenciales,
-                "docente": {"id": a.docente.id, "nombre": f"{a.docente.nombre} {a.docente.apellido}"} if a.docente else None,
-            } for a in asigs]
-        })
+        except Exception:
+            result.append({
+                "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+                "link_meet": None, "inscriptos": 0,
+                "cursos_vinculados": [], "asignaciones": [],
+            })
     return result
 
 @app.get("/api/catedras/stats")
@@ -369,24 +389,44 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     docentes = db.query(Docente).order_by(Docente.apellido).all()
     result = []
     for d in docentes:
-        asigs = d.asignaciones
-        if cuatrimestre_id:
-            asigs = [a for a in asigs if a.cuatrimestre_id == cuatrimestre_id]
-        
-        result.append({
-            "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
-            "email": d.email,
-            "tipo_modalidad": calcular_tipo_modalidad(d, db),
-            "sedes": [{"id": ds.sede.id, "nombre": ds.sede.nombre} for ds in d.sedes if ds.sede],
-            "asignaciones": [{
-                "id": a.id, "modalidad": a.modalidad, "dia": a.dia,
-                "hora_inicio": a.hora_inicio,
-                "catedra_codigo": a.catedra.codigo if a.catedra else None,
-                "catedra_nombre": a.catedra.nombre if a.catedra else None,
-                "sede_nombre": a.sede.nombre if a.sede else None,
-                "recibe_alumnos_presenciales": a.recibe_alumnos_presenciales,
-            } for a in asigs]
-        })
+        try:
+            asigs_data = []
+            sedes_data = []
+            tipo = "SIN_ASIGNACIONES"
+            
+            try:
+                all_asigs = d.asignaciones or []
+                if cuatrimestre_id:
+                    all_asigs = [a for a in all_asigs if a.cuatrimestre_id == cuatrimestre_id]
+                for a in all_asigs:
+                    asigs_data.append({
+                        "id": a.id, "modalidad": a.modalidad, "dia": a.dia,
+                        "hora_inicio": a.hora_inicio,
+                        "catedra_codigo": a.catedra.codigo if a.catedra else None,
+                        "catedra_nombre": a.catedra.nombre if a.catedra else None,
+                        "sede_nombre": a.sede.nombre if a.sede else None,
+                        "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
+                    })
+                tipo = calcular_tipo_modalidad(d, db)
+            except Exception:
+                pass
+            
+            try:
+                sedes_data = [{"id": ds.sede.id, "nombre": ds.sede.nombre} for ds in (d.sedes or []) if ds.sede]
+            except Exception:
+                pass
+            
+            result.append({
+                "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
+                "email": d.email, "tipo_modalidad": tipo,
+                "sedes": sedes_data, "asignaciones": asigs_data,
+            })
+        except Exception:
+            result.append({
+                "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
+                "email": d.email, "tipo_modalidad": "SIN_ASIGNACIONES",
+                "sedes": [], "asignaciones": [],
+            })
     return result
 
 @app.post("/api/docentes")
