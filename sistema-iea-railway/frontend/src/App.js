@@ -1,12 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
-// ============ CONFIGURACIÓN API ============
-// Vacío = usa el proxy del server.js (mismo dominio, sin CORS)
 const API_URL = '';
 
-// ============ CONSTANTES ============
 const SEDE_COLORS = {
-  'Online - Interior': 'bg-purple-500', 'Online - Exterior': 'bg-violet-500', 
+  'Online - Interior': 'bg-purple-500', 'Online - Exterior': 'bg-violet-500',
   'Online - Cursos': 'bg-fuchsia-500', 'Online': 'bg-purple-400',
   'Avellaneda': 'bg-blue-500', 'Caballito': 'bg-emerald-500',
   'Vicente Lopez': 'bg-amber-500', 'Vicente López': 'bg-amber-500', 'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
@@ -30,11 +27,8 @@ const TIPO_DOCENTE_CONFIG = {
 
 const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','18:00','19:00','20:00','21:00','22:00'];
-
-// Sedes que se muestran en dropdowns de asignación y edición
 const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
 
-// ============ FETCH HELPER ============
 async function apiFetch(endpoint, options = {}) {
   const res = await fetch(`${API_URL}${endpoint}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -47,7 +41,6 @@ async function apiFetch(endpoint, options = {}) {
   return res.json();
 }
 
-// ============ SIDEBAR ============
 function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount }) {
   const menuItems = [
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
@@ -58,12 +51,11 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
   ];
-
   return (
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v3.2</p>
+        <p className="text-slate-500 text-sm">Sistema v3.3</p>
       </div>
       <div className="mb-6 px-2">
         <label className="text-xs text-slate-400 block mb-1">Ver cuatrimestre</label>
@@ -100,7 +92,6 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
   );
 }
 
-// ============ VISTA CÁTEDRAS ============
 function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
   const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
   const [modalCatedra, setModalCatedra] = useState(null);
@@ -144,7 +135,6 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
-      {/* KPIs */}
       <div className="grid grid-cols-6 gap-3 mb-6">
         {[
           { label: 'Total Cátedras', val: stats.total, color: '' },
@@ -160,7 +150,6 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
           </div>
         ))}
       </div>
-      {/* Filtros */}
       <div className="flex gap-3 mb-4 bg-white p-4 rounded-xl border items-center">
         <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
           value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
@@ -171,7 +160,6 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
         </label>
         <span className="text-sm text-slate-500">{catedrasFiltradas.length} cátedras | Pág {paginaActual}/{totalPaginas||1}</span>
       </div>
-      {/* Tabla */}
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full">
           <thead><tr className="bg-slate-50 border-b">
@@ -225,18 +213,15 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
           </tbody>
         </table>
       </div>
-      {/* Paginación */}
       <div className="flex justify-center gap-2 mt-4">
         <button onClick={() => setPaginaActual(Math.max(1, paginaActual - 1))} disabled={paginaActual === 1} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">← Anterior</button>
         <button onClick={() => setPaginaActual(Math.min(totalPaginas, paginaActual + 1))} disabled={paginaActual >= totalPaginas} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">Siguiente →</button>
       </div>
-      {/* Modal */}
       {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
     </div>
   );
 }
 
-// ============ MODAL ASIGNAR DESDE CÁTEDRA ============
 function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
   const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
   const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
@@ -318,7 +303,6 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
   );
 }
 
-// ============ VISTA DOCENTES ============
 function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
   const [modalSedes, setModalSedes] = useState(null);
   const [modalEditar, setModalEditar] = useState(null);
@@ -486,7 +470,7 @@ function ModalNuevoDocente({ onSave, onClose }) {
             <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.email} onChange={e => setForm({...form, email: e.target.value})} /></div>
         </div>
         <div className="flex gap-2 mt-4">
-          <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }} 
+          <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }}
             className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Crear</button>
           <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
         </div>
@@ -520,49 +504,130 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
   );
 }
 
-// ============ VISTA CALENDARIO ============
+// ============ VISTA CALENDARIO (MEJORADA v3.3) ============
 function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   const [filtroSede, setFiltroSede] = useState('');
   const [filtroDocente, setFiltroDocente] = useState('');
   const [filtroCatedra, setFiltroCatedra] = useState('');
+  const [buscarDocente, setBuscarDocente] = useState('');
+  const [buscarCatedra, setBuscarCatedra] = useState('');
+  const [mostrarSugDoc, setMostrarSugDoc] = useState(false);
+  const [mostrarSugCat, setMostrarSugCat] = useState(false);
 
   const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).map(a => ({ ...a, cat_codigo: c.codigo, cat_nombre: c.nombre }))), [catedras]);
-  
-  const asigConHorario = useMemo(() => {
-    return allAsig.filter(a => a.dia && a.hora_inicio && a.docente).filter(a => {
+
+  const asigFiltradas = useMemo(() => {
+    return allAsig.filter(a => a.dia && a.hora_inicio).filter(a => {
       if (filtroSede === 'remoto') return !a.sede_id;
       if (filtroSede) return a.sede_id === parseInt(filtroSede);
       return true;
     }).filter(a => {
       if (filtroDocente) return a.docente?.id === parseInt(filtroDocente);
+      if (buscarDocente && !filtroDocente) {
+        const b = buscarDocente.toLowerCase();
+        if (!a.docente) return false;
+        return (a.docente.nombre || '').toLowerCase().includes(b);
+      }
       return true;
     }).filter(a => {
       if (filtroCatedra) return a.cat_codigo === filtroCatedra;
+      if (buscarCatedra && !filtroCatedra) {
+        const b = buscarCatedra.toLowerCase();
+        return a.cat_codigo.toLowerCase().includes(b) || a.cat_nombre.toLowerCase().includes(b);
+      }
       return true;
     });
-  }, [allAsig, filtroSede, filtroDocente, filtroCatedra]);
+  }, [allAsig, filtroSede, filtroDocente, filtroCatedra, buscarDocente, buscarCatedra]);
+
+  const docentesSugeridos = useMemo(() => {
+    if (!buscarDocente || filtroDocente) return [];
+    const b = buscarDocente.toLowerCase();
+    return docentes.filter(d =>
+      d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b)
+    ).slice(0, 8);
+  }, [docentes, buscarDocente, filtroDocente]);
+
+  const catedrasSugeridas = useMemo(() => {
+    if (!buscarCatedra || filtroCatedra) return [];
+    const b = buscarCatedra.toLowerCase();
+    return catedras.filter(c =>
+      c.codigo.toLowerCase().includes(b) || c.nombre.toLowerCase().includes(b)
+    ).slice(0, 8);
+  }, [catedras, buscarCatedra, filtroCatedra]);
 
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Calendario</h2></div>
-      {/* Filtros */}
       <div className="bg-white rounded-xl border p-4 mb-6 grid grid-cols-3 gap-4">
-        <div><label className="text-sm text-slate-600 font-medium">Sede:</label>
+        {/* Filtro Sede */}
+        <div>
+          <label className="text-sm text-slate-600 font-medium">Sede:</label>
           <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
             <option value="">Todas</option>
             {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
             <option value="remoto">🏠 Solo Remotos</option>
-          </select></div>
-        <div><label className="text-sm text-slate-600 font-medium">Docente:</label>
-          <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroDocente} onChange={e => setFiltroDocente(e.target.value)}>
-            <option value="">Todos</option>
-            {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
-          </select></div>
-        <div><label className="text-sm text-slate-600 font-medium">Cátedra:</label>
-          <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroCatedra} onChange={e => setFiltroCatedra(e.target.value)}>
-            <option value="">Todas</option>
-            {catedras.map(c => <option key={c.id} value={c.codigo}>{c.codigo} - {c.nombre}</option>)}
-          </select></div>
+          </select>
+        </div>
+        {/* Filtro Docente con buscador */}
+        <div className="relative">
+          <label className="text-sm text-slate-600 font-medium">Docente:</label>
+          <input
+            type="text"
+            placeholder="Buscar por nombre..."
+            className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
+            value={buscarDocente}
+            onChange={e => { setBuscarDocente(e.target.value); setFiltroDocente(''); setMostrarSugDoc(true); }}
+            onFocus={() => setMostrarSugDoc(true)}
+            onBlur={() => setTimeout(() => setMostrarSugDoc(false), 150)}
+          />
+          {filtroDocente && (
+            <button onClick={() => { setBuscarDocente(''); setFiltroDocente(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>
+          )}
+          {mostrarSugDoc && docentesSugeridos.length > 0 && (
+            <div className="absolute z-20 w-full border rounded-lg bg-white shadow-lg mt-1 max-h-48 overflow-y-auto">
+              <div className="p-2 text-xs text-slate-400 border-b cursor-pointer hover:bg-slate-50"
+                onMouseDown={() => { setBuscarDocente(''); setFiltroDocente(''); setMostrarSugDoc(false); }}>
+                Ver todos los docentes
+              </div>
+              {docentesSugeridos.map(d => (
+                <div key={d.id} className="p-2 text-sm cursor-pointer hover:bg-amber-50"
+                  onMouseDown={() => { setFiltroDocente(d.id.toString()); setBuscarDocente(`${d.nombre} ${d.apellido}`); setMostrarSugDoc(false); }}>
+                  {d.nombre} {d.apellido}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Filtro Cátedra con buscador */}
+        <div className="relative">
+          <label className="text-sm text-slate-600 font-medium">Cátedra:</label>
+          <input
+            type="text"
+            placeholder="Buscar por código o nombre..."
+            className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
+            value={buscarCatedra}
+            onChange={e => { setBuscarCatedra(e.target.value); setFiltroCatedra(''); setMostrarSugCat(true); }}
+            onFocus={() => setMostrarSugCat(true)}
+            onBlur={() => setTimeout(() => setMostrarSugCat(false), 150)}
+          />
+          {filtroCatedra && (
+            <button onClick={() => { setBuscarCatedra(''); setFiltroCatedra(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>
+          )}
+          {mostrarSugCat && catedrasSugeridas.length > 0 && (
+            <div className="absolute z-20 w-full border rounded-lg bg-white shadow-lg mt-1 max-h-48 overflow-y-auto">
+              <div className="p-2 text-xs text-slate-400 border-b cursor-pointer hover:bg-slate-50"
+                onMouseDown={() => { setBuscarCatedra(''); setFiltroCatedra(''); setMostrarSugCat(false); }}>
+                Ver todas las cátedras
+              </div>
+              {catedrasSugeridas.map(c => (
+                <div key={c.id} className="p-2 text-sm cursor-pointer hover:bg-amber-50"
+                  onMouseDown={() => { setFiltroCatedra(c.codigo); setBuscarCatedra(`${c.codigo} - ${c.nombre}`); setMostrarSugCat(false); }}>
+                  <span className="font-mono text-xs bg-slate-800 text-white px-1 rounded mr-1">{c.codigo}</span>{c.nombre}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       {/* Grilla */}
       <div className="bg-white rounded-xl border shadow-sm overflow-auto mb-6">
@@ -576,15 +641,16 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
               <tr key={hora} className="border-b">
                 <td className="p-2 border-r bg-slate-50 font-medium text-center">{hora}</td>
                 {DIAS.map(dia => {
-                  const celdas = asigConHorario.filter(a => a.dia === dia && a.hora_inicio === hora);
+                  const celdas = asigFiltradas.filter(a => a.dia === dia && a.hora_inicio === hora);
                   return (
                     <td key={dia} className="p-1 border-r align-top">
                       {celdas.map(a => {
                         const mod = MODALIDAD_CONFIG[a.modalidad] || {};
+                        const sinDocente = !a.docente;
                         return (
-                          <div key={a.id} className={`p-1 mb-1 rounded text-xs ${mod.bg} border ${mod.border}`}>
-                            <p className={`font-bold ${mod.color}`}>{a.cat_codigo}</p>
-                            <p className="truncate">{a.docente?.nombre}</p>
+                          <div key={a.id} className={`p-1 mb-1 rounded text-xs border ${sinDocente ? 'bg-orange-50 border-orange-300' : `${mod.bg} ${mod.border}`}`}>
+                            <p className={`font-bold ${sinDocente ? 'text-orange-600' : mod.color}`}>{a.cat_codigo}</p>
+                            <p className={sinDocente ? 'text-orange-500 italic text-xs' : ''}>{sinDocente ? '⚠️ Sin docente' : a.docente?.nombre}</p>
                             <p className="text-slate-500">{a.sede_nombre || '🏠'}</p>
                           </div>
                         );
@@ -599,7 +665,7 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
       </div>
       {/* Lista */}
       <div className="bg-white rounded-xl border shadow-sm p-4">
-        <h3 className="font-semibold mb-3">📋 Lista ({asigConHorario.length} asignaciones)</h3>
+        <h3 className="font-semibold mb-3">📋 Lista ({asigFiltradas.length} asignaciones)</h3>
         <div className="overflow-auto max-h-80">
           <table className="w-full text-sm">
             <thead className="bg-slate-50"><tr>
@@ -607,12 +673,12 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
               <th className="p-2">Modalidad</th><th className="p-2">Día</th><th className="p-2">Hora</th><th className="p-2">Sede</th>
             </tr></thead>
             <tbody>
-              {asigConHorario.map(a => {
+              {asigFiltradas.map(a => {
                 const mod = MODALIDAD_CONFIG[a.modalidad] || {};
                 return (
                   <tr key={a.id} className="border-b">
                     <td className="p-2"><span className="font-mono">{a.cat_codigo}</span> {a.cat_nombre}</td>
-                    <td className="p-2">{a.docente?.nombre}</td>
+                    <td className="p-2">{a.docente ? a.docente.nombre : <span className="text-orange-500 italic">⚠️ Sin docente</span>}</td>
                     <td className="p-2 text-center"><span className={mod.color}>{mod.icon}</span></td>
                     <td className="p-2 text-center">{a.dia}</td>
                     <td className="p-2 text-center">{a.hora_inicio}</td>
@@ -628,7 +694,6 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   );
 }
 
-// ============ VISTA SOLAPAMIENTOS ============
 function SolapamientosView({ solapamientos }) {
   return (
     <div className="p-8">
@@ -657,7 +722,6 @@ function SolapamientosView({ solapamientos }) {
   );
 }
 
-// ============ VISTA CURSOS ============
 function CursosView({ cursos, sedes, recargar }) {
   const [buscar, setBuscar] = useState('');
   const [filtroSede, setFiltroSede] = useState('');
@@ -761,12 +825,15 @@ function CursosView({ cursos, sedes, recargar }) {
   );
 }
 
-// ============ VISTA IMPORTAR ============
-function ImportarView({ recargar }) {
+// ============ VISTA IMPORTAR (MEJORADA v3.3 - con alumnos) ============
+function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   const [uploading, setUploading] = useState('');
   const [resultado, setResultado] = useState(null);
+  const [cuatriSeleccionado, setCuatriSeleccionado] = useState(
+    cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1')
+  );
 
-  const subirArchivo = async (endpoint, label) => {
+  const subirArchivo = async (endpoint, label, extraParams = '') => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.xlsx,.xls';
     input.onchange = async (e) => {
@@ -775,7 +842,7 @@ function ImportarView({ recargar }) {
       const formData = new FormData();
       formData.append('file', file);
       try {
-        const res = await fetch(`${API_URL}${endpoint}`, { method: 'POST', body: formData });
+        const res = await fetch(`${API_URL}${endpoint}${extraParams}`, { method: 'POST', body: formData });
         const data = await res.json();
         if (res.ok) {
           setResultado({ ok: true, data, label });
@@ -810,7 +877,7 @@ function ImportarView({ recargar }) {
     },
   ];
 
-  const importadoresFuturos = [
+  const importadoresVinculacion = [
     {
       id: 'catedra-cursos', icon: '🔗', titulo: 'Vincular Cátedras ↔ Cursos',
       desc: 'Excel: Código | Materia (c.XX Nombre - Turno) | Curso | Sede',
@@ -831,6 +898,7 @@ function ImportarView({ recargar }) {
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
         <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
       </div>
+
       <h3 className="font-semibold text-slate-600 mb-3">Datos base</h3>
       <div className="grid grid-cols-3 gap-6 mb-8">
         {importadores.map(imp => (
@@ -846,9 +914,10 @@ function ImportarView({ recargar }) {
           </div>
         ))}
       </div>
+
       <h3 className="font-semibold text-slate-600 mb-3">Vinculaciones</h3>
-      <div className="grid grid-cols-2 gap-6 mb-6">
-        {importadoresFuturos.map(imp => (
+      <div className="grid grid-cols-2 gap-6 mb-8">
+        {importadoresVinculacion.map(imp => (
           <div key={imp.id} className="bg-white rounded-xl border p-6 border-dashed border-slate-300">
             <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
             <p className="text-sm text-slate-500 mb-1">{imp.desc}</p>
@@ -861,6 +930,28 @@ function ImportarView({ recargar }) {
           </div>
         ))}
       </div>
+
+      {/* NUEVO: Importar Alumnos */}
+      <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
+      <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
+        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos</h3>
+        <p className="text-sm text-slate-500 mb-1">Usá el Excel exportado del sistema de gestión. El sistema lee automáticamente el código de cátedra (c.XX) de la columna MATERIA.</p>
+        <p className="text-xs text-slate-400 mb-3 font-mono">Formato: | ID | ALUMNO (DNI) | DNI | MATERIA | CURSO | ...</p>
+        <div className="mb-4">
+          <label className="text-sm text-slate-600 font-medium">Cuatrimestre al que pertenecen estas inscripciones:</label>
+          <select className="w-full border-2 border-cyan-300 rounded-lg px-3 py-2 mt-1 bg-cyan-50"
+            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
+            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+        </div>
+        <button
+          onClick={() => subirArchivo('/api/importar/alumnos', 'Alumnos Inscriptos', `?cuatrimestre_id=${cuatriSeleccionado}`)}
+          disabled={uploading === 'Alumnos Inscriptos'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-cyan-600 text-white hover:bg-cyan-700">
+          {uploading === 'Alumnos Inscriptos' ? '⏳ Importando...' : '📤 Subir Excel de inscriptos (.xlsx)'}
+        </button>
+      </div>
+
       {resultado && (
         <div className={`p-4 rounded-xl border ${resultado.ok ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}`}>
           <p className="font-medium text-lg">{resultado.ok ? '✅' : '❌'} {resultado.label}</p>
@@ -871,6 +962,8 @@ function ImportarView({ recargar }) {
               {resultado.data.actualizadas !== undefined && <p>Actualizadas: <strong>{resultado.data.actualizadas}</strong></p>}
               {resultado.data.actualizados !== undefined && <p>Actualizados: <strong>{resultado.data.actualizados}</strong></p>}
               {resultado.data.omitidos !== undefined && <p>Omitidos: <strong>{resultado.data.omitidos}</strong></p>}
+              {resultado.data.alumnos_nuevos !== undefined && <p>Alumnos nuevos: <strong>{resultado.data.alumnos_nuevos}</strong></p>}
+              {resultado.data.inscripciones_cargadas !== undefined && <p>Inscripciones cargadas: <strong>{resultado.data.inscripciones_cargadas}</strong></p>}
               {resultado.data.errores?.length > 0 && (
                 <div className="mt-2 text-xs text-orange-600">
                   <p>Advertencias:</p>
@@ -886,19 +979,51 @@ function ImportarView({ recargar }) {
   );
 }
 
-function ExportarView() {
+// ============ VISTA EXPORTAR (NUEVA v3.3) ============
+function ExportarView({ cuatrimestre, cuatrimestres }) {
+  const [descargando, setDescargando] = useState(false);
+
+  const descargar = async () => {
+    setDescargando(true);
+    try {
+      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+      const url = `${API_URL}/api/exportar/horarios${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Error al generar el archivo');
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      const cuatNombre = cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre || 'Todos';
+      a.download = `IEA_Horarios_${cuatNombre.replace(/ /g, '_')}.xlsx`;
+      a.click();
+    } catch (e) {
+      alert('Error al descargar: ' + e.message);
+    }
+    setDescargando(false);
+  };
+
   return (
     <div className="p-8">
       <h2 className="text-2xl font-bold text-slate-800 mb-6">Exportar</h2>
       <div className="bg-white rounded-xl border p-6 max-w-xl">
-        <h3 className="font-semibold mb-3">📊 Exportar Horarios</h3>
-        <button className="w-full py-2 bg-amber-500 text-slate-900 rounded-lg font-bold">📥 Descargar Excel</button>
+        <h3 className="font-semibold mb-2">📊 Exportar Horarios</h3>
+        <p className="text-sm text-slate-500 mb-1">El archivo Excel incluye dos pestañas:</p>
+        <ul className="text-sm text-slate-500 mb-4 list-disc ml-4">
+          <li><strong>Lista de asignaciones</strong>: una fila por clase con todos los datos</li>
+          <li><strong>Grilla semanal</strong>: el calendario en forma de tabla por día y hora</li>
+        </ul>
+        {cuatrimestre !== 'todos'
+          ? <p className="text-sm text-amber-600 font-medium mb-4">📅 Se exportará: {cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre}</p>
+          : <p className="text-sm text-slate-400 mb-4">💡 Seleccioná un cuatrimestre en el menú izquierdo para filtrar, o exportá todo.</p>}
+        <button onClick={descargar} disabled={descargando}
+          className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold disabled:opacity-50 hover:bg-amber-400 transition-colors">
+          {descargando ? '⏳ Generando Excel...' : '📥 Descargar Excel'}
+        </button>
       </div>
     </div>
   );
 }
 
-// ============ PANTALLA DE LOGIN ============
 function LoginScreen({ onLogin }) {
   const [clave, setClave] = useState('');
   const [error, setError] = useState('');
@@ -921,7 +1046,7 @@ function LoginScreen({ onLogin }) {
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios v3.2</p>
+          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios v3.3</p>
         </div>
         <div className="space-y-4">
           <div>
@@ -941,7 +1066,6 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-// ============ APP PRINCIPAL ============
 export default function App() {
   const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
   const [activeView, setActiveView] = useState('catedras');
@@ -957,14 +1081,12 @@ export default function App() {
   const cargarDatos = useCallback(async () => {
     const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
     const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-    
     try { const r = await apiFetch('/api/sedes'); setSedes(r); } catch (e) { console.error('Sedes:', e); }
     try { const r = await apiFetch('/api/cuatrimestres'); setCuatrimestres(r); } catch (e) { console.error('Cuats:', e); }
     try { const r = await apiFetch(`/api/catedras${qParam}`); setCatedras(r); } catch (e) { console.error('Cátedras:', e); }
     try { const r = await apiFetch('/api/cursos'); setCursos(r); } catch (e) { console.error('Cursos:', e); }
     try { const r = await apiFetch(`/api/docentes${qParam}`); setDocentes(r); } catch (e) { console.error('Docentes:', e); }
     try { const r = await apiFetch(`/api/horarios/solapamientos${qParam}`); setSolapamientos(r); } catch (e) { console.error('Solapamientos:', e); }
-    
     setLoading(false);
   }, [cuatrimestre]);
 
@@ -983,8 +1105,8 @@ export default function App() {
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
-        {activeView === 'importar' && <ImportarView recargar={cargarDatos} />}
-        {activeView === 'exportar' && <ExportarView />}
+        {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
+        {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
       </main>
     </div>
   );
