@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="3.3")
+app = FastAPI(title="Sistema Horarios IEA", version="4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +25,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ==================== MIGRACIÓN ====================
 
 def run_migration(db):
     from sqlalchemy import text, inspect
@@ -102,6 +104,7 @@ def run_migration(db):
             except Exception as e:
                 resultado.append(f"⚠️ catedra_curso: {e}")
                 db.rollback()
+        # Limpiar sedes duplicadas Vicente Lopez / Vicente López
         try:
             sede_sin_tilde = db.query(Sede).filter(Sede.nombre == "Vicente Lopez").first()
             sede_con_tilde = db.query(Sede).filter(Sede.nombre == "Vicente López").first()
@@ -129,6 +132,8 @@ def run_migration(db):
     return resultado
 
 
+# ==================== STARTUP ====================
+
 @app.on_event("startup")
 async def startup():
     db = next(get_db())
@@ -141,9 +146,20 @@ async def startup():
             if not db.query(Sede).filter(Sede.nombre == nombre).first():
                 db.add(Sede(nombre=nombre, color=color))
         db.commit()
+        # ===== v4.0: Cuatrimestres 2026-2030 =====
         if not db.query(Cuatrimestre).first():
-            db.add(Cuatrimestre(nombre="1er Cuatrimestre 2026", anio=2026, numero=1, activo=True))
-            db.add(Cuatrimestre(nombre="2do Cuatrimestre 2026", anio=2026, numero=2, activo=False))
+            for anio in range(2026, 2031):
+                db.add(Cuatrimestre(nombre=f"1er Cuatrimestre {anio}", anio=anio, numero=1, activo=(anio == 2026 and True)))
+                db.add(Cuatrimestre(nombre=f"2do Cuatrimestre {anio}", anio=anio, numero=2, activo=False))
+            db.commit()
+            print("  ✅ Cuatrimestres 2026-2030 creados")
+        else:
+            # Asegurar que existan cuatrimestres hasta 2030
+            for anio in range(2026, 2031):
+                for num in [1, 2]:
+                    nombre_c = f"{'1er' if num == 1 else '2do'} Cuatrimestre {anio}"
+                    if not db.query(Cuatrimestre).filter(Cuatrimestre.anio == anio, Cuatrimestre.numero == num).first():
+                        db.add(Cuatrimestre(nombre=nombre_c, anio=anio, numero=num, activo=False))
             db.commit()
         if db.query(Catedra).count() == 0:
             for codigo, nombre in CATEDRAS:
@@ -166,14 +182,14 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed error: {e}")
     db.close()
-    print("🚀 IEA Horarios v3.3 iniciado")
+    print("🚀 IEA Horarios v4.0 iniciado")
 
 
 CLAVE_ACCESO = "IEA2026"
 
 @app.get("/")
 def root():
-    return {"status": "ok", "sistema": "IEA Horarios v3.3"}
+    return {"status": "ok", "sistema": "IEA Horarios v4.0"}
 
 @app.get("/api/reparar")
 def reparar_bd(db: Session = Depends(get_db)):
@@ -216,11 +232,14 @@ def reparar_bd(db: Session = Depends(get_db)):
             resultado.append(f"✅ Docentes: {total_doc} → {db.query(Docente).count()}")
         else:
             resultado.append(f"OK {total_doc} docentes ya existen")
-        if not db.query(Cuatrimestre).first():
-            db.add(Cuatrimestre(nombre="1er Cuatrimestre 2026", anio=2026, numero=1, activo=True))
-            db.add(Cuatrimestre(nombre="2do Cuatrimestre 2026", anio=2026, numero=2, activo=False))
-            db.commit()
-            resultado.append("✅ Cuatrimestres creados")
+        # Asegurar cuatrimestres 2026-2030
+        for anio in range(2026, 2031):
+            for num in [1, 2]:
+                nombre_c = f"{'1er' if num == 1 else '2do'} Cuatrimestre {anio}"
+                if not db.query(Cuatrimestre).filter(Cuatrimestre.anio == anio, Cuatrimestre.numero == num).first():
+                    db.add(Cuatrimestre(nombre=nombre_c, anio=anio, numero=num, activo=False))
+        db.commit()
+        resultado.append("✅ Cuatrimestres verificados (2026-2030)")
     except ImportError:
         resultado.append("⚠️ seed_data.py no encontrado")
     except Exception as e:
@@ -250,6 +269,8 @@ def login(data: dict):
     raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
 
+# ==================== SEDES Y CUATRIMESTRES ====================
+
 @app.get("/api/sedes")
 def get_sedes(db: Session = Depends(get_db)):
     return [{"id": s.id, "nombre": s.nombre, "color": s.color} for s in db.query(Sede).all()]
@@ -257,14 +278,23 @@ def get_sedes(db: Session = Depends(get_db)):
 @app.get("/api/cuatrimestres")
 def get_cuatrimestres(db: Session = Depends(get_db)):
     return [{"id": c.id, "nombre": c.nombre, "anio": c.anio, "numero": c.numero, "activo": c.activo}
-            for c in db.query(Cuatrimestre).all()]
+            for c in db.query(Cuatrimestre).order_by(Cuatrimestre.anio, Cuatrimestre.numero).all()]
 
+
+# ==================== CÁTEDRAS ====================
+
+def sort_key_codigo(codigo):
+    """Ordena c.1, c.2, ... c.10, c.11, ... c.100 numéricamente"""
+    m = re.match(r'c\.(\d+)', codigo or '', re.IGNORECASE)
+    return int(m.group(1)) if m else 9999
 
 @app.get("/api/catedras")
 def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
-    catedras = db.query(Catedra).order_by(Catedra.codigo).all()
+    catedras = db.query(Catedra).all()
+    # Ordenar numéricamente por código
+    catedras_sorted = sorted(catedras, key=lambda c: sort_key_codigo(c.codigo))
     result = []
-    for cat in catedras:
+    for cat in catedras_sorted:
         try:
             asigs = []
             try:
@@ -301,17 +331,20 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                     })
             except Exception:
                 pass
+            # v4.0: Docentes sugeridos = ceil(inscriptos / 100)
+            docentes_sugeridos = max(1, -(-inscriptos // 100)) if inscriptos > 0 else 0
             result.append({
                 "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
                 "link_meet": getattr(cat, 'link_meet', None),
                 "inscriptos": inscriptos,
+                "docentes_sugeridos": docentes_sugeridos,
                 "cursos_vinculados": cursos_vinc,
                 "asignaciones": asigs,
             })
         except Exception:
             result.append({
                 "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
-                "link_meet": None, "inscriptos": 0,
+                "link_meet": None, "inscriptos": 0, "docentes_sugeridos": 0,
                 "cursos_vinculados": [], "asignaciones": [],
             })
     return result
@@ -323,12 +356,31 @@ def get_catedras_stats(cuatrimestre_id: int = None, db: Session = Depends(get_db
     if cuatrimestre_id:
         q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = q.all()
+    # v4.0: Separar inscriptos de materias inscritas
+    q_insc = db.query(Inscripcion)
+    if cuatrimestre_id:
+        q_insc = q_insc.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    total_inscripciones = q_insc.count()
+    alumnos_unicos = db.query(func.count(func.distinct(Inscripcion.alumno_id)))
+    if cuatrimestre_id:
+        alumnos_unicos = alumnos_unicos.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    alumnos_unicos = alumnos_unicos.scalar() or 0
+    materias_con_inscriptos = db.query(func.count(func.distinct(Inscripcion.catedra_id)))
+    if cuatrimestre_id:
+        materias_con_inscriptos = materias_con_inscriptos.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    materias_con_inscriptos = materias_con_inscriptos.scalar() or 0
+    # Cátedras abiertas = con al menos 1 asignación en el cuatrimestre
+    catedras_abiertas_ids = set(a.catedra_id for a in asigs)
     return {
         "total_catedras": total,
+        "catedras_abiertas": len(catedras_abiertas_ids),
         "total_asignaciones": len(asigs),
         "asincronicas": len([a for a in asigs if a.modalidad == 'asincronica']),
         "con_docente": len([a for a in asigs if a.docente_id and a.modalidad != 'asincronica']),
         "sin_docente": len([a for a in asigs if not a.docente_id and a.modalidad != 'asincronica']),
+        "total_inscripciones": total_inscripciones,
+        "alumnos_unicos": alumnos_unicos,
+        "materias_con_inscriptos": materias_con_inscriptos,
     }
 
 @app.put("/api/catedras/{catedra_id}")
@@ -343,6 +395,54 @@ def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db
     db.commit()
     return {"ok": True}
 
+# ===== v4.0 MEJORA 8: Materias que necesitan docente (>5 inscriptos) =====
+@app.get("/api/catedras/necesitan-docente")
+def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    # Contar inscriptos por cátedra
+    q = db.query(
+        Inscripcion.catedra_id,
+        func.count(Inscripcion.id).label('cant_inscriptos')
+    )
+    if cuatrimestre_id:
+        q = q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    q = q.group_by(Inscripcion.catedra_id).having(func.count(Inscripcion.id) > 5)
+    inscriptos_por_cat = {row.catedra_id: row.cant_inscriptos for row in q.all()}
+
+    result = []
+    for cat_id, cant in inscriptos_por_cat.items():
+        cat = db.query(Catedra).filter(Catedra.id == cat_id).first()
+        if not cat:
+            continue
+        # Ver si tiene asignación con docente en este cuatrimestre
+        asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat_id)
+        if cuatrimestre_id:
+            asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+        asigs = asigs.all()
+        docentes_asignados = [a for a in asigs if a.docente_id]
+        docentes_sugeridos = max(1, -(-cant // 100))
+        necesita = docentes_sugeridos - len(docentes_asignados)
+        if necesita > 0 or len(docentes_asignados) == 0:
+            docentes_nombres = []
+            for a in docentes_asignados:
+                if a.docente:
+                    docentes_nombres.append(f"{a.docente.nombre} {a.docente.apellido}")
+            result.append({
+                "catedra_id": cat.id,
+                "codigo": cat.codigo,
+                "nombre": cat.nombre,
+                "inscriptos": cant,
+                "docentes_sugeridos": docentes_sugeridos,
+                "docentes_asignados": len(docentes_asignados),
+                "docentes_faltantes": max(0, necesita),
+                "docentes_nombres": docentes_nombres,
+                "tiene_asignacion": len(asigs) > 0,
+            })
+    # Ordenar por código numérico
+    result.sort(key=lambda x: sort_key_codigo(x['codigo']))
+    return result
+
+
+# ==================== ASIGNACIONES ====================
 
 @app.post("/api/asignaciones")
 def crear_asignacion(data: dict, db: Session = Depends(get_db)):
@@ -353,14 +453,18 @@ def crear_asignacion(data: dict, db: Session = Depends(get_db)):
         dia = data.get("dia")
         hora = data.get("hora_inicio")
         sede_id = data.get("sede_id")
+        # v4.0 mejora 2: Permitir crear sin dia/hora (pendiente de confirmar)
         if dia and hora and modalidad != 'asincronica':
             conflict = verificar_solapamiento_catedra(cat_id, dia, hora, cuat_id, None, db)
             if conflict:
                 raise HTTPException(status_code=400, detail=conflict)
         asig = Asignacion(
             catedra_id=cat_id, cuatrimestre_id=cuat_id,
-            docente_id=data.get("docente_id"), modalidad=modalidad,
-            dia=dia, hora_inicio=hora, hora_fin=data.get("hora_fin"),
+            docente_id=data.get("docente_id") if data.get("docente_id") else None,
+            modalidad=modalidad,
+            dia=dia if dia else None,
+            hora_inicio=hora if hora else None,
+            hora_fin=data.get("hora_fin") if data.get("hora_fin") else None,
             sede_id=sede_id if sede_id else None,
             recibe_alumnos_presenciales=data.get("recibe_alumnos_presenciales", False),
         )
@@ -374,6 +478,7 @@ def crear_asignacion(data: dict, db: Session = Depends(get_db)):
         print(f"❌ Error creando asignación: {e}")
         raise HTTPException(status_code=500, detail=f"Error de base de datos: {str(e)}. Probá visitar /api/reparar primero.")
 
+# v4.0 mejora 3: Editar asignación existente (asignar docente, cambiar datos)
 @app.put("/api/asignaciones/{asignacion_id}")
 def actualizar_asignacion(asignacion_id: int, data: dict, db: Session = Depends(get_db)):
     try:
@@ -390,7 +495,12 @@ def actualizar_asignacion(asignacion_id: int, data: dict, db: Session = Depends(
         for field in ["docente_id", "modalidad", "dia", "hora_inicio", "hora_fin",
                        "sede_id", "recibe_alumnos_presenciales"]:
             if field in data:
-                setattr(asig, field, data[field] if data[field] else None)
+                val = data[field]
+                if field == "docente_id" and (val == "" or val == "null"):
+                    val = None
+                elif field in ["sede_id"] and not val:
+                    val = None
+                setattr(asig, field, val if val else None)
         asig.modificada = True
         db.commit()
         return {"ok": True}
@@ -409,6 +519,8 @@ def eliminar_asignacion(asignacion_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True}
 
+
+# ==================== DOCENTES ====================
 
 def calcular_tipo_modalidad(docente: Docente, db: Session) -> str:
     asigs = db.query(Asignacion).filter(Asignacion.docente_id == docente.id).all()
@@ -526,6 +638,8 @@ def actualizar_sedes_docente(docente_id: int, data: dict, db: Session = Depends(
     return {"ok": True}
 
 
+# ==================== CURSOS ====================
+
 @app.get("/api/cursos")
 def get_cursos(sede_id: int = None, db: Session = Depends(get_db)):
     q = db.query(Curso)
@@ -554,6 +668,8 @@ def get_cursos(sede_id: int = None, db: Session = Depends(get_db)):
         })
     return result
 
+
+# ==================== IMPORTACIONES ====================
 
 @app.post("/api/importar/catedras")
 async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -597,6 +713,92 @@ async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(
         db.commit(); wb.close()
         return {"creadas": creadas, "actualizadas": actualizadas}
     except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+
+# ===== v4.0 MEJORA 1: Apertura masiva de cátedras por cuatrimestre =====
+@app.post("/api/importar/apertura-catedras")
+async def importar_apertura_catedras(
+    file: UploadFile = File(...),
+    cuatrimestre_id: int = 1,
+    db: Session = Depends(get_db)
+):
+    """
+    Importa un Excel con cátedras a abrir en un cuatrimestre.
+    Crea una asignación 'pendiente' (sin turno, sin docente, sin horario) por cada cátedra.
+    Si la cátedra ya tiene asignación en ese cuatrimestre, la ignora.
+    Formato: Código | Nombre (o 'c.XX Nombre' en una sola columna)
+    """
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        abiertas = 0
+        ya_existentes = 0
+        errores = []
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            if not vals or not any(vals):
+                continue
+            codigo = None
+            nombre = None
+            # Intentar leer "c.XX Nombre" en columna B (vals[1])
+            for v in vals:
+                m = re.match(r'^(c\.\d+)\s*(.*)', v, re.IGNORECASE)
+                if m:
+                    codigo = m.group(1)
+                    if m.group(2):
+                        nombre = m.group(2).strip()
+                    break
+            # Si no encontró patrón, intentar con número en col A
+            if not codigo and vals[0]:
+                try:
+                    num = int(float(vals[0]))
+                    if num > 0:
+                        codigo = f"c.{num}"
+                        nombre = vals[1] if len(vals) > 1 else None
+                except (ValueError, TypeError):
+                    pass
+            if not codigo:
+                continue
+            # Buscar cátedra o crearla
+            catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            if not catedra:
+                if nombre:
+                    catedra = Catedra(codigo=codigo, nombre=nombre)
+                    db.add(catedra)
+                    db.flush()
+                else:
+                    errores.append(f"Fila {row_num}: Cátedra {codigo} no existe y no tiene nombre para crearla")
+                    continue
+            # Verificar si ya tiene asignación en este cuatrimestre
+            ya_tiene = db.query(Asignacion).filter(
+                Asignacion.catedra_id == catedra.id,
+                Asignacion.cuatrimestre_id == cuatrimestre_id
+            ).first()
+            if ya_tiene:
+                ya_existentes += 1
+                continue
+            # Crear asignación pendiente (sin turno, sin docente, sin horario)
+            db.add(Asignacion(
+                catedra_id=catedra.id,
+                cuatrimestre_id=cuatrimestre_id,
+                modalidad='virtual_tm',
+                docente_id=None,
+                dia=None,
+                hora_inicio=None,
+                hora_fin=None,
+                sede_id=None,
+            ))
+            abiertas += 1
+        db.commit()
+        wb.close()
+        return {
+            "abiertas": abiertas,
+            "ya_existentes": ya_existentes,
+            "errores": errores[:20]
+        }
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
 @app.post("/api/importar/cursos")
@@ -766,8 +968,7 @@ async def importar_links_meet(file: UploadFile = File(...), db: Session = Depend
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-# ==================== IMPORTAR ALUMNOS (NUEVO v3.3) ====================
-
+# ===== v4.0 MEJORA 4: Importar alumnos (mejorado para archivos consolidados) =====
 @app.post("/api/importar/alumnos")
 async def importar_alumnos(
     file: UploadFile = File(...),
@@ -777,68 +978,72 @@ async def importar_alumnos(
     try:
         content = await file.read()
         wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-        ws = wb[wb.sheetnames[0]]
         creados = 0
         inscripciones = 0
         errores = []
-        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            vals = [str(c).strip() if c is not None else "" for c in row]
-            if len(vals) < 4: continue
-            alumno_texto = vals[1]
-            dni_raw = str(vals[2]).strip() if vals[2] else ""
-            materia_texto = vals[3]
-            dni = re.sub(r'[.\-\s]', '', dni_raw)
-            if '.' in dni:
-                try: dni = str(int(float(dni)))
-                except: pass
-            if not dni or len(dni) < 6: continue
-            m_nombre = re.match(r'^(.+?)\s*\(\d+\)', alumno_texto)
-            nombre_completo = m_nombre.group(1).strip() if m_nombre else alumno_texto
-            partes = nombre_completo.strip().split(' ')
-            if len(partes) >= 2:
-                nombre = ' '.join(partes[:-1])
-                apellido = partes[-1]
-            else:
-                nombre = nombre_completo
-                apellido = ""
-            m_cod = re.match(r'^(c\.\d+)', materia_texto, re.IGNORECASE)
-            if not m_cod:
-                errores.append(f"Fila {row_num}: no se pudo leer código de '{materia_texto[:40]}'")
-                continue
-            codigo = m_cod.group(1)
-            catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-            if not catedra:
-                errores.append(f"Fila {row_num}: cátedra {codigo} no existe en el sistema")
-                continue
-            alumno = db.query(Alumno).filter(Alumno.dni == dni).first()
-            if not alumno:
-                alumno = Alumno(dni=dni, nombre=nombre, apellido=apellido)
-                db.add(alumno)
-                db.flush()
-                creados += 1
-            existe = db.query(Inscripcion).filter(
-                Inscripcion.alumno_id == alumno.id,
-                Inscripcion.catedra_id == catedra.id,
-                Inscripcion.cuatrimestre_id == cuatrimestre_id
-            ).first()
-            if not existe:
-                db.add(Inscripcion(
-                    alumno_id=alumno.id,
-                    catedra_id=catedra.id,
-                    cuatrimestre_id=cuatrimestre_id
-                ))
-                inscripciones += 1
+        # v4.0: Recorrer TODAS las hojas del archivo (archivo consolidado)
+        for ws in wb:
+            for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                vals = [str(c).strip() if c is not None else "" for c in row]
+                if len(vals) < 4: continue
+                alumno_texto = vals[1]
+                dni_raw = str(vals[2]).strip() if vals[2] else ""
+                materia_texto = vals[3]
+                dni = re.sub(r'[.\-\s]', '', dni_raw)
+                if '.' in dni:
+                    try: dni = str(int(float(dni)))
+                    except: pass
+                if not dni or len(dni) < 6: continue
+                m_nombre = re.match(r'^(.+?)\s*\(\d+\)', alumno_texto)
+                nombre_completo = m_nombre.group(1).strip() if m_nombre else alumno_texto
+                partes = nombre_completo.strip().split(' ')
+                if len(partes) >= 2:
+                    nombre = ' '.join(partes[:-1])
+                    apellido = partes[-1]
+                else:
+                    nombre = nombre_completo
+                    apellido = ""
+                m_cod = re.match(r'^(c\.\d+)', materia_texto, re.IGNORECASE)
+                if not m_cod:
+                    errores.append(f"Hoja '{ws.title}' Fila {row_num}: no se pudo leer código de '{materia_texto[:40]}'")
+                    continue
+                codigo = m_cod.group(1)
+                catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+                if not catedra:
+                    errores.append(f"Hoja '{ws.title}' Fila {row_num}: cátedra {codigo} no existe")
+                    continue
+                alumno = db.query(Alumno).filter(Alumno.dni == dni).first()
+                if not alumno:
+                    alumno = Alumno(dni=dni, nombre=nombre, apellido=apellido)
+                    db.add(alumno)
+                    db.flush()
+                    creados += 1
+                existe = db.query(Inscripcion).filter(
+                    Inscripcion.alumno_id == alumno.id,
+                    Inscripcion.catedra_id == catedra.id,
+                    Inscripcion.cuatrimestre_id == cuatrimestre_id
+                ).first()
+                if not existe:
+                    db.add(Inscripcion(
+                        alumno_id=alumno.id,
+                        catedra_id=catedra.id,
+                        cuatrimestre_id=cuatrimestre_id
+                    ))
+                    inscripciones += 1
         db.commit()
         wb.close()
         return {
             "alumnos_nuevos": creados,
             "inscripciones_cargadas": inscripciones,
+            "hojas_procesadas": len(wb.sheetnames) if hasattr(wb, 'sheetnames') else 1,
             "errores": errores[:20]
         }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
+
+# ==================== SOLAPAMIENTOS ====================
 
 def verificar_solapamiento_catedra(catedra_id, dia, hora_inicio, cuatrimestre_id, excluir_id, db):
     q = db.query(Asignacion).filter(
@@ -920,8 +1125,47 @@ def get_estadisticas_docentes(cuatrimestre_id: int = None, db: Session = Depends
         else: stats["sin_asignaciones"] += 1
     return stats
 
-# ==================== EXPORTAR HORARIOS (NUEVO v3.3) ====================
 
+# ===== v4.0 MEJORA 12: Replicar apertura de cátedras del año anterior =====
+@app.post("/api/cuatrimestres/replicar")
+def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
+    origen_id = data.get("origen_id")
+    destino_id = data.get("destino_id")
+    if not origen_id or not destino_id:
+        raise HTTPException(status_code=400, detail="Se requiere origen_id y destino_id")
+    asigs_origen = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == origen_id).all()
+    if not asigs_origen:
+        raise HTTPException(status_code=400, detail="El cuatrimestre de origen no tiene asignaciones")
+    replicadas = 0
+    ya_existentes = 0
+    for a in asigs_origen:
+        # Verificar si ya existe en destino
+        ya_existe = db.query(Asignacion).filter(
+            Asignacion.catedra_id == a.catedra_id,
+            Asignacion.cuatrimestre_id == destino_id,
+            Asignacion.modalidad == a.modalidad,
+        ).first()
+        if ya_existe:
+            ya_existentes += 1
+            continue
+        nueva = Asignacion(
+            catedra_id=a.catedra_id,
+            cuatrimestre_id=destino_id,
+            modalidad=a.modalidad,
+            dia=a.dia,
+            hora_inicio=a.hora_inicio,
+            hora_fin=a.hora_fin,
+            sede_id=a.sede_id,
+            recibe_alumnos_presenciales=a.recibe_alumnos_presenciales,
+            docente_id=None,  # No copiar docente, solo la estructura
+        )
+        db.add(nueva)
+        replicadas += 1
+    db.commit()
+    return {"replicadas": replicadas, "ya_existentes": ya_existentes}
+
+
+# ===== v4.0 MEJORA 6: Exportar con una solapa por sede + inscriptos =====
 @app.get("/api/exportar/horarios")
 def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from openpyxl import Workbook
@@ -929,74 +1173,85 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
 
     wb = Workbook()
 
-    # --- Hoja 1: Lista ---
-    ws1 = wb.active
-    ws1.title = "Lista de asignaciones"
-    headers = ["#", "Código", "Cátedra", "Docente", "Modalidad", "Día", "Hora", "Sede", "Recibe Presenciales"]
-    ws1.append(headers)
-    for cell in ws1[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1D6F42")
-        cell.alignment = Alignment(horizontal="center")
-
     q = db.query(Asignacion)
     if cuatrimestre_id:
         q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
-    asigs = q.order_by(Asignacion.dia, Asignacion.hora_inicio).all()
+    asigs = q.all()
 
-    for i, a in enumerate(asigs, 1):
-        ws1.append([
-            i,
-            a.catedra.codigo if a.catedra else "",
-            a.catedra.nombre if a.catedra else "",
-            f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
-            a.modalidad or "",
-            a.dia or "",
-            a.hora_inicio or "",
-            a.sede.nombre if a.sede else "Remoto",
-            "Sí" if a.recibe_alumnos_presenciales else "No",
-        ])
+    # Ordenar por código numérico
+    asigs_sorted = sorted(asigs, key=lambda a: sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999'))
 
-    ws1.column_dimensions['A'].width = 5
-    ws1.column_dimensions['B'].width = 10
-    ws1.column_dimensions['C'].width = 32
-    ws1.column_dimensions['D'].width = 30
-    ws1.column_dimensions['E'].width = 15
-    ws1.column_dimensions['F'].width = 12
-    ws1.column_dimensions['G'].width = 8
-    ws1.column_dimensions['H'].width = 20
-    ws1.column_dimensions['I'].width = 20
+    # Contar inscriptos por cátedra
+    inscriptos_map = {}
+    q_insc = db.query(Inscripcion.catedra_id, func.count(Inscripcion.id).label('cnt'))
+    if cuatrimestre_id:
+        q_insc = q_insc.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    for row in q_insc.group_by(Inscripcion.catedra_id).all():
+        inscriptos_map[row.catedra_id] = row.cnt
 
-    # --- Hoja 2: Grilla ---
-    ws2 = wb.create_sheet("Grilla semanal")
-    dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
-    horas = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','18:00','19:00','20:00','21:00','22:00']
+    # Colores por sede
+    SEDE_FILL = {
+        'Avellaneda': '3B82F6',
+        'Caballito': '10B981',
+        'Vicente López': 'F59E0B',
+        'Online - Interior': '8B5CF6',
+    }
 
-    ws2.append(["Hora"] + dias)
-    for cell in ws2[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1D6F42")
-        cell.alignment = Alignment(horizontal="center")
+    header_style = lambda color='1D6F42': (Font(bold=True, color="FFFFFF", size=11), PatternFill("solid", fgColor=color))
+    headers = ["#", "Código", "Cátedra", "Inscriptos", "Docente", "Modalidad", "Día", "Hora", "Sede", "Recibe Presenciales"]
 
-    for hora in horas:
-        row = [hora]
-        for dia in dias:
-            celdas = [a for a in asigs if a.dia == dia and a.hora_inicio == hora]
-            if celdas:
-                texto = "\n".join([
-                    f"{a.catedra.codigo if a.catedra else '?'} - "
-                    f"{(a.docente.nombre + ' ' + a.docente.apellido) if a.docente else 'Sin docente'} "
-                    f"({a.sede.nombre if a.sede else 'Remoto'})"
-                    for a in celdas
-                ])
-            else:
-                texto = ""
-            row.append(texto)
-        ws2.append(row)
+    def write_sheet(ws, title, asigs_list, color='1D6F42'):
+        ws.title = title
+        ws.append(headers)
+        hf, hfill = header_style(color)
+        for cell in ws[1]:
+            cell.font = hf
+            cell.fill = hfill
+            cell.alignment = Alignment(horizontal="center")
+        for i, a in enumerate(asigs_list, 1):
+            cat_inscriptos = inscriptos_map.get(a.catedra_id, 0) if a.catedra else 0
+            ws.append([
+                i,
+                a.catedra.codigo if a.catedra else "",
+                a.catedra.nombre if a.catedra else "",
+                cat_inscriptos,
+                f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
+                a.modalidad or "",
+                a.dia or "Pendiente",
+                a.hora_inicio or "Pendiente",
+                a.sede.nombre if a.sede else "Remoto",
+                "Sí" if a.recibe_alumnos_presenciales else "No",
+            ])
+        ws.column_dimensions['A'].width = 5
+        ws.column_dimensions['B'].width = 10
+        ws.column_dimensions['C'].width = 32
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 30
+        ws.column_dimensions['F'].width = 15
+        ws.column_dimensions['G'].width = 12
+        ws.column_dimensions['H'].width = 10
+        ws.column_dimensions['I'].width = 20
+        ws.column_dimensions['J'].width = 18
 
-    ws2.column_dimensions['A'].width = 8
-    for col in ['B','C','D','E','F','G']:
-        ws2.column_dimensions[col].width = 38
+    # Hoja 1: Todas las asignaciones
+    ws1 = wb.active
+    write_sheet(ws1, "Todas las sedes", asigs_sorted)
+
+    # Una hoja por cada sede
+    sedes_db = db.query(Sede).all()
+    for sede in sedes_db:
+        asigs_sede = [a for a in asigs_sorted if a.sede_id == sede.id]
+        if not asigs_sede:
+            continue
+        color = SEDE_FILL.get(sede.nombre, '6B7280')
+        ws = wb.create_sheet()
+        write_sheet(ws, sede.nombre[:31], asigs_sede, color)
+
+    # Hoja para remotos (sin sede)
+    asigs_remotos = [a for a in asigs_sorted if not a.sede_id]
+    if asigs_remotos:
+        ws = wb.create_sheet()
+        write_sheet(ws, "Remotos", asigs_remotos, '6B7280')
 
     output = io.BytesIO()
     wb.save(output)
