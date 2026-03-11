@@ -2,11 +2,14 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 const API_URL = '';
 
+// ===== v4.0 MEJORA 10: Colores corregidos por sede =====
 const SEDE_COLORS = {
   'Online - Interior': 'bg-purple-500', 'Online - Exterior': 'bg-violet-500',
   'Online - Cursos': 'bg-fuchsia-500', 'Online': 'bg-purple-400',
-  'Avellaneda': 'bg-blue-500', 'Caballito': 'bg-emerald-500',
-  'Vicente Lopez': 'bg-amber-500', 'Vicente López': 'bg-amber-500', 'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
+  'Avellaneda': 'bg-blue-500',
+  'Caballito': 'bg-emerald-500',
+  'Vicente Lopez': 'bg-amber-500', 'Vicente López': 'bg-amber-500',
+  'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
   'La Plata': 'bg-indigo-500', 'Pilar': 'bg-rose-500',
   'BCE': 'bg-lime-500', 'BEA': 'bg-teal-500', 'Remoto': 'bg-gray-500',
 };
@@ -29,6 +32,12 @@ const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','18:00','19:00','20:00','21:00','22:00'];
 const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
 
+function sortByCodigo(a, b) {
+  const na = parseInt((a.codigo || '').replace(/[^0-9]/g, '')) || 9999;
+  const nb = parseInt((b.codigo || '').replace(/[^0-9]/g, '')) || 9999;
+  return na - nb;
+}
+
 async function apiFetch(endpoint, options = {}) {
   const res = await fetch(`${API_URL}${endpoint}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -41,11 +50,13 @@ async function apiFetch(endpoint, options = {}) {
   return res.json();
 }
 
-function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount }) {
+// ==================== SIDEBAR ====================
+function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount }) {
   const menuItems = [
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
+    { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
@@ -55,8 +66,9 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v3.3</p>
+        <p className="text-slate-500 text-sm">Sistema v4.0</p>
       </div>
+      {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
         <label className="text-xs text-slate-400 block mb-1">Ver cuatrimestre</label>
         <select className="w-full bg-slate-800 text-white rounded px-3 py-2 text-sm border border-slate-700"
@@ -81,9 +93,9 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
       </nav>
       <div className="mt-4 p-3 bg-slate-800/50 rounded-lg">
         <p className="text-xs text-slate-400 mb-2">Sedes operativas</p>
-        {sedes.filter(s => ['Avellaneda','Caballito','Vicente López','Online - Interior'].includes(s.nombre)).map(s => (
+        {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
           <div key={s.id} className="flex items-center gap-2 mb-1">
-            <div className={`w-2 h-2 rounded-full ${s.color || SEDE_COLORS[s.nombre] || 'bg-gray-500'}`}></div>
+            <div className={`w-2 h-2 rounded-full ${SEDE_COLORS[s.nombre] || 'bg-gray-500'}`}></div>
             <span className="text-[10px] text-slate-300">{s.nombre}</span>
           </div>
         ))}
@@ -92,150 +104,62 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
   );
 }
 
-function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
-  const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
-  const [modalCatedra, setModalCatedra] = useState(null);
-  const [paginaActual, setPaginaActual] = useState(1);
-  const porPagina = 20;
-
-  const catedrasFiltradas = useMemo(() => {
-    const sortNum = (a, b) => {
-      const na = parseInt(a.codigo.replace(/[^0-9]/g, '')) || 0;
-      const nb = parseInt(b.codigo.replace(/[^0-9]/g, '')) || 0;
-      return na - nb;
-    };
-    return catedras.filter(c => {
-      if (filtros.buscar && !c.nombre.toLowerCase().includes(filtros.buscar.toLowerCase()) &&
-          !c.codigo.toLowerCase().includes(filtros.buscar.toLowerCase())) return false;
-      if (filtros.soloSinAsignar && c.asignaciones?.length > 0) return false;
-      return true;
-    }).sort(sortNum);
-  }, [catedras, filtros]);
-
-  const totalPaginas = Math.ceil(catedrasFiltradas.length / porPagina);
-  const catedrasPag = catedrasFiltradas.slice((paginaActual - 1) * porPagina, paginaActual * porPagina);
-
-  const stats = useMemo(() => {
-    const allAsig = catedras.flatMap(c => c.asignaciones || []);
-    return {
-      total: catedras.length,
-      asignaciones: allAsig.length,
-      asincronicas: allAsig.filter(a => a.modalidad === 'asincronica').length,
-      conDocente: allAsig.filter(a => a.docente && a.modalidad !== 'asincronica').length,
-      sinDocente: allAsig.filter(a => !a.docente && a.modalidad !== 'asincronica').length,
-      inscriptos: catedras.reduce((s, c) => s + (c.inscriptos || 0), 0),
-    };
-  }, [catedras]);
-
-  const eliminarAsig = async (id) => {
-    if (!window.confirm('¿Eliminar esta asignación?')) return;
-    try { await apiFetch(`/api/asignaciones/${id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
+function LoginScreen({ onLogin }) {
+  const [clave, setClave] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const intentarLogin = async () => {
+    setError(''); setLoading(true);
+    try {
+      await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
+      localStorage.setItem('iea_auth', 'true');
+      onLogin();
+    } catch (e) { setError('Contraseña incorrecta'); }
+    setLoading(false);
   };
-
   return (
-    <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
-      <div className="grid grid-cols-6 gap-3 mb-6">
-        {[
-          { label: 'Total Cátedras', val: stats.total, color: '' },
-          { label: '📋 Asignaciones', val: stats.asignaciones, color: 'text-blue-600' },
-          { label: '🎥 Asincrónicas', val: stats.asincronicas, color: 'text-purple-600' },
-          { label: '👨‍🏫 Con Docente', val: stats.conDocente, color: 'text-emerald-600' },
-          { label: '⚠️ Sin Docente', val: stats.sinDocente, color: 'text-red-600' },
-          { label: '👥 Inscriptos', val: stats.inscriptos, color: 'text-cyan-600' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white rounded-xl border p-4 text-center">
-            <p className="text-slate-500 text-xs">{s.label}</p>
-            <p className={`text-2xl font-bold ${s.color}`}>{s.val}</p>
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
+          <p className="text-slate-500 mt-1">Sistema de Gestión v4.0</p>
+        </div>
+        <div className="space-y-4">
+          <div>
+            <label className="text-sm text-slate-600 font-medium">Contraseña de acceso:</label>
+            <input type="password" className="w-full border-2 rounded-lg px-4 py-3 mt-1 text-lg focus:border-amber-500 focus:outline-none"
+              value={clave} onChange={e => setClave(e.target.value)} placeholder="Ingresá la contraseña"
+              onKeyDown={e => e.key === 'Enter' && intentarLogin()} autoFocus />
           </div>
-        ))}
+          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+          <button onClick={intentarLogin} disabled={loading || !clave}
+            className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold text-lg disabled:opacity-50 hover:bg-amber-400">
+            {loading ? '⏳ Verificando...' : 'Ingresar'}
+          </button>
+        </div>
       </div>
-      <div className="flex gap-3 mb-4 bg-white p-4 rounded-xl border items-center">
-        <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
-          value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={filtros.soloSinAsignar}
-            onChange={e => { setFiltros({...filtros, soloSinAsignar: e.target.checked}); setPaginaActual(1); }} />
-          Solo sin asignación
-        </label>
-        <span className="text-sm text-slate-500">{catedrasFiltradas.length} cátedras | Pág {paginaActual}/{totalPaginas||1}</span>
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-4 text-sm font-semibold w-1/3">Cátedra</th>
-            <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
-            <th className="text-center p-4 text-sm font-semibold w-24">Inscriptos</th>
-            <th className="text-center p-4 text-sm font-semibold w-32">Acciones</th>
-          </tr></thead>
-          <tbody>
-            {catedrasPag.map(cat => (
-              <tr key={cat.id} className="border-b hover:bg-slate-50">
-                <td className="p-4">
-                  <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{cat.codigo}</span>
-                  <span className="font-medium">{cat.nombre}</span>
-                </td>
-                <td className="p-4">
-                  {cat.asignaciones?.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
-                      {cat.asignaciones.map(a => {
-                        const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                        return (
-                          <div key={a.id} className={`px-3 py-2 rounded-lg ${mod.bg} border ${mod.border} text-sm`}>
-                            <div className="flex items-center gap-2">
-                              <span>{mod.icon}</span>
-                              <div>
-                                <p className={`font-medium ${mod.color}`}>{mod.label}</p>
-                                {a.modalidad !== 'asincronica' && (
-                                  <p className="text-xs text-slate-500">
-                                    {a.docente ? a.docente.nombre : '⚠️ Sin docente'}
-                                    {a.dia && ` • ${a.dia} ${a.hora_inicio}`}
-                                    {a.sede_nombre && ` • ${a.sede_nombre}`}
-                                  </p>
-                                )}
-                              </div>
-                              <button onClick={() => eliminarAsig(a.id)} className="text-red-400 hover:text-red-600 ml-2">×</button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
-                </td>
-                <td className="p-4 text-center">
-                  <span className={`text-xl font-bold ${cat.inscriptos > 0 ? 'text-cyan-600' : 'text-slate-300'}`}>{cat.inscriptos || 0}</span>
-                </td>
-                <td className="p-4 text-center">
-                  <button onClick={() => setModalCatedra(cat)} className="px-3 py-1.5 bg-amber-500 text-slate-900 rounded text-sm font-medium hover:bg-amber-400">+ Asignar</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="flex justify-center gap-2 mt-4">
-        <button onClick={() => setPaginaActual(Math.max(1, paginaActual - 1))} disabled={paginaActual === 1} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">← Anterior</button>
-        <button onClick={() => setPaginaActual(Math.min(totalPaginas, paginaActual + 1))} disabled={paginaActual >= totalPaginas} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">Siguiente →</button>
-      </div>
-      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
     </div>
   );
 }
 
-function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
-  const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
-  const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
+// ==================== MODAL EDITAR ASIGNACIÓN (v4.0 MEJORA 3) ====================
+function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar, catCodigo, catNombre }) {
+  const [form, setForm] = useState({
+    docente_id: asignacion.docente?.id?.toString() || '',
+    modalidad: asignacion.modalidad || 'virtual_tm',
+    sede_id: asignacion.sede_id?.toString() || '',
+    dia: asignacion.dia || '',
+    hora_inicio: asignacion.hora_inicio || '',
+    recibe_alumnos_presenciales: asignacion.recibe_alumnos_presenciales || false,
+  });
   const [error, setError] = useState('');
 
-  const crear = async () => {
+  const guardar = async () => {
     setError('');
-    if (!form.cuatrimestre_id) { setError('Seleccioná un cuatrimestre'); return; }
     try {
-      await apiFetch('/api/asignaciones', {
-        method: 'POST',
+      await apiFetch(`/api/asignaciones/${asignacion.id}`, {
+        method: 'PUT',
         body: JSON.stringify({
-          catedra_id: catedra.id,
-          cuatrimestre_id: parseInt(form.cuatrimestre_id),
           docente_id: form.docente_id ? parseInt(form.docente_id) : null,
           modalidad: form.modalidad,
           sede_id: form.sede_id ? parseInt(form.sede_id) : null,
@@ -251,14 +175,10 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white rounded-xl p-6 max-w-lg w-full mx-4">
-        <h3 className="text-lg font-bold mb-2">Agregar Asignación</h3>
-        <p className="text-slate-600 mb-4">{catedra.codigo} - {catedra.nombre}</p>
+        <h3 className="text-lg font-bold mb-2">✏️ Editar Asignación</h3>
+        <p className="text-slate-600 mb-4">{catCodigo} - {catNombre}</p>
         <div className="space-y-3">
-          <div><label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
-            <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50" value={form.cuatrimestre_id} onChange={e => setForm({...form, cuatrimestre_id: e.target.value})}>
-              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </select></div>
-          <div><label className="text-sm text-slate-600">Docente:</label>
+          <div><label className="text-sm text-slate-600 font-medium">Docente:</label>
             <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
               <option value="">Sin asignar</option>
               {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
@@ -268,7 +188,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.modalidad} onChange={e => setForm({...form, modalidad: e.target.value})}>
                 {Object.entries(MODALIDAD_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
               </select></div>
-            <div><label className="text-sm text-slate-600">Sede física:</label>
+            <div><label className="text-sm text-slate-600">Sede:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
                 <option value="">🏠 Remoto</option>
                 {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
@@ -295,6 +215,86 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
           {error && <div className="p-3 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">⛔ {error}</div>}
         </div>
         <div className="flex gap-2 mt-4">
+          <button onClick={guardar} className="flex-1 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium">Guardar</button>
+          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== MODAL ASIGNAR CÁTEDRA ====================
+function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
+  const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
+  const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
+  const [error, setError] = useState('');
+  const crear = async () => {
+    setError('');
+    if (!form.cuatrimestre_id) { setError('Seleccioná un cuatrimestre'); return; }
+    try {
+      await apiFetch('/api/asignaciones', {
+        method: 'POST',
+        body: JSON.stringify({
+          catedra_id: catedra.id,
+          cuatrimestre_id: parseInt(form.cuatrimestre_id),
+          docente_id: form.docente_id ? parseInt(form.docente_id) : null,
+          modalidad: form.modalidad,
+          sede_id: form.sede_id ? parseInt(form.sede_id) : null,
+          dia: form.dia || null,
+          hora_inicio: form.hora_inicio || null,
+          recibe_alumnos_presenciales: form.recibe_alumnos_presenciales,
+        }),
+      });
+      recargar(); onClose();
+    } catch (e) { setError(e.message); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl p-6 max-w-lg w-full mx-4">
+        <h3 className="text-lg font-bold mb-2">Agregar Asignación</h3>
+        <p className="text-slate-600 mb-4">{catedra.codigo} - {catedra.nombre}</p>
+        <div className="space-y-3">
+          <div><label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
+            <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50" value={form.cuatrimestre_id} onChange={e => setForm({...form, cuatrimestre_id: e.target.value})}>
+              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            </select></div>
+          <div><label className="text-sm text-slate-600">Docente (opcional):</label>
+            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
+              <option value="">Sin asignar (pendiente)</option>
+              {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
+            </select></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-sm text-slate-600">Modalidad:</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.modalidad} onChange={e => setForm({...form, modalidad: e.target.value})}>
+                {Object.entries(MODALIDAD_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+              </select></div>
+            <div><label className="text-sm text-slate-600">Sede física:</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
+                <option value="">🏠 Remoto</option>
+                {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+              </select></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-sm text-slate-600">Día (opcional):</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dia} onChange={e => setForm({...form, dia: e.target.value})}>
+                <option value="">Pendiente de confirmar</option>
+                {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
+              </select></div>
+            <div><label className="text-sm text-slate-600">Hora (opcional):</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio} onChange={e => setForm({...form, hora_inicio: e.target.value})}>
+                <option value="">Pendiente de confirmar</option>
+                {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
+              </select></div>
+          </div>
+          {form.sede_id && (
+            <label className="flex items-center gap-2 p-3 bg-emerald-50 rounded-lg cursor-pointer">
+              <input type="checkbox" checked={form.recibe_alumnos_presenciales} onChange={e => setForm({...form, recibe_alumnos_presenciales: e.target.checked})} />
+              <span className="text-sm">👥 Recibe alumnos presenciales</span>
+            </label>
+          )}
+          {error && <div className="p-3 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">⛔ {error}</div>}
+        </div>
+        <div className="flex gap-2 mt-4">
           <button onClick={crear} className="flex-1 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium">Crear</button>
           <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
         </div>
@@ -303,6 +303,230 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
   );
 }
 
+// ==================== CÁTEDRAS VIEW (con mejoras 5, 7, 9) ====================
+function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
+  const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
+  const [modalCatedra, setModalCatedra] = useState(null);
+  const [modalEditar, setModalEditar] = useState(null);
+  const [editCatInfo, setEditCatInfo] = useState(null);
+  const [paginaActual, setPaginaActual] = useState(1);
+  const porPagina = 20;
+
+  const catedrasFiltradas = useMemo(() => {
+    return catedras.filter(c => {
+      if (filtros.buscar && !c.nombre.toLowerCase().includes(filtros.buscar.toLowerCase()) &&
+          !c.codigo.toLowerCase().includes(filtros.buscar.toLowerCase())) return false;
+      if (filtros.soloSinAsignar && c.asignaciones?.length > 0) return false;
+      return true;
+    }); // Ya vienen ordenadas del backend por código numérico
+  }, [catedras, filtros]);
+
+  const totalPaginas = Math.ceil(catedrasFiltradas.length / porPagina);
+  const catedrasPag = catedrasFiltradas.slice((paginaActual - 1) * porPagina, paginaActual * porPagina);
+
+  const stats = useMemo(() => {
+    const allAsig = catedras.flatMap(c => c.asignaciones || []);
+    const totalInscriptos = catedras.reduce((s, c) => s + (c.inscriptos || 0), 0);
+    const materiasConInscriptos = catedras.filter(c => (c.inscriptos || 0) > 0).length;
+    return {
+      total: catedras.length,
+      abiertas: catedras.filter(c => (c.asignaciones || []).length > 0).length,
+      asignaciones: allAsig.length,
+      conDocente: allAsig.filter(a => a.docente && a.modalidad !== 'asincronica').length,
+      sinDocente: allAsig.filter(a => !a.docente && a.modalidad !== 'asincronica').length,
+      totalInscriptos,
+      materiasConInscriptos,
+    };
+  }, [catedras]);
+
+  const eliminarAsig = async (id) => {
+    if (!window.confirm('¿Eliminar esta asignación?')) return;
+    try { await apiFetch(`/api/asignaciones/${id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
+  };
+
+  const abrirEditar = (asig, cat) => {
+    setModalEditar(asig);
+    setEditCatInfo({ codigo: cat.codigo, nombre: cat.nombre });
+  };
+
+  return (
+    <div className="p-8">
+      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
+      {/* v4.0 MEJORA 9: Stats separadas */}
+      <div className="grid grid-cols-7 gap-3 mb-6">
+        {[
+          { label: 'Total Cátedras', val: stats.total, color: '' },
+          { label: '📋 Abiertas', val: stats.abiertas, color: 'text-blue-600' },
+          { label: '👨‍🏫 Con Docente', val: stats.conDocente, color: 'text-emerald-600' },
+          { label: '⚠️ Sin Docente', val: stats.sinDocente, color: 'text-red-600' },
+          { label: '👥 Inscripciones', val: stats.totalInscriptos, color: 'text-cyan-600' },
+          { label: '📚 Mat. c/alumnos', val: stats.materiasConInscriptos, color: 'text-violet-600' },
+          { label: '📊 Asignaciones', val: stats.asignaciones, color: 'text-slate-600' },
+        ].map((s, i) => (
+          <div key={i} className="bg-white rounded-xl border p-3 text-center">
+            <p className="text-slate-500 text-xs">{s.label}</p>
+            <p className={`text-2xl font-bold ${s.color}`}>{s.val}</p>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-3 mb-4 bg-white p-4 rounded-xl border items-center">
+        <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
+          value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={filtros.soloSinAsignar}
+            onChange={e => { setFiltros({...filtros, soloSinAsignar: e.target.checked}); setPaginaActual(1); }} />
+          Solo sin asignación
+        </label>
+        <span className="text-sm text-slate-500">{catedrasFiltradas.length} cátedras | Pág {paginaActual}/{totalPaginas||1}</span>
+      </div>
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full">
+          <thead><tr className="bg-slate-50 border-b">
+            <th className="text-left p-4 text-sm font-semibold w-1/4">Cátedra</th>
+            <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
+            <th className="text-center p-4 text-sm font-semibold w-20">Inscriptos</th>
+            <th className="text-center p-4 text-sm font-semibold w-20">Doc. sugeridos</th>
+            <th className="text-center p-4 text-sm font-semibold w-28">Acciones</th>
+          </tr></thead>
+          <tbody>
+            {catedrasPag.map(cat => (
+              <tr key={cat.id} className="border-b hover:bg-slate-50">
+                <td className="p-4">
+                  <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{cat.codigo}</span>
+                  <span className="font-medium">{cat.nombre}</span>
+                </td>
+                <td className="p-4">
+                  {cat.asignaciones?.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {cat.asignaciones.map(a => {
+                        const mod = MODALIDAD_CONFIG[a.modalidad] || {};
+                        const pendiente = !a.dia && !a.hora_inicio;
+                        return (
+                          <div key={a.id} className={`px-3 py-2 rounded-lg ${pendiente ? 'bg-yellow-50 border-yellow-300' : mod.bg} border ${pendiente ? 'border-yellow-300' : mod.border} text-sm`}>
+                            <div className="flex items-center gap-2">
+                              <span>{pendiente ? '⏳' : mod.icon}</span>
+                              <div>
+                                <p className={`font-medium ${pendiente ? 'text-yellow-700' : mod.color}`}>{pendiente ? 'Pendiente' : mod.label}</p>
+                                {a.modalidad !== 'asincronica' && (
+                                  <p className="text-xs text-slate-500">
+                                    {a.docente ? a.docente.nombre : '⚠️ Sin docente'}
+                                    {a.dia ? ` • ${a.dia} ${a.hora_inicio}` : ''}
+                                    {a.sede_nombre ? ` • ${a.sede_nombre}` : ''}
+                                  </p>
+                                )}
+                              </div>
+                              {/* v4.0 MEJORA 3: Botón editar */}
+                              <button onClick={() => abrirEditar(a, cat)} className="text-blue-500 hover:text-blue-700 ml-1" title="Editar">✏️</button>
+                              <button onClick={() => eliminarAsig(a.id)} className="text-red-400 hover:text-red-600" title="Eliminar">×</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
+                </td>
+                <td className="p-4 text-center">
+                  <span className={`text-xl font-bold ${cat.inscriptos > 0 ? 'text-cyan-600' : 'text-slate-300'}`}>{cat.inscriptos || 0}</span>
+                </td>
+                {/* v4.0 MEJORA 7: Docentes sugeridos */}
+                <td className="p-4 text-center">
+                  {cat.docentes_sugeridos > 0 ? (
+                    <span className={`text-lg font-bold ${(cat.asignaciones?.filter(a => a.docente)?.length || 0) < cat.docentes_sugeridos ? 'text-red-500' : 'text-emerald-500'}`}>
+                      {cat.asignaciones?.filter(a => a.docente)?.length || 0}/{cat.docentes_sugeridos}
+                    </span>
+                  ) : <span className="text-slate-300">-</span>}
+                </td>
+                <td className="p-4 text-center">
+                  <button onClick={() => setModalCatedra(cat)} className="px-3 py-1.5 bg-amber-500 text-slate-900 rounded text-sm font-medium hover:bg-amber-400">+ Asignar</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex justify-center gap-2 mt-4">
+        <button onClick={() => setPaginaActual(Math.max(1, paginaActual - 1))} disabled={paginaActual === 1} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">← Anterior</button>
+        <span className="px-3 py-1 text-sm text-slate-600">Página {paginaActual} de {totalPaginas || 1}</span>
+        <button onClick={() => setPaginaActual(Math.min(totalPaginas, paginaActual + 1))} disabled={paginaActual >= totalPaginas} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">Siguiente →</button>
+      </div>
+      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
+      {modalEditar && editCatInfo && <ModalEditarAsignacion asignacion={modalEditar} docentes={docentes} sedes={sedes} onClose={() => { setModalEditar(null); setEditCatInfo(null); }} recargar={recargar} catCodigo={editCatInfo.codigo} catNombre={editCatInfo.nombre} />}
+    </div>
+  );
+}
+
+// ==================== v4.0 MEJORA 8: NECESITAN DOCENTE ====================
+function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
+  const [datos, setDatos] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        const r = await apiFetch(`/api/catedras/necesitan-docente${qParam}`);
+        setDatos(r);
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+
+  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
+        <p className="text-slate-500 text-sm">Cátedras con más de 5 inscriptos que necesitan docente asignado. Ideal: 1 docente cada 100 alumnos.</p>
+      </div>
+      {datos.length === 0 ? (
+        <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
+          <p className="text-4xl mb-2">✅</p>
+          <p className="text-green-700 font-medium">Todas las materias con inscriptos tienen docente asignado</p>
+        </div>
+      ) : (
+        <>
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+            <p className="text-red-700 font-medium">{datos.length} materias necesitan atención</p>
+            <p className="text-red-600 text-sm">Total docentes faltantes: {datos.reduce((s, d) => s + d.docentes_faltantes, 0)}</p>
+          </div>
+          <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+            <table className="w-full">
+              <thead><tr className="bg-slate-50 border-b">
+                <th className="text-left p-4 text-sm font-semibold">Cátedra</th>
+                <th className="text-center p-4 text-sm font-semibold">Inscriptos</th>
+                <th className="text-center p-4 text-sm font-semibold">Doc. necesarios</th>
+                <th className="text-center p-4 text-sm font-semibold">Doc. asignados</th>
+                <th className="text-center p-4 text-sm font-semibold">Faltan</th>
+                <th className="text-left p-4 text-sm font-semibold">Docentes actuales</th>
+              </tr></thead>
+              <tbody>
+                {datos.map(d => (
+                  <tr key={d.catedra_id} className="border-b hover:bg-slate-50">
+                    <td className="p-4">
+                      <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{d.codigo}</span>
+                      <span className="font-medium">{d.nombre}</span>
+                    </td>
+                    <td className="p-4 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos}</span></td>
+                    <td className="p-4 text-center"><span className="text-lg font-bold">{d.docentes_sugeridos}</span></td>
+                    <td className="p-4 text-center"><span className={`text-lg font-bold ${d.docentes_asignados > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{d.docentes_asignados}</span></td>
+                    <td className="p-4 text-center"><span className="px-3 py-1 bg-red-100 text-red-700 rounded-full font-bold">{d.docentes_faltantes}</span></td>
+                    <td className="p-4">{d.docentes_nombres?.length > 0 ? d.docentes_nombres.join(', ') : <span className="text-red-500 italic">Sin docente</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ==================== DOCENTES VIEW ====================
 function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
   const [modalSedes, setModalSedes] = useState(null);
   const [modalEditar, setModalEditar] = useState(null);
@@ -322,39 +546,23 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
   }, [docentes, buscar]);
 
   const guardarSedes = async (docenteId, sedeIds) => {
-    try {
-      await apiFetch(`/api/docentes/${docenteId}/sedes`, { method: 'PUT', body: JSON.stringify({ sede_ids: sedeIds }) });
-      recargar(); setModalSedes(null);
-    } catch (e) { alert(e.message); }
+    try { await apiFetch(`/api/docentes/${docenteId}/sedes`, { method: 'PUT', body: JSON.stringify({ sede_ids: sedeIds }) }); recargar(); setModalSedes(null); } catch (e) { alert(e.message); }
   };
-
   const guardarDocente = async (docenteId, data) => {
-    try {
-      await apiFetch(`/api/docentes/${docenteId}`, { method: 'PUT', body: JSON.stringify(data) });
-      recargar(); setModalEditar(null);
-    } catch (e) { alert(e.message); }
+    try { await apiFetch(`/api/docentes/${docenteId}`, { method: 'PUT', body: JSON.stringify(data) }); recargar(); setModalEditar(null); } catch (e) { alert(e.message); }
   };
-
   const crearDocente = async (data) => {
-    try {
-      await apiFetch('/api/docentes', { method: 'POST', body: JSON.stringify(data) });
-      recargar(); setModalNuevo(false);
-    } catch (e) { alert(e.message); }
+    try { await apiFetch('/api/docentes', { method: 'POST', body: JSON.stringify(data) }); recargar(); setModalNuevo(false); } catch (e) { alert(e.message); }
   };
-
   const eliminarDocente = async (d) => {
-    if (!window.confirm(`¿Eliminar a ${d.nombre} ${d.apellido} (DNI: ${d.dni})? Esta acción no se puede deshacer.`)) return;
-    try {
-      await apiFetch(`/api/docentes/${d.id}`, { method: 'DELETE' });
-      recargar();
-    } catch (e) { alert(e.message); }
+    if (!window.confirm(`¿Eliminar a ${d.nombre} ${d.apellido}?`)) return;
+    try { await apiFetch(`/api/docentes/${d.id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
   };
 
   return (
     <div className="p-8">
       <div className="flex justify-between items-center mb-6">
-        <div><h2 className="text-2xl font-bold text-slate-800">Docentes</h2>
-          <p className="text-slate-500 text-sm">Tipo deducido automáticamente de las asignaciones</p></div>
+        <div><h2 className="text-2xl font-bold text-slate-800">Docentes</h2></div>
         <button onClick={() => setModalNuevo(true)} className="px-4 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium hover:bg-amber-400">+ Agregar Docente</button>
       </div>
       <div className="grid grid-cols-4 gap-4 mb-6">
@@ -404,13 +612,13 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                       return (<div key={a.id} className="flex items-center gap-2 text-sm mb-1">
                         <span className={mod.color}>{mod.icon}</span>
                         <span className="font-mono bg-slate-100 px-1 rounded text-xs">{a.catedra_codigo}</span>
-                        <span className="text-slate-500 text-xs">{a.dia||''} {a.hora_inicio||''}</span>
+                        <span className="text-slate-500 text-xs">{a.dia||'Pend.'} {a.hora_inicio||''}</span>
                       </div>);
                     }) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
                   </td>
                   <td className="p-4 text-center">
                     <div className="flex gap-1 justify-center">
-                      <button onClick={() => setModalEditar(d)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">✏️ Editar</button>
+                      <button onClick={() => setModalEditar(d)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">✏️</button>
                       <button onClick={() => eliminarDocente(d)} className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200">🗑️</button>
                     </div>
                   </td>
@@ -431,51 +639,39 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
 function ModalEditarDocente({ docente, onSave, onClose }) {
   const [form, setForm] = useState({ nombre: docente.nombre, apellido: docente.apellido, dni: docente.dni, email: docente.email || '' });
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-        <h3 className="text-lg font-bold mb-4">Editar Docente</h3>
-        <div className="space-y-3">
-          <div><label className="text-sm text-slate-600">DNI</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dni} onChange={e => setForm({...form, dni: e.target.value})} /></div>
-          <div><label className="text-sm text-slate-600">Nombre</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.nombre} onChange={e => setForm({...form, nombre: e.target.value})} /></div>
-          <div><label className="text-sm text-slate-600">Apellido</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.apellido} onChange={e => setForm({...form, apellido: e.target.value})} /></div>
-          <div><label className="text-sm text-slate-600">Email</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.email} onChange={e => setForm({...form, email: e.target.value})} /></div>
-        </div>
-        <div className="flex gap-2 mt-4">
-          <button onClick={() => onSave(docente.id, form)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
-          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-        </div>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+      <h3 className="text-lg font-bold mb-4">Editar Docente</h3>
+      <div className="space-y-3">
+        {['dni','nombre','apellido','email'].map(f => (
+          <div key={f}><label className="text-sm text-slate-600 capitalize">{f}</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form[f]} onChange={e => setForm({...form, [f]: e.target.value})} /></div>
+        ))}
       </div>
-    </div>
+      <div className="flex gap-2 mt-4">
+        <button onClick={() => onSave(docente.id, form)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
+        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
+      </div>
+    </div></div>
   );
 }
 
 function ModalNuevoDocente({ onSave, onClose }) {
   const [form, setForm] = useState({ dni: '', nombre: '', apellido: '', email: '' });
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-        <h3 className="text-lg font-bold mb-4">Agregar Docente</h3>
-        <div className="space-y-3">
-          <div><label className="text-sm text-slate-600">DNI *</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dni} onChange={e => setForm({...form, dni: e.target.value})} placeholder="Ej: 20345678" /></div>
-          <div><label className="text-sm text-slate-600">Nombre *</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.nombre} onChange={e => setForm({...form, nombre: e.target.value})} /></div>
-          <div><label className="text-sm text-slate-600">Apellido *</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.apellido} onChange={e => setForm({...form, apellido: e.target.value})} /></div>
-          <div><label className="text-sm text-slate-600">Email</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.email} onChange={e => setForm({...form, email: e.target.value})} /></div>
-        </div>
-        <div className="flex gap-2 mt-4">
-          <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }}
-            className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Crear</button>
-          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-        </div>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+      <h3 className="text-lg font-bold mb-4">Agregar Docente</h3>
+      <div className="space-y-3">
+        {[{f:'dni',p:'Ej: 20345678'},{f:'nombre',p:''},{f:'apellido',p:''},{f:'email',p:''}].map(({f,p}) => (
+          <div key={f}><label className="text-sm text-slate-600 capitalize">{f} {['dni','nombre','apellido'].includes(f) ? '*' : ''}</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form[f]} onChange={e => setForm({...form, [f]: e.target.value})} placeholder={p} /></div>
+        ))}
       </div>
-    </div>
+      <div className="flex gap-2 mt-4">
+        <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }}
+          className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Crear</button>
+        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
+      </div>
+    </div></div>
   );
 }
 
@@ -483,28 +679,25 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
   const [sel, setSel] = useState(docente.sedes?.map(s => s.id) || []);
   const toggle = id => setSel(sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-        <h3 className="text-lg font-bold mb-4">Editar Sedes: {docente.nombre} {docente.apellido}</h3>
-        <div className="space-y-2 mb-4">
-          {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
-            <label key={s.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${sel.includes(s.id) ? 'border-amber-500 bg-amber-50' : 'hover:bg-slate-50'}`}>
-              <input type="checkbox" checked={sel.includes(s.id)} onChange={() => toggle(s.id)} />
-              <span className={`w-3 h-3 rounded-full ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}></span>
-              <span>{s.nombre}</span>
-            </label>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => onSave(docente.id, sel)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
-          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-        </div>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+      <h3 className="text-lg font-bold mb-4">Sedes: {docente.nombre} {docente.apellido}</h3>
+      <div className="space-y-2 mb-4">
+        {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
+          <label key={s.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${sel.includes(s.id) ? 'border-amber-500 bg-amber-50' : 'hover:bg-slate-50'}`}>
+            <input type="checkbox" checked={sel.includes(s.id)} onChange={() => toggle(s.id)} />
+            <span className={`w-3 h-3 rounded-full ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}></span><span>{s.nombre}</span>
+          </label>
+        ))}
       </div>
-    </div>
+      <div className="flex gap-2">
+        <button onClick={() => onSave(docente.id, sel)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
+        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
+      </div>
+    </div></div>
   );
 }
 
-// ============ VISTA CALENDARIO (MEJORADA v3.3) ============
+// ==================== CALENDARIO VIEW ====================
 function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   const [filtroSede, setFiltroSede] = useState('');
   const [filtroDocente, setFiltroDocente] = useState('');
@@ -514,10 +707,19 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   const [mostrarSugDoc, setMostrarSugDoc] = useState(false);
   const [mostrarSugCat, setMostrarSugCat] = useState(false);
 
-  const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).map(a => ({ ...a, cat_codigo: c.codigo, cat_nombre: c.nombre }))), [catedras]);
+  const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).map(a => ({ ...a, cat_codigo: c.codigo, cat_nombre: c.nombre, cat_inscriptos: c.inscriptos || 0 }))), [catedras]);
+
+  // v4.0 MEJORA 5: Ordenar por código
+  const asigOrdenadas = useMemo(() => {
+    return [...allAsig].sort((a, b) => {
+      const na = parseInt((a.cat_codigo || '').replace(/[^0-9]/g, '')) || 9999;
+      const nb = parseInt((b.cat_codigo || '').replace(/[^0-9]/g, '')) || 9999;
+      return na - nb;
+    });
+  }, [allAsig]);
 
   const asigFiltradas = useMemo(() => {
-    return allAsig.filter(a => a.dia && a.hora_inicio).filter(a => {
+    return asigOrdenadas.filter(a => a.dia && a.hora_inicio).filter(a => {
       if (filtroSede === 'remoto') return !a.sede_id;
       if (filtroSede) return a.sede_id === parseInt(filtroSede);
       return true;
@@ -537,29 +739,24 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
       }
       return true;
     });
-  }, [allAsig, filtroSede, filtroDocente, filtroCatedra, buscarDocente, buscarCatedra]);
+  }, [asigOrdenadas, filtroSede, filtroDocente, filtroCatedra, buscarDocente, buscarCatedra]);
 
   const docentesSugeridos = useMemo(() => {
     if (!buscarDocente || filtroDocente) return [];
     const b = buscarDocente.toLowerCase();
-    return docentes.filter(d =>
-      d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b)
-    ).slice(0, 8);
+    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b)).slice(0, 8);
   }, [docentes, buscarDocente, filtroDocente]);
 
   const catedrasSugeridas = useMemo(() => {
     if (!buscarCatedra || filtroCatedra) return [];
     const b = buscarCatedra.toLowerCase();
-    return catedras.filter(c =>
-      c.codigo.toLowerCase().includes(b) || c.nombre.toLowerCase().includes(b)
-    ).slice(0, 8);
+    return catedras.filter(c => c.codigo.toLowerCase().includes(b) || c.nombre.toLowerCase().includes(b)).slice(0, 8);
   }, [catedras, buscarCatedra, filtroCatedra]);
 
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Calendario</h2></div>
       <div className="bg-white rounded-xl border p-4 mb-6 grid grid-cols-3 gap-4">
-        {/* Filtro Sede */}
         <div>
           <label className="text-sm text-slate-600 font-medium">Sede:</label>
           <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
@@ -568,27 +765,16 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
             <option value="remoto">🏠 Solo Remotos</option>
           </select>
         </div>
-        {/* Filtro Docente con buscador */}
         <div className="relative">
           <label className="text-sm text-slate-600 font-medium">Docente:</label>
-          <input
-            type="text"
-            placeholder="Buscar por nombre..."
-            className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
-            value={buscarDocente}
-            onChange={e => { setBuscarDocente(e.target.value); setFiltroDocente(''); setMostrarSugDoc(true); }}
-            onFocus={() => setMostrarSugDoc(true)}
-            onBlur={() => setTimeout(() => setMostrarSugDoc(false), 150)}
-          />
-          {filtroDocente && (
-            <button onClick={() => { setBuscarDocente(''); setFiltroDocente(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>
-          )}
+          <input type="text" placeholder="Buscar por nombre..." className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
+            value={buscarDocente} onChange={e => { setBuscarDocente(e.target.value); setFiltroDocente(''); setMostrarSugDoc(true); }}
+            onFocus={() => setMostrarSugDoc(true)} onBlur={() => setTimeout(() => setMostrarSugDoc(false), 150)} />
+          {filtroDocente && <button onClick={() => { setBuscarDocente(''); setFiltroDocente(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>}
           {mostrarSugDoc && docentesSugeridos.length > 0 && (
             <div className="absolute z-20 w-full border rounded-lg bg-white shadow-lg mt-1 max-h-48 overflow-y-auto">
               <div className="p-2 text-xs text-slate-400 border-b cursor-pointer hover:bg-slate-50"
-                onMouseDown={() => { setBuscarDocente(''); setFiltroDocente(''); setMostrarSugDoc(false); }}>
-                Ver todos los docentes
-              </div>
+                onMouseDown={() => { setBuscarDocente(''); setFiltroDocente(''); setMostrarSugDoc(false); }}>Ver todos</div>
               {docentesSugeridos.map(d => (
                 <div key={d.id} className="p-2 text-sm cursor-pointer hover:bg-amber-50"
                   onMouseDown={() => { setFiltroDocente(d.id.toString()); setBuscarDocente(`${d.nombre} ${d.apellido}`); setMostrarSugDoc(false); }}>
@@ -598,27 +784,16 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
             </div>
           )}
         </div>
-        {/* Filtro Cátedra con buscador */}
         <div className="relative">
           <label className="text-sm text-slate-600 font-medium">Cátedra:</label>
-          <input
-            type="text"
-            placeholder="Buscar por código o nombre..."
-            className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
-            value={buscarCatedra}
-            onChange={e => { setBuscarCatedra(e.target.value); setFiltroCatedra(''); setMostrarSugCat(true); }}
-            onFocus={() => setMostrarSugCat(true)}
-            onBlur={() => setTimeout(() => setMostrarSugCat(false), 150)}
-          />
-          {filtroCatedra && (
-            <button onClick={() => { setBuscarCatedra(''); setFiltroCatedra(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>
-          )}
+          <input type="text" placeholder="Buscar por código o nombre..." className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
+            value={buscarCatedra} onChange={e => { setBuscarCatedra(e.target.value); setFiltroCatedra(''); setMostrarSugCat(true); }}
+            onFocus={() => setMostrarSugCat(true)} onBlur={() => setTimeout(() => setMostrarSugCat(false), 150)} />
+          {filtroCatedra && <button onClick={() => { setBuscarCatedra(''); setFiltroCatedra(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>}
           {mostrarSugCat && catedrasSugeridas.length > 0 && (
             <div className="absolute z-20 w-full border rounded-lg bg-white shadow-lg mt-1 max-h-48 overflow-y-auto">
               <div className="p-2 text-xs text-slate-400 border-b cursor-pointer hover:bg-slate-50"
-                onMouseDown={() => { setBuscarCatedra(''); setFiltroCatedra(''); setMostrarSugCat(false); }}>
-                Ver todas las cátedras
-              </div>
+                onMouseDown={() => { setBuscarCatedra(''); setFiltroCatedra(''); setMostrarSugCat(false); }}>Ver todas</div>
               {catedrasSugeridas.map(c => (
                 <div key={c.id} className="p-2 text-sm cursor-pointer hover:bg-amber-50"
                   onMouseDown={() => { setFiltroCatedra(c.codigo); setBuscarCatedra(`${c.codigo} - ${c.nombre}`); setMostrarSugCat(false); }}>
@@ -645,13 +820,20 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
                   return (
                     <td key={dia} className="p-1 border-r align-top">
                       {celdas.map(a => {
-                        const mod = MODALIDAD_CONFIG[a.modalidad] || {};
                         const sinDocente = !a.docente;
+                        // v4.0 MEJORA 10: Color por sede
+                        const sedeNombre = a.sede_nombre || '';
+                        let bgClass = 'bg-gray-50 border-gray-200';
+                        if (sinDocente) { bgClass = 'bg-orange-50 border-orange-300'; }
+                        else if (sedeNombre.includes('Caballito')) { bgClass = 'bg-emerald-50 border-emerald-300'; }
+                        else if (sedeNombre.includes('Vicente')) { bgClass = 'bg-amber-50 border-amber-300'; }
+                        else if (sedeNombre.includes('Avellaneda')) { bgClass = 'bg-blue-50 border-blue-300'; }
+                        else if (sedeNombre.includes('Online')) { bgClass = 'bg-purple-50 border-purple-300'; }
                         return (
-                          <div key={a.id} className={`p-1 mb-1 rounded text-xs border ${sinDocente ? 'bg-orange-50 border-orange-300' : `${mod.bg} ${mod.border}`}`}>
-                            <p className={`font-bold ${sinDocente ? 'text-orange-600' : mod.color}`}>{a.cat_codigo}</p>
-                            <p className={sinDocente ? 'text-orange-500 italic text-xs' : ''}>{sinDocente ? '⚠️ Sin docente' : a.docente?.nombre}</p>
-                            <p className="text-slate-500">{a.sede_nombre || '🏠'}</p>
+                          <div key={a.id} className={`p-1 mb-1 rounded text-xs border ${bgClass}`}>
+                            <p className="font-bold text-slate-800">{a.cat_codigo}</p>
+                            <p className={sinDocente ? 'text-orange-500 italic' : 'text-slate-600'}>{sinDocente ? '⚠️ Sin docente' : a.docente?.nombre}</p>
+                            <p className="text-slate-400">{sedeNombre || '🏠'}</p>
                           </div>
                         );
                       })}
@@ -663,14 +845,14 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
           </tbody>
         </table>
       </div>
-      {/* Lista */}
+      {/* Lista ordenada por código */}
       <div className="bg-white rounded-xl border shadow-sm p-4">
-        <h3 className="font-semibold mb-3">📋 Lista ({asigFiltradas.length} asignaciones)</h3>
+        <h3 className="font-semibold mb-3">📋 Lista ({asigFiltradas.length} asignaciones) — ordenadas por código</h3>
         <div className="overflow-auto max-h-80">
           <table className="w-full text-sm">
             <thead className="bg-slate-50"><tr>
               <th className="p-2 text-left">Cátedra</th><th className="p-2 text-left">Docente</th>
-              <th className="p-2">Modalidad</th><th className="p-2">Día</th><th className="p-2">Hora</th><th className="p-2">Sede</th>
+              <th className="p-2">Modalidad</th><th className="p-2">Día</th><th className="p-2">Hora</th><th className="p-2">Sede</th><th className="p-2">Inscriptos</th>
             </tr></thead>
             <tbody>
               {asigFiltradas.map(a => {
@@ -682,7 +864,8 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
                     <td className="p-2 text-center"><span className={mod.color}>{mod.icon}</span></td>
                     <td className="p-2 text-center">{a.dia}</td>
                     <td className="p-2 text-center">{a.hora_inicio}</td>
-                    <td className="p-2 text-center">{a.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[a.sede_nombre]||'bg-gray-500'}`}>{a.sede_nombre}</span> : '🏠 Remoto'}</td>
+                    <td className="p-2 text-center">{a.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[a.sede_nombre]||'bg-gray-500'}`}>{a.sede_nombre}</span> : '🏠'}</td>
+                    <td className="p-2 text-center font-bold text-cyan-600">{a.cat_inscriptos || 0}</td>
                   </tr>
                 );
               })}
@@ -694,15 +877,14 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   );
 }
 
+// ==================== SOLAPAMIENTOS ====================
 function SolapamientosView({ solapamientos }) {
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Detector de Solapamientos</h2></div>
       {solapamientos.length === 0 ? (
         <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-          <p className="text-4xl mb-2">✅</p>
-          <p className="text-green-700 font-medium text-lg">No hay solapamientos</p>
-          <p className="text-green-600 text-sm">Todos los horarios están OK</p>
+          <p className="text-4xl mb-2">✅</p><p className="text-green-700 font-medium text-lg">No hay solapamientos</p>
         </div>
       ) : (
         <div className="space-y-4">
@@ -713,7 +895,6 @@ function SolapamientosView({ solapamientos }) {
                 <span className="font-medium">{s.tipo === 'CATEDRA' ? '🎓 Cátedra' : '👨‍🏫 Docente'}</span>
               </div>
               <p className="text-slate-700">{s.mensaje}</p>
-              {s.tipo === 'CATEDRA' && <p className="text-sm text-red-600 mt-1">⚠️ Comparten el link de Meet.</p>}
             </div>
           ))}
         </div>
@@ -722,11 +903,11 @@ function SolapamientosView({ solapamientos }) {
   );
 }
 
+// ==================== CURSOS ====================
 function CursosView({ cursos, sedes, recargar }) {
   const [buscar, setBuscar] = useState('');
   const [filtroSede, setFiltroSede] = useState('');
   const [expandido, setExpandido] = useState(null);
-
   const cursosFiltrados = useMemo(() => {
     return cursos.filter(c => {
       if (buscar && !c.nombre.toLowerCase().includes(buscar.toLowerCase())) return false;
@@ -734,39 +915,11 @@ function CursosView({ cursos, sedes, recargar }) {
       return true;
     });
   }, [cursos, buscar, filtroSede]);
-
-  const stats = useMemo(() => {
-    const porSede = {};
-    cursos.forEach(c => {
-      const sede = c.sede_nombre || 'Sin sede';
-      porSede[sede] = (porSede[sede] || 0) + 1;
-    });
-    return { total: cursos.length, conCatedras: cursos.filter(c => c.cant_catedras > 0).length, porSede };
-  }, [cursos]);
-
   return (
     <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">Cursos / Carreras</h2>
-        <p className="text-slate-500 text-sm">Cursos vinculados a cátedras. Importá desde la sección Importar.</p>
-      </div>
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-xl border p-4 text-center">
-          <p className="text-slate-500 text-xs">Total Cursos</p>
-          <p className="text-2xl font-bold">{stats.total}</p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 text-center">
-          <p className="text-slate-500 text-xs">Con Cátedras Vinculadas</p>
-          <p className="text-2xl font-bold text-emerald-600">{stats.conCatedras}</p>
-        </div>
-        <div className="bg-white rounded-xl border p-4 text-center">
-          <p className="text-slate-500 text-xs">Sin Cátedras</p>
-          <p className="text-2xl font-bold text-orange-600">{stats.total - stats.conCatedras}</p>
-        </div>
-      </div>
+      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cursos / Carreras</h2></div>
       <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
-        <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm"
-          value={buscar} onChange={e => setBuscar(e.target.value)} />
+        <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm" value={buscar} onChange={e => setBuscar(e.target.value)} />
         <select className="border rounded-lg px-3 py-2 text-sm" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
           <option value="">Todas las sedes</option>
           {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
@@ -775,7 +928,7 @@ function CursosView({ cursos, sedes, recargar }) {
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full">
           <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-4 text-sm font-semibold">Curso / Carrera</th>
+            <th className="text-left p-4 text-sm font-semibold">Curso</th>
             <th className="text-center p-4 text-sm font-semibold">Sede</th>
             <th className="text-center p-4 text-sm font-semibold">Cátedras</th>
             <th className="text-center p-4 text-sm font-semibold w-24">Ver</th>
@@ -784,32 +937,17 @@ function CursosView({ cursos, sedes, recargar }) {
             {cursosFiltrados.map(c => (
               <React.Fragment key={c.id}>
                 <tr className="border-b hover:bg-slate-50">
-                  <td className="p-4"><span className="font-medium">{c.nombre}</span></td>
-                  <td className="p-4 text-center">
-                    {c.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[c.sede_nombre]||'bg-gray-500'}`}>{c.sede_nombre}</span>
-                      : <span className="text-slate-400 text-xs">Sin sede</span>}
-                  </td>
-                  <td className="p-4 text-center">
-                    <span className={`text-lg font-bold ${c.cant_catedras > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{c.cant_catedras}</span>
-                  </td>
-                  <td className="p-4 text-center">
-                    {c.cant_catedras > 0 && (
-                      <button onClick={() => setExpandido(expandido === c.id ? null : c.id)}
-                        className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">
-                        {expandido === c.id ? '▲ Ocultar' : '▼ Ver cátedras'}
-                      </button>
-                    )}
-                  </td>
+                  <td className="p-4 font-medium">{c.nombre}</td>
+                  <td className="p-4 text-center">{c.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[c.sede_nombre]||'bg-gray-500'}`}>{c.sede_nombre}</span> : '-'}</td>
+                  <td className="p-4 text-center"><span className={`text-lg font-bold ${c.cant_catedras > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{c.cant_catedras}</span></td>
+                  <td className="p-4 text-center">{c.cant_catedras > 0 && <button onClick={() => setExpandido(expandido === c.id ? null : c.id)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">{expandido === c.id ? '▲' : '▼'}</button>}</td>
                 </tr>
                 {expandido === c.id && c.catedras?.length > 0 && (
                   <tr><td colSpan="4" className="bg-slate-50 px-8 py-3">
-                    <p className="text-xs text-slate-500 mb-2 font-medium">Cátedras de {c.nombre}:</p>
                     <div className="flex flex-wrap gap-2">
                       {c.catedras.map(cat => (
                         <span key={cat.id} className="px-3 py-1 bg-white border rounded-lg text-sm">
-                          <span className="font-mono bg-slate-800 text-white px-1 rounded text-xs mr-1">{cat.catedra_codigo}</span>
-                          {cat.catedra_nombre}
-                          {cat.turno && <span className="text-slate-400 ml-1">({cat.turno})</span>}
+                          <span className="font-mono bg-slate-800 text-white px-1 rounded text-xs mr-1">{cat.catedra_codigo}</span>{cat.catedra_nombre}
                         </span>
                       ))}
                     </div>
@@ -825,7 +963,7 @@ function CursosView({ cursos, sedes, recargar }) {
   );
 }
 
-// ============ VISTA IMPORTAR (MEJORADA v3.3 - con alumnos) ============
+// ==================== IMPORTAR VIEW (v4.0 con apertura y alumnos consolidados) ====================
 function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   const [uploading, setUploading] = useState('');
   const [resultado, setResultado] = useState(null);
@@ -844,53 +982,34 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
       try {
         const res = await fetch(`${API_URL}${endpoint}${extraParams}`, { method: 'POST', body: formData });
         const data = await res.json();
-        if (res.ok) {
-          setResultado({ ok: true, data, label });
-          recargar();
-        } else {
-          setResultado({ ok: false, error: data.detail || 'Error desconocido', label });
-        }
+        if (res.ok) { setResultado({ ok: true, data, label }); recargar(); }
+        else { setResultado({ ok: false, error: data.detail || 'Error', label }); }
       } catch (err) { setResultado({ ok: false, error: err.message, label }); }
       setUploading('');
     };
     input.click();
   };
 
-  const importadores = [
-    {
-      id: 'catedras', icon: '📚', titulo: 'Importar Cátedras',
-      desc: 'Excel con columnas: Número + "c.XX Nombre"',
-      ejemplo: 'Ej: | 1 | c.1 Administración |',
-      endpoint: '/api/importar/catedras', color: 'bg-slate-800 text-white',
-    },
-    {
-      id: 'cursos', icon: '🎓', titulo: 'Importar Cursos',
-      desc: 'Excel con columnas: Sede + Nombre del curso',
-      ejemplo: 'Ej: | Avellaneda | Marketing (Avellaneda) |',
-      endpoint: '/api/importar/cursos', color: 'bg-blue-600 text-white',
-    },
-    {
-      id: 'docentes', icon: '👨‍🏫', titulo: 'Importar Docentes',
-      desc: 'Excel: DNI + "APELLIDO, NOMBRE" ó DNI/Nombre/Apellido/Email',
-      ejemplo: 'Ej: | 20345678 | GARCÍA, MARÍA |',
-      endpoint: '/api/importar/docentes', color: 'bg-amber-500 text-slate-900',
-    },
-  ];
+  // v4.0 MEJORA 12: Replicar cuatrimestre
+  const [replicarOrigen, setReplicarOrigen] = useState('');
+  const [replicarDestino, setReplicarDestino] = useState('');
+  const [replicando, setReplicando] = useState(false);
 
-  const importadoresVinculacion = [
-    {
-      id: 'catedra-cursos', icon: '🔗', titulo: 'Vincular Cátedras ↔ Cursos',
-      desc: 'Excel: Código | Materia (c.XX Nombre - Turno) | Curso | Sede',
-      ejemplo: 'Ej: | 1 | c.1 Administración - Mañana | Marketing (Avellaneda) | Avellaneda |',
-      endpoint: '/api/importar/catedra-cursos', color: 'bg-teal-600 text-white',
-    },
-    {
-      id: 'links-meet', icon: '📹', titulo: 'Importar Links de Meet',
-      desc: 'Excel: Código de cátedra + Link de Google Meet',
-      ejemplo: 'Ej: | c.1 | https://meet.google.com/xxx |',
-      endpoint: '/api/importar/links-meet', color: 'bg-green-600 text-white',
-    },
-  ];
+  const replicar = async () => {
+    if (!replicarOrigen || !replicarDestino) { alert('Seleccioná origen y destino'); return; }
+    if (replicarOrigen === replicarDestino) { alert('Origen y destino no pueden ser iguales'); return; }
+    if (!window.confirm('¿Replicar todas las aperturas del cuatrimestre seleccionado? Los docentes NO se copian, solo la estructura.')) return;
+    setReplicando(true);
+    try {
+      const r = await apiFetch('/api/cuatrimestres/replicar', {
+        method: 'POST',
+        body: JSON.stringify({ origen_id: parseInt(replicarOrigen), destino_id: parseInt(replicarDestino) }),
+      });
+      setResultado({ ok: true, data: r, label: 'Replicar cuatrimestre' });
+      recargar();
+    } catch (e) { setResultado({ ok: false, error: e.message, label: 'Replicar' }); }
+    setReplicando(false);
+  };
 
   return (
     <div className="p-8">
@@ -899,17 +1018,39 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
       </div>
 
+      {/* v4.0 MEJORA 1: Apertura masiva de cátedras */}
+      <h3 className="font-semibold text-slate-600 mb-3">📋 Apertura de cátedras por cuatrimestre</h3>
+      <div className="bg-white rounded-xl border p-6 mb-8 border-amber-200">
+        <h3 className="font-semibold mb-2">📚 Abrir cátedras para un cuatrimestre</h3>
+        <p className="text-sm text-slate-500 mb-1">Subí un Excel con las cátedras que se abrirán. Cada una se crea como "pendiente" (sin turno ni docente asignado).</p>
+        <p className="text-xs text-slate-400 mb-3 font-mono">Formato: | Número | c.XX Nombre de la cátedra |</p>
+        <div className="mb-4">
+          <label className="text-sm text-slate-600 font-medium">Cuatrimestre destino:</label>
+          <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50"
+            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
+            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+        </div>
+        <button onClick={() => subirArchivo('/api/importar/apertura-catedras', 'Apertura Cátedras', `?cuatrimestre_id=${cuatriSeleccionado}`)}
+          disabled={uploading === 'Apertura Cátedras'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-amber-500 text-slate-900 hover:bg-amber-400">
+          {uploading === 'Apertura Cátedras' ? '⏳ Importando...' : '📤 Subir Excel de aperturas'}
+        </button>
+      </div>
+
       <h3 className="font-semibold text-slate-600 mb-3">Datos base</h3>
       <div className="grid grid-cols-3 gap-6 mb-8">
-        {importadores.map(imp => (
+        {[
+          { id: 'catedras', icon: '📚', titulo: 'Importar Cátedras', desc: 'Excel con: Número + "c.XX Nombre"', endpoint: '/api/importar/catedras', color: 'bg-slate-800 text-white' },
+          { id: 'cursos', icon: '🎓', titulo: 'Importar Cursos', desc: 'Excel con: Sede + Nombre del curso', endpoint: '/api/importar/cursos', color: 'bg-blue-600 text-white' },
+          { id: 'docentes', icon: '👨‍🏫', titulo: 'Importar Docentes', desc: 'Excel: DNI + Apellido, Nombre', endpoint: '/api/importar/docentes', color: 'bg-amber-500 text-slate-900' },
+        ].map(imp => (
           <div key={imp.id} className="bg-white rounded-xl border p-6">
             <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
-            <p className="text-sm text-slate-500 mb-1">{imp.desc}</p>
-            <p className="text-xs text-slate-400 mb-4 font-mono">{imp.ejemplo}</p>
-            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)}
-              disabled={uploading === imp.titulo}
+            <p className="text-sm text-slate-500 mb-4">{imp.desc}</p>
+            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)} disabled={uploading === imp.titulo}
               className={`w-full py-2.5 rounded-lg font-medium disabled:opacity-50 ${imp.color}`}>
-              {uploading === imp.titulo ? '⏳ Importando...' : '📤 Subir Excel (.xlsx)'}
+              {uploading === imp.titulo ? '⏳...' : '📤 Subir Excel'}
             </button>
           </div>
         ))}
@@ -917,38 +1058,63 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
 
       <h3 className="font-semibold text-slate-600 mb-3">Vinculaciones</h3>
       <div className="grid grid-cols-2 gap-6 mb-8">
-        {importadoresVinculacion.map(imp => (
+        {[
+          { id: 'cc', icon: '🔗', titulo: 'Vincular Cátedras ↔ Cursos', endpoint: '/api/importar/catedra-cursos', color: 'bg-teal-600 text-white' },
+          { id: 'meet', icon: '📹', titulo: 'Links de Meet', endpoint: '/api/importar/links-meet', color: 'bg-green-600 text-white' },
+        ].map(imp => (
           <div key={imp.id} className="bg-white rounded-xl border p-6 border-dashed border-slate-300">
             <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
-            <p className="text-sm text-slate-500 mb-1">{imp.desc}</p>
-            <p className="text-xs text-slate-400 mb-4 font-mono">{imp.ejemplo}</p>
-            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)}
-              disabled={uploading === imp.titulo}
+            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)} disabled={uploading === imp.titulo}
               className={`w-full py-2.5 rounded-lg font-medium disabled:opacity-50 ${imp.color}`}>
-              {uploading === imp.titulo ? '⏳ Importando...' : '📤 Subir Excel (.xlsx)'}
+              {uploading === imp.titulo ? '⏳...' : '📤 Subir Excel'}
             </button>
           </div>
         ))}
       </div>
 
-      {/* NUEVO: Importar Alumnos */}
+      {/* v4.0 MEJORA 4: Alumnos consolidados */}
       <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
       <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
         <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos</h3>
-        <p className="text-sm text-slate-500 mb-1">Usá el Excel exportado del sistema de gestión. El sistema lee automáticamente el código de cátedra (c.XX) de la columna MATERIA.</p>
-        <p className="text-xs text-slate-400 mb-3 font-mono">Formato: | ID | ALUMNO (DNI) | DNI | MATERIA | CURSO | ...</p>
+        <p className="text-sm text-slate-500 mb-1">Subí un Excel con todos los inscriptos de todas las materias juntas. El sistema lee el código (c.XX) y vincula automáticamente.</p>
+        <p className="text-xs text-slate-400 mb-3">Si el Excel tiene varias hojas, se procesan todas.</p>
         <div className="mb-4">
-          <label className="text-sm text-slate-600 font-medium">Cuatrimestre al que pertenecen estas inscripciones:</label>
+          <label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
           <select className="w-full border-2 border-cyan-300 rounded-lg px-3 py-2 mt-1 bg-cyan-50"
             value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
             {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
           </select>
         </div>
-        <button
-          onClick={() => subirArchivo('/api/importar/alumnos', 'Alumnos Inscriptos', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'Alumnos Inscriptos'}
+        <button onClick={() => subirArchivo('/api/importar/alumnos', 'Alumnos', `?cuatrimestre_id=${cuatriSeleccionado}`)}
+          disabled={uploading === 'Alumnos'}
           className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-cyan-600 text-white hover:bg-cyan-700">
-          {uploading === 'Alumnos Inscriptos' ? '⏳ Importando...' : '📤 Subir Excel de inscriptos (.xlsx)'}
+          {uploading === 'Alumnos' ? '⏳...' : '📤 Subir Excel de inscriptos'}
+        </button>
+      </div>
+
+      {/* v4.0 MEJORA 12: Replicar cuatrimestre */}
+      <h3 className="font-semibold text-slate-600 mb-3">🔄 Replicar cuatrimestre anterior</h3>
+      <div className="bg-white rounded-xl border p-6 mb-6 border-violet-200">
+        <p className="text-sm text-slate-500 mb-3">Copiá la apertura de cátedras de un cuatrimestre anterior a uno nuevo. Se copian las materias abiertas con su horario y sede, pero sin docente (hay que reasignarlos).</p>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="text-sm text-slate-600 font-medium">Copiar de:</label>
+            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={replicarOrigen} onChange={e => setReplicarOrigen(e.target.value)}>
+              <option value="">Seleccionar origen</option>
+              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 font-medium">Hacia:</label>
+            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={replicarDestino} onChange={e => setReplicarDestino(e.target.value)}>
+              <option value="">Seleccionar destino</option>
+              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            </select>
+          </div>
+        </div>
+        <button onClick={replicar} disabled={replicando}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-violet-600 text-white hover:bg-violet-700">
+          {replicando ? '⏳ Replicando...' : '🔄 Replicar apertura'}
         </button>
       </div>
 
@@ -957,13 +1123,9 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           <p className="font-medium text-lg">{resultado.ok ? '✅' : '❌'} {resultado.label}</p>
           {resultado.ok && resultado.data && (
             <div className="mt-2 text-sm">
-              {resultado.data.creadas !== undefined && <p>Creadas: <strong>{resultado.data.creadas}</strong></p>}
-              {resultado.data.creados !== undefined && <p>Creados: <strong>{resultado.data.creados}</strong></p>}
-              {resultado.data.actualizadas !== undefined && <p>Actualizadas: <strong>{resultado.data.actualizadas}</strong></p>}
-              {resultado.data.actualizados !== undefined && <p>Actualizados: <strong>{resultado.data.actualizados}</strong></p>}
-              {resultado.data.omitidos !== undefined && <p>Omitidos: <strong>{resultado.data.omitidos}</strong></p>}
-              {resultado.data.alumnos_nuevos !== undefined && <p>Alumnos nuevos: <strong>{resultado.data.alumnos_nuevos}</strong></p>}
-              {resultado.data.inscripciones_cargadas !== undefined && <p>Inscripciones cargadas: <strong>{resultado.data.inscripciones_cargadas}</strong></p>}
+              {Object.entries(resultado.data).filter(([k]) => k !== 'errores').map(([k, v]) => (
+                <p key={k}>{k}: <strong>{v}</strong></p>
+              ))}
               {resultado.data.errores?.length > 0 && (
                 <div className="mt-2 text-xs text-orange-600">
                   <p>Advertencias:</p>
@@ -979,93 +1141,48 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ============ VISTA EXPORTAR (NUEVA v3.3) ============
+// ==================== EXPORTAR VIEW (v4.0 con solapas por sede) ====================
 function ExportarView({ cuatrimestre, cuatrimestres }) {
   const [descargando, setDescargando] = useState(false);
-
   const descargar = async () => {
     setDescargando(true);
     try {
       const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
       const url = `${API_URL}/api/exportar/horarios${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`;
       const res = await fetch(url);
-      if (!res.ok) throw new Error('Error al generar el archivo');
+      if (!res.ok) throw new Error('Error al generar');
       const blob = await res.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       const cuatNombre = cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre || 'Todos';
       a.download = `IEA_Horarios_${cuatNombre.replace(/ /g, '_')}.xlsx`;
       a.click();
-    } catch (e) {
-      alert('Error al descargar: ' + e.message);
-    }
+    } catch (e) { alert('Error: ' + e.message); }
     setDescargando(false);
   };
-
   return (
     <div className="p-8">
       <h2 className="text-2xl font-bold text-slate-800 mb-6">Exportar</h2>
       <div className="bg-white rounded-xl border p-6 max-w-xl">
-        <h3 className="font-semibold mb-2">📊 Exportar Horarios</h3>
-        <p className="text-sm text-slate-500 mb-1">El archivo Excel incluye dos pestañas:</p>
-        <ul className="text-sm text-slate-500 mb-4 list-disc ml-4">
-          <li><strong>Lista de asignaciones</strong>: una fila por clase con todos los datos</li>
-          <li><strong>Grilla semanal</strong>: el calendario en forma de tabla por día y hora</li>
-        </ul>
+        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v4.0)</h3>
+        <p className="text-sm text-slate-500 mb-4">
+          El Excel incluye una solapa "Todas las sedes" y luego una solapa por cada sede (Avellaneda, Caballito, Vicente López, etc.).
+          Cada solapa lista las cátedras ordenadas por código (c.1, c.2...) con la cantidad de inscriptos.
+          Si una cátedra tiene varios docentes, figuran uno debajo del otro.
+        </p>
         {cuatrimestre !== 'todos'
           ? <p className="text-sm text-amber-600 font-medium mb-4">📅 Se exportará: {cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre}</p>
-          : <p className="text-sm text-slate-400 mb-4">💡 Seleccioná un cuatrimestre en el menú izquierdo para filtrar, o exportá todo.</p>}
+          : <p className="text-sm text-slate-400 mb-4">💡 Seleccioná un cuatrimestre en el menú para filtrar.</p>}
         <button onClick={descargar} disabled={descargando}
-          className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold disabled:opacity-50 hover:bg-amber-400 transition-colors">
-          {descargando ? '⏳ Generando Excel...' : '📥 Descargar Excel'}
+          className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold disabled:opacity-50 hover:bg-amber-400">
+          {descargando ? '⏳ Generando...' : '📥 Descargar Excel'}
         </button>
       </div>
     </div>
   );
 }
 
-function LoginScreen({ onLogin }) {
-  const [clave, setClave] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const intentarLogin = async () => {
-    setError(''); setLoading(true);
-    try {
-      await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
-      localStorage.setItem('iea_auth', 'true');
-      onLogin();
-    } catch (e) {
-      setError('Contraseña incorrecta');
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-      <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios v3.3</p>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm text-slate-600 font-medium">Contraseña de acceso:</label>
-            <input type="password" className="w-full border-2 rounded-lg px-4 py-3 mt-1 text-lg focus:border-amber-500 focus:outline-none"
-              value={clave} onChange={e => setClave(e.target.value)} placeholder="Ingresá la contraseña"
-              onKeyDown={e => e.key === 'Enter' && intentarLogin()} autoFocus />
-          </div>
-          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-          <button onClick={intentarLogin} disabled={loading || !clave}
-            className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold text-lg disabled:opacity-50 hover:bg-amber-400">
-            {loading ? '⏳ Verificando...' : 'Ingresar'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
+// ==================== APP PRINCIPAL ====================
 export default function App() {
   const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
   const [activeView, setActiveView] = useState('catedras');
@@ -1076,17 +1193,19 @@ export default function App() {
   const [sedes, setSedes] = useState([]);
   const [cuatrimestres, setCuatrimestres] = useState([]);
   const [solapamientos, setSolapamientos] = useState([]);
+  const [necesitanDocente, setNecesitanDocente] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const cargarDatos = useCallback(async () => {
     const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
     const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-    try { const r = await apiFetch('/api/sedes'); setSedes(r); } catch (e) { console.error('Sedes:', e); }
-    try { const r = await apiFetch('/api/cuatrimestres'); setCuatrimestres(r); } catch (e) { console.error('Cuats:', e); }
-    try { const r = await apiFetch(`/api/catedras${qParam}`); setCatedras(r); } catch (e) { console.error('Cátedras:', e); }
-    try { const r = await apiFetch('/api/cursos'); setCursos(r); } catch (e) { console.error('Cursos:', e); }
-    try { const r = await apiFetch(`/api/docentes${qParam}`); setDocentes(r); } catch (e) { console.error('Docentes:', e); }
-    try { const r = await apiFetch(`/api/horarios/solapamientos${qParam}`); setSolapamientos(r); } catch (e) { console.error('Solapamientos:', e); }
+    try { setSedes(await apiFetch('/api/sedes')); } catch (e) { console.error(e); }
+    try { setCuatrimestres(await apiFetch('/api/cuatrimestres')); } catch (e) { console.error(e); }
+    try { setCatedras(await apiFetch(`/api/catedras${qParam}`)); } catch (e) { console.error(e); }
+    try { setCursos(await apiFetch('/api/cursos')); } catch (e) { console.error(e); }
+    try { setDocentes(await apiFetch(`/api/docentes${qParam}`)); } catch (e) { console.error(e); }
+    try { setSolapamientos(await apiFetch(`/api/horarios/solapamientos${qParam}`)); } catch (e) { console.error(e); }
+    try { setNecesitanDocente(await apiFetch(`/api/catedras/necesitan-docente${qParam}`)); } catch (e) { console.error(e); }
     setLoading(false);
   }, [cuatrimestre]);
 
@@ -1098,11 +1217,13 @@ export default function App() {
   return (
     <div className="flex min-h-screen bg-slate-100">
       <Sidebar activeView={activeView} setActiveView={setActiveView} cuatrimestre={cuatrimestre}
-        setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres} solapamientosCount={solapamientos.length} />
+        setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres}
+        solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} />
       <main className="flex-1 overflow-auto">
         {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
+        {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
