@@ -314,25 +314,36 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     catedras = db.query(Catedra).all()
     catedras_sorted = sorted(catedras, key=lambda c: sort_key_codigo(c.codigo))
     # Pre-cargar desglose: turno × (sede presencial o CIED)
+    # IMPORTANTE: solo contar inscripciones que YA fueron clasificadas (tienen turno y modalidad_alumno)
     desglose_query = """
         SELECT catedra_id,
-            COALESCE(turno, 'Virtual') as turno,
-            COALESCE(modalidad_alumno, 'virtual') as mod_alumno,
-            COALESCE(sede_referencia, 'Sin sede') as sede,
+            turno,
+            modalidad_alumno,
+            sede_referencia,
             COUNT(*) as cnt
         FROM inscripciones
+        WHERE modalidad_alumno IS NOT NULL
     """
     if cuatrimestre_id:
-        desglose_query += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+        desglose_query += f" AND cuatrimestre_id = {cuatrimestre_id}"
     desglose_query += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
+    # Contar sin clasificar aparte
+    sin_clasif_query = "SELECT catedra_id, COUNT(*) FROM inscripciones WHERE modalidad_alumno IS NULL"
+    if cuatrimestre_id:
+        sin_clasif_query += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    sin_clasif_query += " GROUP BY catedra_id"
     try:
         desglose_rows = db.execute(text(desglose_query)).fetchall()
     except Exception:
         desglose_rows = []
+    sin_clasif_map = {}
+    try:
+        for r in db.execute(text(sin_clasif_query)).fetchall():
+            sin_clasif_map[r[0]] = r[1]
+    except Exception:
+        pass
     # Organizar: por cátedra → {turno → {sede → count}}
-    # Formato final: tm_av, tm_cab, tm_vl, tm_cied, tn_av, tn_cab, tn_vl, tn_cied, virt_cied
     desglose_map = {}
-    SEDES_PRES = ['Avellaneda', 'Caballito', 'Vicente López']
     for row in desglose_rows:
         cat_id, turno, mod_alumno, sede, cnt = row[0], row[1], row[2], row[3], row[4]
         if cat_id not in desglose_map:
@@ -340,21 +351,17 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 'total': 0,
                 'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
                 'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0,
-                'virt_cied': 0,
+                'virt_cied': 0, 'sin_clasificar': 0,
             }
         d = desglose_map[cat_id]
         d['total'] += cnt
-        # Determinar columna destino
         es_cied = (mod_alumno == 'virtual')
-        # Normalizar sede para matching
-        sede_norm = sede.strip() if sede else ''
+        sede_norm = (sede or '').strip()
         sede_key = None
         if not es_cied:
             if 'avellaneda' in sede_norm.lower(): sede_key = 'av'
             elif 'caballito' in sede_norm.lower(): sede_key = 'cab'
             elif 'vicente' in sede_norm.lower(): sede_key = 'vl'
-            else: sede_key = None  # fallback to CIED
-        # Turno mapping
         if turno == 'Mañana':
             if es_cied or not sede_key:
                 d['tm_cied'] += cnt
@@ -366,8 +373,17 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             else:
                 d[f'tn_{sede_key}'] += cnt
         else:
-            # Turno "Virtual" → todos son CIED
             d['virt_cied'] += cnt
+    # Agregar sin clasificar
+    for cat_id, cnt in sin_clasif_map.items():
+        if cat_id not in desglose_map:
+            desglose_map[cat_id] = {
+                'total': 0, 'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0,
+                'virt_cied': 0, 'sin_clasificar': 0,
+            }
+        desglose_map[cat_id]['sin_clasificar'] = cnt
+        desglose_map[cat_id]['total'] += cnt
     result = []
     for cat in catedras_sorted:
         try:
@@ -389,11 +405,12 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 pass
             desg = desglose_map.get(cat.id, {
                 'total': 0, 'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
-                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0, 'virt_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0, 'virt_cied': 0, 'sin_clasificar': 0,
             })
             inscriptos = desg['total']
             tm_total = desg['tm_av'] + desg['tm_cab'] + desg['tm_vl'] + desg['tm_cied']
             tn_total = desg['tn_av'] + desg['tn_cab'] + desg['tn_vl'] + desg['tn_cied']
+            clasificados = tm_total + tn_total + desg['virt_cied']
             docentes_sugeridos = max(1, -(-inscriptos // 100)) if inscriptos > 0 else 0
             cursos_vinc = []
             try:
@@ -408,6 +425,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "tm_av": desg['tm_av'], "tm_cab": desg['tm_cab'], "tm_vl": desg['tm_vl'], "tm_cied": desg['tm_cied'], "tm_total": tm_total,
                 "tn_av": desg['tn_av'], "tn_cab": desg['tn_cab'], "tn_vl": desg['tn_vl'], "tn_cied": desg['tn_cied'], "tn_total": tn_total,
                 "virt_cied": desg['virt_cied'],
+                "sin_clasificar": desg['sin_clasificar'],
                 "docentes_sugeridos": docentes_sugeridos,
                 "cursos_vinculados": cursos_vinc,
                 "asignaciones": asigs,
@@ -417,7 +435,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "link_meet": None, "inscriptos": 0,
                 "tm_av": 0, "tm_cab": 0, "tm_vl": 0, "tm_cied": 0, "tm_total": 0,
                 "tn_av": 0, "tn_cab": 0, "tn_vl": 0, "tn_cied": 0, "tn_total": 0,
-                "virt_cied": 0, "docentes_sugeridos": 0,
+                "virt_cied": 0, "sin_clasificar": 0, "docentes_sugeridos": 0,
                 "cursos_vinculados": [], "asignaciones": []})
     return result
 
