@@ -55,6 +55,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
   const menuItems = [
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
+    { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
@@ -930,6 +931,96 @@ function SolapamientosView({ solapamientos }) {
   );
 }
 
+// ==================== v5.0: INSCRIPTOS POR CURSO ====================
+function InscriptosPorCursoView({ cuatrimestre }) {
+  const [datos, setDatos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [buscar, setBuscar] = useState('');
+  const [filtroMod, setFiltroMod] = useState('');
+
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        const r = await apiFetch(`/api/inscriptos/por-curso${qParam}`);
+        setDatos(r);
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+
+  const filtrados = useMemo(() => {
+    return datos.filter(d => {
+      if (buscar && !d.curso_completo.toLowerCase().includes(buscar.toLowerCase()) &&
+          !d.curso_nombre.toLowerCase().includes(buscar.toLowerCase())) return false;
+      if (filtroMod && d.modalidad !== filtroMod) return false;
+      return true;
+    });
+  }, [datos, buscar, filtroMod]);
+
+  const totalInsc = filtrados.reduce((s, d) => s + d.inscriptos, 0);
+  const totalCIED = filtrados.filter(d => d.modalidad === 'CIED').reduce((s, d) => s + d.inscriptos, 0);
+  const totalPres = filtrados.filter(d => d.modalidad === 'Presencial').reduce((s, d) => s + d.inscriptos, 0);
+
+  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">📊 Inscriptos por Curso</h2>
+        <p className="text-slate-500 text-sm">Cantidad de alumnos inscriptos en cada curso/carrera. Datos importados del Excel de alumnos.</p>
+      </div>
+      <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">Total Cursos</p><p className="text-2xl font-bold">{filtrados.length}</p></div>
+        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">Total Inscripciones</p><p className="text-2xl font-bold text-cyan-600">{totalInsc}</p></div>
+        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">🖥️ CIED (Virtual)</p><p className="text-2xl font-bold text-purple-600">{totalCIED}</p></div>
+        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">🏫 Presencial</p><p className="text-2xl font-bold text-emerald-600">{totalPres}</p></div>
+      </div>
+      <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
+        <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm"
+          value={buscar} onChange={e => setBuscar(e.target.value)} />
+        <select className="border rounded-lg px-3 py-2 text-sm" value={filtroMod} onChange={e => setFiltroMod(e.target.value)}>
+          <option value="">Todas las modalidades</option>
+          <option value="CIED">🖥️ CIED (Virtual)</option>
+          <option value="Presencial">🏫 Presencial</option>
+        </select>
+      </div>
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full">
+          <thead><tr className="bg-slate-50 border-b">
+            <th className="text-left p-3 text-sm font-semibold">#</th>
+            <th className="text-left p-3 text-sm font-semibold">Curso</th>
+            <th className="text-center p-3 text-sm font-semibold">Sede</th>
+            <th className="text-center p-3 text-sm font-semibold">Modalidad</th>
+            <th className="text-center p-3 text-sm font-semibold">Inscriptos</th>
+          </tr></thead>
+          <tbody>
+            {filtrados.map((d, i) => (
+              <tr key={i} className="border-b hover:bg-slate-50">
+                <td className="p-3 text-sm text-slate-400">{i + 1}</td>
+                <td className="p-3 text-sm">{d.curso_completo}</td>
+                <td className="p-3 text-center">
+                  <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[d.sede] || 'bg-gray-500'}`}>{d.sede}</span>
+                </td>
+                <td className="p-3 text-center">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${d.modalidad === 'CIED' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {d.modalidad === 'CIED' ? '🖥️ CIED' : '🏫 Presencial'}
+                  </span>
+                </td>
+                <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-sm text-slate-500 mt-3 text-center">{filtrados.length} cursos — {totalInsc} inscripciones</p>
+    </div>
+  );
+}
+
 // ==================== CURSOS ====================
 function CursosView({ cursos, sedes, recargar }) {
   const [buscar, setBuscar] = useState('');
@@ -1153,9 +1244,12 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           <p className="font-medium text-lg">{resultado.ok ? '✅' : '❌'} {resultado.label}</p>
           {resultado.ok && resultado.data && (
             <div className="mt-2 text-sm">
-              {Object.entries(resultado.data).filter(([k]) => k !== 'errores').map(([k, v]) => (
-                <p key={k}>{k}: <strong>{v}</strong></p>
-              ))}
+              {Object.entries(resultado.data).filter(([k]) => k !== 'errores').map(([k, v]) => {
+                if (typeof v === 'object' && v !== null) {
+                  return <p key={k}>{k}: <strong>{Object.entries(v).map(([sk,sv]) => `${sk}: ${sv}`).join(', ')}</strong></p>;
+                }
+                return <p key={k}>{k}: <strong>{v}</strong></p>;
+              })}
               {resultado.data.errores?.length > 0 && (
                 <div className="mt-2 text-xs text-orange-600">
                   <p>Advertencias:</p>
@@ -1396,6 +1490,7 @@ export default function App() {
       <main className="flex-1 overflow-auto">
         {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
+        {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} />}
