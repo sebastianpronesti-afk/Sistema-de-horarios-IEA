@@ -326,15 +326,14 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
   const catedrasPag = catedrasFiltradas.slice((paginaActual - 1) * porPagina, paginaActual * porPagina);
 
   const stats = useMemo(() => {
-    const allAsig = catedras.flatMap(c => c.asignaciones || []);
-    const totalVirtual = catedras.reduce((s, c) => s + (c.inscriptos_virtual || 0), 0);
-    const totalPresencial = catedras.reduce((s, c) => s + (c.inscriptos_presencial || 0), 0);
+    const totalTM = catedras.reduce((s, c) => s + (c.tm_total || 0), 0);
+    const totalTN = catedras.reduce((s, c) => s + (c.tn_total || 0), 0);
+    const totalVirt = catedras.reduce((s, c) => s + (c.virt_cied || 0), 0);
+    const totalInsc = catedras.reduce((s, c) => s + (c.inscriptos || 0), 0);
     return {
       total: catedras.length,
       abiertas: catedras.filter(c => (c.asignaciones || []).length > 0).length,
-      asignaciones: allAsig.length,
-      totalVirtual,
-      totalPresencial,
+      totalTM, totalTN, totalVirt, totalInsc,
     };
   }, [catedras]);
 
@@ -352,12 +351,14 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
       {/* v4.0 MEJORA 9: Stats separadas */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-6 gap-3 mb-6">
         {[
           { label: 'Total Cátedras', val: stats.total, color: '' },
           { label: '📋 Abiertas', val: stats.abiertas, color: 'text-blue-600' },
-          { label: '🖥️ Inscr. Virtuales', val: stats.totalVirtual, color: 'text-purple-600' },
-          { label: '🏫 Inscr. Presenciales', val: stats.totalPresencial, color: 'text-emerald-600' },
+          { label: '☀️ Turno Mañana', val: stats.totalTM, color: 'text-yellow-600' },
+          { label: '🌙 Turno Noche', val: stats.totalTN, color: 'text-indigo-600' },
+          { label: '🖥️ CIED Virtual', val: stats.totalVirt, color: 'text-purple-600' },
+          { label: '👥 Total Inscr.', val: stats.totalInsc, color: 'text-cyan-600' },
         ].map((s, i) => (
           <div key={i} className="bg-white rounded-xl border p-3 text-center">
             <p className="text-slate-500 text-xs">{s.label}</p>
@@ -377,16 +378,30 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
       </div>
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-3 text-sm font-semibold w-1/5">Cátedra</th>
-            <th className="text-left p-3 text-sm font-semibold">Asignaciones</th>
-            <th className="text-center p-3 text-sm font-semibold w-14">Total</th>
-            <th className="text-center p-3 text-sm font-semibold w-14">🖥️ Virt</th>
-            <th className="text-center p-3 text-sm font-semibold w-14">🏫 Pres</th>
-            <th className="text-center p-3 text-sm font-semibold w-24">Turnos</th>
-            <th className="text-center p-3 text-sm font-semibold w-16">Doc.sug</th>
-            <th className="text-center p-3 text-sm font-semibold w-24">Acciones</th>
-          </tr></thead>
+          <thead>
+            <tr className="bg-slate-50 border-b">
+              <th className="text-left p-2 text-xs font-semibold w-48" rowSpan="2">Cátedra</th>
+              <th className="text-left p-2 text-xs font-semibold" rowSpan="2">Asignaciones</th>
+              <th className="text-center p-1 text-xs font-semibold bg-yellow-50 border-l" colSpan="5">TURNO MAÑANA</th>
+              <th className="text-center p-1 text-xs font-semibold bg-indigo-50 border-l" colSpan="5">TURNO NOCHE</th>
+              <th className="text-center p-1 text-xs font-semibold bg-purple-50 border-l" rowSpan="2">CIED<br/>Virt</th>
+              <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Total</th>
+              <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Doc<br/>sug</th>
+              <th className="text-center p-2 text-xs font-semibold border-l" rowSpan="2">Acc.</th>
+            </tr>
+            <tr className="bg-slate-50 border-b text-[10px]">
+              <th className="p-1 bg-yellow-50 border-l text-blue-700">Av</th>
+              <th className="p-1 bg-yellow-50 text-emerald-700">Cab</th>
+              <th className="p-1 bg-yellow-50 text-amber-700">VL</th>
+              <th className="p-1 bg-yellow-50 text-purple-700">CIED</th>
+              <th className="p-1 bg-yellow-50 font-bold">TM</th>
+              <th className="p-1 bg-indigo-50 border-l text-blue-700">Av</th>
+              <th className="p-1 bg-indigo-50 text-emerald-700">Cab</th>
+              <th className="p-1 bg-indigo-50 text-amber-700">VL</th>
+              <th className="p-1 bg-indigo-50 text-purple-700">CIED</th>
+              <th className="p-1 bg-indigo-50 font-bold">TN</th>
+            </tr>
+          </thead>
           <tbody>
             {catedrasPag.map(cat => (
               <tr key={cat.id} className="border-b hover:bg-slate-50">
@@ -424,24 +439,18 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                     </div>
                   ) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
                 </td>
-                <td className="p-3 text-center">
-                  <span className={`text-lg font-bold ${cat.inscriptos > 0 ? 'text-cyan-600' : 'text-slate-300'}`}>{cat.inscriptos || 0}</span>
-                </td>
-                <td className="p-3 text-center">
-                  <span className="text-sm font-bold text-purple-600">{cat.inscriptos_virtual || 0}</span>
-                </td>
-                <td className="p-3 text-center">
-                  <span className="text-sm font-bold text-emerald-600">{cat.inscriptos_presencial || 0}</span>
-                </td>
-                <td className="p-3 text-center">
-                  {cat.inscriptos_por_turno && Object.keys(cat.inscriptos_por_turno).length > 0 ? (
-                    <div className="text-xs space-y-0.5">
-                      {Object.entries(cat.inscriptos_por_turno).map(([t, n]) => (
-                        <span key={t} className={`inline-block px-1.5 py-0.5 rounded mr-0.5 ${t === 'Mañana' ? 'bg-yellow-100 text-yellow-700' : t === 'Noche' ? 'bg-indigo-100 text-indigo-700' : 'bg-purple-100 text-purple-700'}`}>{t.charAt(0)}:{n}</span>
-                      ))}
-                    </div>
-                  ) : <span className="text-slate-300">-</span>}
-                </td>
+                <td className="p-1 text-center bg-yellow-50/30 border-l text-xs">{cat.tm_av || ''}</td>
+                <td className="p-1 text-center bg-yellow-50/30 text-xs">{cat.tm_cab || ''}</td>
+                <td className="p-1 text-center bg-yellow-50/30 text-xs">{cat.tm_vl || ''}</td>
+                <td className="p-1 text-center bg-yellow-50/30 text-xs text-purple-600">{cat.tm_cied || ''}</td>
+                <td className="p-1 text-center bg-yellow-50/30 text-xs font-bold">{cat.tm_total || ''}</td>
+                <td className="p-1 text-center bg-indigo-50/30 border-l text-xs">{cat.tn_av || ''}</td>
+                <td className="p-1 text-center bg-indigo-50/30 text-xs">{cat.tn_cab || ''}</td>
+                <td className="p-1 text-center bg-indigo-50/30 text-xs">{cat.tn_vl || ''}</td>
+                <td className="p-1 text-center bg-indigo-50/30 text-xs text-purple-600">{cat.tn_cied || ''}</td>
+                <td className="p-1 text-center bg-indigo-50/30 text-xs font-bold">{cat.tn_total || ''}</td>
+                <td className="p-1 text-center bg-purple-50/30 border-l text-xs text-purple-600">{cat.virt_cied || ''}</td>
+                <td className="p-1 text-center border-l text-sm font-bold text-cyan-600">{cat.inscriptos || ''}</td>
                 {/* v4.0 MEJORA 7: Docentes sugeridos */}
                 <td className="p-4 text-center">
                   {cat.docentes_sugeridos > 0 ? (
