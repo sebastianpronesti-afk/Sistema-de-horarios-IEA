@@ -505,6 +505,42 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
     result.sort(key=lambda x: sort_key_codigo(x['codigo']))
     return result
 
+# ===== v5.0: Inscriptos por curso (carrera) =====
+@app.get("/api/inscriptos/por-curso")
+def get_inscriptos_por_curso(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    q = "SELECT curso_nombre, COUNT(*) as cnt FROM inscripciones WHERE curso_nombre IS NOT NULL AND curso_nombre != ''"
+    if cuatrimestre_id:
+        q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    q += " GROUP BY curso_nombre ORDER BY cnt DESC"
+    try:
+        rows = db.execute(text(q)).fetchall()
+        result = []
+        for r in rows:
+            curso_raw = r[0]
+            cnt = r[1]
+            # Extraer nombre limpio del curso (quitar resoluciones, etc.)
+            # Ej: "Turismo - CIED (Caballito) RMEDGC N°1147/23" → "Turismo"
+            nombre_limpio = re.split(r'\s*[-–]\s*(?:CIED|Cursada)', curso_raw, maxsplit=1)[0].strip()
+            nombre_limpio = re.split(r'\s*\(', nombre_limpio, maxsplit=1)[0].strip()
+            # Detectar sede y CIED
+            es_cied = 'CIED' in curso_raw.upper()
+            m_sede = re.search(r'\(([^)]+)\)', curso_raw)
+            sede_raw = m_sede.group(1).strip() if m_sede else ''
+            sede = normalizar_sede(sede_raw) if sede_raw else 'Sin sede'
+            es_online = sede in ['Online - Interior']
+            modalidad = 'CIED' if (es_cied or es_online) else 'Presencial'
+            result.append({
+                "curso_completo": curso_raw,
+                "curso_nombre": nombre_limpio,
+                "sede": sede,
+                "modalidad": modalidad,
+                "inscriptos": cnt,
+            })
+        return result
+    except Exception as e:
+        return []
+
 
 # ==================== ASIGNACIONES ====================
 
@@ -1077,11 +1113,13 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
             else:
                 d['virt'] += cnt
     except: pass
-    SEDE_FILL = {'Avellaneda': '3B82F6', 'Caballito': '10B981', 'Vicente López': 'F59E0B', 'Online - Interior': '8B5CF6'}
-    headers = ["#","Código","Cátedra","TM Av","TM Cab","TM VL","TM CIED","Total TM","TN Av","TN Cab","TN VL","TN CIED","Total TN","CIED Virt","TOTAL","Docente","Modalidad","Día","Hora","Sede"]
-    def write_sheet(ws, title, asigs_list, color='1D6F42'):
+    SEDE_FILL = {'Avellaneda': '3B82F6', 'Caballito': '10B981', 'Vicente López': 'F59E0B', 'CIED': '8B5CF6'}
+
+    # --- Hoja 1: Todas las sedes (desglose completo) ---
+    headers_all = ["#","Código","Cátedra","TM Avellaneda","TM Caballito","TM Vicente López","TM CIED","Total TM","TN Avellaneda","TN Caballito","TN Vicente López","TN CIED","Total TN","CIED Virtual","TOTAL","Docente","Modalidad","Día","Hora","Sede"]
+    def write_all_sheet(ws, title, asigs_list, color='1D6F42'):
         ws.title = title[:31]
-        ws.append(headers)
+        ws.append(headers_all)
         hf = Font(bold=True, color="FFFFFF", size=10); hfill = PatternFill("solid", fgColor=color)
         for cell in ws[1]: cell.font = hf; cell.fill = hfill; cell.alignment = Alignment(horizontal="center")
         for i, a in enumerate(asigs_list, 1):
@@ -1095,15 +1133,76 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
                 f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
                 a.modalidad or "", a.dia or "Pendiente", a.hora_inicio or "Pendiente",
                 a.sede.nombre if a.sede else "Remoto"])
-        for col, w in [('A',4),('B',8),('C',30),('D',6),('E',6),('F',6),('G',7),('H',8),('I',6),('J',6),('K',6),('L',7),('M',8),('N',7),('O',7),('P',28),('Q',13),('R',10),('S',8),('T',18)]:
+        for col, w in [('A',4),('B',8),('C',30),('D',14),('E',13),('F',16),('G',9),('H',9),('I',14),('J',13),('K',16),('L',9),('M',9),('N',12),('O',7),('P',28),('Q',13),('R',10),('S',8),('T',18)]:
             ws.column_dimensions[col].width = w
-    ws1 = wb.active; write_sheet(ws1, "Todas las sedes", asigs)
-    for sede in db.query(Sede).all():
-        asigs_sede = [a for a in asigs if a.sede_id == sede.id]
-        if asigs_sede:
-            write_sheet(wb.create_sheet(), sede.nombre, asigs_sede, SEDE_FILL.get(sede.nombre, '6B7280'))
-    asigs_remotos = [a for a in asigs if not a.sede_id]
-    if asigs_remotos: write_sheet(wb.create_sheet(), "Remotos", asigs_remotos, '6B7280')
+
+    # --- Hojas por sede: solo inscriptos de ESA sede ---
+    def write_sede_sheet(ws, title, asigs_list, sede_key, color='1D6F42'):
+        """sede_key: 'av', 'cab', 'vl' or 'cied'"""
+        ws.title = title[:31]
+        sede_label = {'av': 'Avellaneda', 'cab': 'Caballito', 'vl': 'Vicente López', 'cied': 'CIED'}[sede_key]
+        if sede_key == 'cied':
+            headers = ["#","Código","Cátedra",f"TM {sede_label}",f"TN {sede_label}","Virtual","TOTAL","Docente","Modalidad","Día","Hora","Sede"]
+        else:
+            headers = ["#","Código","Cátedra",f"TM {sede_label}",f"TN {sede_label}","TOTAL","Docente","Modalidad","Día","Hora","Sede"]
+        ws.append(headers)
+        hf = Font(bold=True, color="FFFFFF", size=10); hfill = PatternFill("solid", fgColor=color)
+        for cell in ws[1]: cell.font = hf; cell.fill = hfill; cell.alignment = Alignment(horizontal="center")
+        for i, a in enumerate(asigs_list, 1):
+            d = insc_desg.get(a.catedra_id, {})
+            tm_val = d.get(f'tm_{sede_key}', 0)
+            tn_val = d.get(f'tn_{sede_key}', 0)
+            if sede_key == 'cied':
+                virt_val = d.get('virt', 0)
+                total_sede = tm_val + tn_val + virt_val
+                ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
+                    tm_val or '', tn_val or '', virt_val or '', total_sede or '',
+                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
+                    a.modalidad or "", a.dia or "Pendiente", a.hora_inicio or "Pendiente",
+                    a.sede.nombre if a.sede else "Remoto"])
+            else:
+                total_sede = tm_val + tn_val
+                ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
+                    tm_val or '', tn_val or '', total_sede or '',
+                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
+                    a.modalidad or "", a.dia or "Pendiente", a.hora_inicio or "Pendiente",
+                    a.sede.nombre if a.sede else "Remoto"])
+        for col, w in [('A',4),('B',8),('C',30),('D',16),('E',16),('F',10),('G',10),('H',28),('I',13),('J',10),('K',8),('L',18)]:
+            ws.column_dimensions[col].width = w
+
+    # --- Hoja inscriptos por curso ---
+    def write_cursos_sheet(ws):
+        ws.title = "Inscriptos por Curso"
+        cur_headers = ["#", "Curso", "Sede", "Modalidad", "Inscriptos"]
+        ws.append(cur_headers)
+        hf = Font(bold=True, color="FFFFFF", size=10); hfill = PatternFill("solid", fgColor="6B21A8")
+        for cell in ws[1]: cell.font = hf; cell.fill = hfill; cell.alignment = Alignment(horizontal="center")
+        c_q = "SELECT curso_nombre, COUNT(*) as cnt FROM inscripciones WHERE curso_nombre IS NOT NULL AND curso_nombre != ''"
+        if cuatrimestre_id: c_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+        c_q += " GROUP BY curso_nombre ORDER BY cnt DESC"
+        try:
+            rows = db.execute(text(c_q)).fetchall()
+            for i, r in enumerate(rows, 1):
+                curso_raw = r[0]; cnt = r[1]
+                es_cied = 'CIED' in curso_raw.upper()
+                m_s = re.search(r'\(([^)]+)\)', curso_raw)
+                sede_r = normalizar_sede(m_s.group(1).strip()) if m_s else 'Sin sede'
+                es_online = sede_r in ['Online - Interior']
+                mod = 'CIED' if (es_cied or es_online) else 'Presencial'
+                ws.append([i, curso_raw, sede_r, mod, cnt])
+        except: pass
+        ws.column_dimensions['A'].width = 5
+        ws.column_dimensions['B'].width = 65
+        ws.column_dimensions['C'].width = 20
+        ws.column_dimensions['D'].width = 12
+        ws.column_dimensions['E'].width = 12
+
+    ws1 = wb.active; write_all_sheet(ws1, "Todas las sedes", asigs)
+    # Hojas por sede (solo inscriptos de esa sede)
+    for sede_key, sede_name, color in [('av','Avellaneda','3B82F6'),('cab','Caballito','10B981'),('vl','Vicente López','F59E0B'),('cied','CIED','8B5CF6')]:
+        write_sede_sheet(wb.create_sheet(), sede_name, asigs, sede_key, color)
+    # Hoja inscriptos por curso
+    write_cursos_sheet(wb.create_sheet())
     output = io.BytesIO(); wb.save(output); output.seek(0)
     nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}.xlsx"
     return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={nombre}"})
