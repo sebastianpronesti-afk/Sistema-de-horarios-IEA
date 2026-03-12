@@ -57,6 +57,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
+    { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
@@ -66,7 +67,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v4.0</p>
+        <p className="text-slate-500 text-sm">Sistema v5.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -122,7 +123,7 @@ function LoginScreen({ onLogin }) {
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión v4.0</p>
+          <p className="text-slate-500 mt-1">Sistema de Gestión v5.0</p>
         </div>
         <div className="space-y-4">
           <div>
@@ -326,16 +327,14 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
 
   const stats = useMemo(() => {
     const allAsig = catedras.flatMap(c => c.asignaciones || []);
-    const totalInscriptos = catedras.reduce((s, c) => s + (c.inscriptos || 0), 0);
-    const materiasConInscriptos = catedras.filter(c => (c.inscriptos || 0) > 0).length;
+    const totalVirtual = catedras.reduce((s, c) => s + (c.inscriptos_virtual || 0), 0);
+    const totalPresencial = catedras.reduce((s, c) => s + (c.inscriptos_presencial || 0), 0);
     return {
       total: catedras.length,
       abiertas: catedras.filter(c => (c.asignaciones || []).length > 0).length,
       asignaciones: allAsig.length,
-      conDocente: allAsig.filter(a => a.docente && a.modalidad !== 'asincronica').length,
-      sinDocente: allAsig.filter(a => !a.docente && a.modalidad !== 'asincronica').length,
-      totalInscriptos,
-      materiasConInscriptos,
+      totalVirtual,
+      totalPresencial,
     };
   }, [catedras]);
 
@@ -353,15 +352,12 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
       {/* v4.0 MEJORA 9: Stats separadas */}
-      <div className="grid grid-cols-7 gap-3 mb-6">
+      <div className="grid grid-cols-4 gap-3 mb-6">
         {[
           { label: 'Total Cátedras', val: stats.total, color: '' },
           { label: '📋 Abiertas', val: stats.abiertas, color: 'text-blue-600' },
-          { label: '👨‍🏫 Con Docente', val: stats.conDocente, color: 'text-emerald-600' },
-          { label: '⚠️ Sin Docente', val: stats.sinDocente, color: 'text-red-600' },
-          { label: '👥 Inscripciones', val: stats.totalInscriptos, color: 'text-cyan-600' },
-          { label: '📚 Mat. c/alumnos', val: stats.materiasConInscriptos, color: 'text-violet-600' },
-          { label: '📊 Asignaciones', val: stats.asignaciones, color: 'text-slate-600' },
+          { label: '🖥️ Inscr. Virtuales', val: stats.totalVirtual, color: 'text-purple-600' },
+          { label: '🏫 Inscr. Presenciales', val: stats.totalPresencial, color: 'text-emerald-600' },
         ].map((s, i) => (
           <div key={i} className="bg-white rounded-xl border p-3 text-center">
             <p className="text-slate-500 text-xs">{s.label}</p>
@@ -382,11 +378,14 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full">
           <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-4 text-sm font-semibold w-1/4">Cátedra</th>
-            <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
-            <th className="text-center p-4 text-sm font-semibold w-20">Inscriptos</th>
-            <th className="text-center p-4 text-sm font-semibold w-20">Doc. sugeridos</th>
-            <th className="text-center p-4 text-sm font-semibold w-28">Acciones</th>
+            <th className="text-left p-3 text-sm font-semibold w-1/5">Cátedra</th>
+            <th className="text-left p-3 text-sm font-semibold">Asignaciones</th>
+            <th className="text-center p-3 text-sm font-semibold w-14">Total</th>
+            <th className="text-center p-3 text-sm font-semibold w-14">🖥️ Virt</th>
+            <th className="text-center p-3 text-sm font-semibold w-14">🏫 Pres</th>
+            <th className="text-center p-3 text-sm font-semibold w-24">Turnos</th>
+            <th className="text-center p-3 text-sm font-semibold w-16">Doc.sug</th>
+            <th className="text-center p-3 text-sm font-semibold w-24">Acciones</th>
           </tr></thead>
           <tbody>
             {catedrasPag.map(cat => (
@@ -425,8 +424,23 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                     </div>
                   ) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
                 </td>
-                <td className="p-4 text-center">
-                  <span className={`text-xl font-bold ${cat.inscriptos > 0 ? 'text-cyan-600' : 'text-slate-300'}`}>{cat.inscriptos || 0}</span>
+                <td className="p-3 text-center">
+                  <span className={`text-lg font-bold ${cat.inscriptos > 0 ? 'text-cyan-600' : 'text-slate-300'}`}>{cat.inscriptos || 0}</span>
+                </td>
+                <td className="p-3 text-center">
+                  <span className="text-sm font-bold text-purple-600">{cat.inscriptos_virtual || 0}</span>
+                </td>
+                <td className="p-3 text-center">
+                  <span className="text-sm font-bold text-emerald-600">{cat.inscriptos_presencial || 0}</span>
+                </td>
+                <td className="p-3 text-center">
+                  {cat.inscriptos_por_turno && Object.keys(cat.inscriptos_por_turno).length > 0 ? (
+                    <div className="text-xs space-y-0.5">
+                      {Object.entries(cat.inscriptos_por_turno).map(([t, n]) => (
+                        <span key={t} className={`inline-block px-1.5 py-0.5 rounded mr-0.5 ${t === 'Mañana' ? 'bg-yellow-100 text-yellow-700' : t === 'Noche' ? 'bg-indigo-100 text-indigo-700' : 'bg-purple-100 text-purple-700'}`}>{t.charAt(0)}:{n}</span>
+                      ))}
+                    </div>
+                  ) : <span className="text-slate-300">-</span>}
                 </td>
                 {/* v4.0 MEJORA 7: Docentes sugeridos */}
                 <td className="p-4 text-center">
@@ -583,6 +597,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-left p-4 text-sm font-semibold">Docente</th>
             <th className="text-center p-4 text-sm font-semibold">Tipo</th>
             <th className="text-center p-4 text-sm font-semibold">Sedes</th>
+            <th className="text-center p-4 text-sm font-semibold w-16">Horas</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
             <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
@@ -605,6 +620,9 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                         : <span className="text-slate-400 text-xs">Sin sedes</span>}
                     </div>
                     <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
+                  </td>
+                  <td className="p-4 text-center">
+                    <HorasInput docente={d} recargar={recargar} />
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -1075,8 +1093,11 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
       {/* v4.0 MEJORA 4: Alumnos consolidados */}
       <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
       <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
-        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos</h3>
-        <p className="text-sm text-slate-500 mb-1">Subí un Excel con todos los inscriptos de todas las materias juntas. El sistema lee el código (c.XX) y vincula automáticamente.</p>
+        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos (v5.0)</h3>
+        <p className="text-sm text-slate-500 mb-1">El sistema ahora clasifica automáticamente cada alumno según su CURSO:</p>
+        <p className="text-xs text-slate-500 mb-1">🖥️ <strong>Virtual</strong>: Si el curso dice "CIED" o es "Online-Interior"</p>
+        <p className="text-xs text-slate-500 mb-1">🏫 <strong>Presencial</strong>: Si el curso NO dice "CIED" (requiere profesor en aula)</p>
+        <p className="text-xs text-slate-500 mb-1">📋 <strong>Turno</strong>: Se lee de la MATERIA (Mañana / Noche / Virtual)</p>
         <p className="text-xs text-slate-400 mb-3">Si el Excel tiene varias hojas, se procesan todas.</p>
         <div className="mb-4">
           <label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
@@ -1141,7 +1162,152 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== EXPORTAR VIEW (v4.0 con solapas por sede) ====================
+// ==================== v5.0: HORAS DOCENTE INLINE INPUT ====================
+function HorasInput({ docente, recargar }) {
+  const [val, setVal] = useState(docente.horas_asignadas || 0);
+  const [saving, setSaving] = useState(false);
+  const guardar = async (newVal) => {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ horas_asignadas: parseInt(newVal) || 0 }) });
+      recargar();
+    } catch (e) { alert(e.message); }
+    setSaving(false);
+  };
+  return (
+    <input type="number" min="0" max="60" className={`w-14 text-center border rounded px-1 py-1 text-sm ${saving ? 'bg-yellow-100' : ''}`}
+      value={val} onChange={e => setVal(e.target.value)}
+      onBlur={e => guardar(e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar(val)} />
+  );
+}
+
+// ==================== v5.0: DISPONIBILIDAD DOCENTE ====================
+function DisponibilidadView({ docentes }) {
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [buscar, setBuscar] = useState('');
+  const [disponibilidad, setDisponibilidad] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+
+  const docsFiltrados = useMemo(() => {
+    if (!buscar) return docentes;
+    const b = buscar.toLowerCase();
+    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b));
+  }, [docentes, buscar]);
+
+  const cargarDisp = async (docId) => {
+    setLoading(true);
+    try {
+      const r = await apiFetch(`/api/docentes/${docId}/disponibilidad`);
+      setDisponibilidad(r);
+    } catch (e) { setDisponibilidad([]); }
+    setLoading(false);
+  };
+
+  const seleccionar = (d) => {
+    setSelectedDoc(d);
+    cargarDisp(d.id);
+  };
+
+  const isDisponible = (dia, hora) => {
+    const item = disponibilidad.find(d => d.dia === dia && d.hora === hora);
+    return item ? item.disponible : false;
+  };
+
+  const toggleCelda = (dia, hora) => {
+    const existe = disponibilidad.find(d => d.dia === dia && d.hora === hora);
+    if (existe) {
+      setDisponibilidad(disponibilidad.map(d => d.dia === dia && d.hora === hora ? {...d, disponible: !d.disponible} : d));
+    } else {
+      setDisponibilidad([...disponibilidad, {dia, hora, disponible: true}]);
+    }
+  };
+
+  const guardar = async () => {
+    if (!selectedDoc) return;
+    setGuardando(true);
+    try {
+      await apiFetch(`/api/docentes/${selectedDoc.id}/disponibilidad`, {
+        method: 'PUT',
+        body: JSON.stringify({ disponibilidad: disponibilidad.filter(d => d.disponible) }),
+      });
+      alert('Disponibilidad guardada');
+    } catch (e) { alert('Error: ' + e.message); }
+    setGuardando(false);
+  };
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🕐 Disponibilidad Horaria</h2>
+        <p className="text-slate-500 text-sm">Seleccioná un docente y marcá las horas en las que puede dar clases.</p>
+      </div>
+      <div className="grid grid-cols-4 gap-6">
+        <div className="col-span-1">
+          <input type="text" placeholder="Buscar docente..." className="w-full border rounded-lg px-3 py-2 text-sm mb-3"
+            value={buscar} onChange={e => setBuscar(e.target.value)} />
+          <div className="bg-white rounded-xl border max-h-96 overflow-y-auto">
+            {docsFiltrados.map(d => (
+              <div key={d.id} onClick={() => seleccionar(d)}
+                className={`p-3 border-b cursor-pointer hover:bg-amber-50 ${selectedDoc?.id === d.id ? 'bg-amber-100 font-medium' : ''}`}>
+                <p className="text-sm">{d.nombre} {d.apellido}</p>
+                <p className="text-xs text-slate-400">Horas: {d.horas_asignadas || 0}h</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="col-span-3">
+          {!selectedDoc ? (
+            <div className="bg-slate-50 rounded-xl p-12 text-center text-slate-400">← Seleccioná un docente para ver/editar su disponibilidad</div>
+          ) : loading ? (
+            <div className="text-center p-8">⏳ Cargando...</div>
+          ) : (
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h3 className="font-bold text-lg">{selectedDoc.nombre} {selectedDoc.apellido}</h3>
+                  <p className="text-sm text-slate-500">Hacé clic en las celdas para marcar disponibilidad (verde = disponible)</p>
+                </div>
+                <button onClick={guardar} disabled={guardando}
+                  className="px-6 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium disabled:opacity-50">
+                  {guardando ? '⏳...' : '💾 Guardar'}
+                </button>
+              </div>
+              <div className="bg-white rounded-xl border overflow-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="bg-slate-50 border-b">
+                    <th className="p-2 border-r w-20">Hora</th>
+                    {DIAS.map(d => <th key={d} className="p-2 border-r">{d}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {HORAS.map(hora => (
+                      <tr key={hora} className="border-b">
+                        <td className="p-2 border-r bg-slate-50 font-medium text-center">{hora}</td>
+                        {DIAS.map(dia => {
+                          const disp = isDisponible(dia, hora);
+                          return (
+                            <td key={dia} className="p-1 border-r text-center cursor-pointer select-none"
+                              onClick={() => toggleCelda(dia, hora)}>
+                              <div className={`rounded py-2 transition-all ${disp ? 'bg-emerald-400 text-white font-bold' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}>
+                                {disp ? '✓' : ''}
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== EXPORTAR VIEW (v5.0 con desglose) ====================
 function ExportarView({ cuatrimestre, cuatrimestres }) {
   const [descargando, setDescargando] = useState(false);
   const descargar = async () => {
@@ -1164,11 +1330,10 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
     <div className="p-8">
       <h2 className="text-2xl font-bold text-slate-800 mb-6">Exportar</h2>
       <div className="bg-white rounded-xl border p-6 max-w-xl">
-        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v4.0)</h3>
+        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v5.0)</h3>
         <p className="text-sm text-slate-500 mb-4">
-          El Excel incluye una solapa "Todas las sedes" y luego una solapa por cada sede (Avellaneda, Caballito, Vicente López, etc.).
-          Cada solapa lista las cátedras ordenadas por código (c.1, c.2...) con la cantidad de inscriptos.
-          Si una cátedra tiene varios docentes, figuran uno debajo del otro.
+          Excel con una solapa por sede. Incluye columnas de inscriptos total, virtuales y presenciales.
+          Cátedras ordenadas por código. Múltiples docentes en filas separadas.
         </p>
         {cuatrimestre !== 'todos'
           ? <p className="text-sm text-amber-600 font-medium mb-4">📅 Se exportará: {cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre}</p>
@@ -1224,6 +1389,7 @@ export default function App() {
         {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+        {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
