@@ -330,11 +330,12 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
     const totalTM = catedras.reduce((s, c) => s + (c.tm_total || 0), 0);
     const totalTN = catedras.reduce((s, c) => s + (c.tn_total || 0), 0);
     const totalVirt = catedras.reduce((s, c) => s + (c.virt_cied || 0), 0);
+    const totalSinClasif = catedras.reduce((s, c) => s + (c.sin_clasificar || 0), 0);
     const totalInsc = catedras.reduce((s, c) => s + (c.inscriptos || 0), 0);
     return {
       total: catedras.length,
       abiertas: catedras.filter(c => (c.asignaciones || []).length > 0).length,
-      totalTM, totalTN, totalVirt, totalInsc,
+      totalTM, totalTN, totalVirt, totalSinClasif, totalInsc,
     };
   }, [catedras]);
 
@@ -352,13 +353,14 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
       {/* v4.0 MEJORA 9: Stats separadas */}
-      <div className="grid grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-7 gap-3 mb-6">
         {[
           { label: 'Total Cátedras', val: stats.total, color: '' },
           { label: '📋 Abiertas', val: stats.abiertas, color: 'text-blue-600' },
           { label: '☀️ Turno Mañana', val: stats.totalTM, color: 'text-yellow-600' },
           { label: '🌙 Turno Noche', val: stats.totalTN, color: 'text-indigo-600' },
           { label: '🖥️ CIED Virtual', val: stats.totalVirt, color: 'text-purple-600' },
+          { label: '⚠️ Sin clasificar', val: stats.totalSinClasif, color: 'text-red-500' },
           { label: '👥 Total Inscr.', val: stats.totalInsc, color: 'text-cyan-600' },
         ].map((s, i) => (
           <div key={i} className="bg-white rounded-xl border p-3 text-center">
@@ -367,6 +369,11 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
           </div>
         ))}
       </div>
+      {stats.totalSinClasif > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+          <p className="text-red-700 text-sm">⚠️ Hay <strong>{stats.totalSinClasif}</strong> inscripciones sin clasificar (importadas con la versión anterior). Reimportá los archivos de alumnos para que se clasifiquen correctamente por sede y turno.</p>
+        </div>
+      )}
       <div className="flex gap-3 mb-4 bg-white p-4 rounded-xl border items-center">
         <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
           value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
@@ -386,6 +393,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
               <th className="text-center p-1 text-xs font-semibold bg-yellow-50 border-l" colSpan="5">TURNO MAÑANA</th>
               <th className="text-center p-1 text-xs font-semibold bg-indigo-50 border-l" colSpan="5">TURNO NOCHE</th>
               <th className="text-center p-1 text-xs font-semibold bg-purple-50 border-l" rowSpan="2">CIED<br/>Virt</th>
+              <th className="text-center p-1 text-xs font-semibold bg-red-50 border-l" rowSpan="2">Sin<br/>clasif</th>
               <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Total</th>
               <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Doc<br/>sug</th>
               <th className="text-center p-2 text-xs font-semibold border-l" rowSpan="2">Acc.</th>
@@ -451,6 +459,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                 <td className="p-1 text-center bg-indigo-50/30 text-xs text-purple-600">{cat.tn_cied || ''}</td>
                 <td className="p-1 text-center bg-indigo-50/30 text-xs font-bold">{cat.tn_total || ''}</td>
                 <td className="p-1 text-center bg-purple-50/30 border-l text-xs text-purple-600">{cat.virt_cied || ''}</td>
+                <td className="p-1 text-center bg-red-50/30 border-l text-xs text-red-500">{cat.sin_clasificar || ''}</td>
                 <td className="p-1 text-center border-l text-sm font-bold text-cyan-600">{cat.inscriptos || ''}</td>
                 {/* v4.0 MEJORA 7: Docentes sugeridos */}
                 <td className="p-4 text-center">
