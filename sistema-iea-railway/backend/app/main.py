@@ -313,40 +313,61 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
     catedras = db.query(Catedra).all()
     catedras_sorted = sorted(catedras, key=lambda c: sort_key_codigo(c.codigo))
-    # Pre-cargar desglose de inscriptos por cátedra
+    # Pre-cargar desglose: turno × (sede presencial o CIED)
     desglose_query = """
         SELECT catedra_id,
-            COALESCE(modalidad_alumno, 'sin_dato') as mod,
-            COALESCE(turno, 'Sin turno') as turno,
+            COALESCE(turno, 'Virtual') as turno,
+            COALESCE(modalidad_alumno, 'virtual') as mod_alumno,
             COALESCE(sede_referencia, 'Sin sede') as sede,
             COUNT(*) as cnt
         FROM inscripciones
     """
     if cuatrimestre_id:
         desglose_query += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
-    desglose_query += " GROUP BY catedra_id, modalidad_alumno, turno, sede_referencia"
+    desglose_query += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
     try:
         desglose_rows = db.execute(text(desglose_query)).fetchall()
     except Exception:
         desglose_rows = []
-    # Organizar desglose por cátedra
+    # Organizar: por cátedra → {turno → {sede → count}}
+    # Formato final: tm_av, tm_cab, tm_vl, tm_cied, tn_av, tn_cab, tn_vl, tn_cied, virt_cied
     desglose_map = {}
+    SEDES_PRES = ['Avellaneda', 'Caballito', 'Vicente López']
     for row in desglose_rows:
-        cat_id = row[0]
+        cat_id, turno, mod_alumno, sede, cnt = row[0], row[1], row[2], row[3], row[4]
         if cat_id not in desglose_map:
-            desglose_map[cat_id] = {'total': 0, 'virtual': 0, 'presencial': 0, 'por_turno': {}, 'por_sede': {}}
+            desglose_map[cat_id] = {
+                'total': 0,
+                'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0,
+                'virt_cied': 0,
+            }
         d = desglose_map[cat_id]
-        cnt = row[4]
         d['total'] += cnt
-        mod = row[1]
-        if mod == 'virtual':
-            d['virtual'] += cnt
-        elif mod == 'presencial':
-            d['presencial'] += cnt
-        turno = row[2]
-        d['por_turno'][turno] = d['por_turno'].get(turno, 0) + cnt
-        sede = row[3]
-        d['por_sede'][sede] = d['por_sede'].get(sede, 0) + cnt
+        # Determinar columna destino
+        es_cied = (mod_alumno == 'virtual')
+        # Normalizar sede para matching
+        sede_norm = sede.strip() if sede else ''
+        sede_key = None
+        if not es_cied:
+            if 'avellaneda' in sede_norm.lower(): sede_key = 'av'
+            elif 'caballito' in sede_norm.lower(): sede_key = 'cab'
+            elif 'vicente' in sede_norm.lower(): sede_key = 'vl'
+            else: sede_key = None  # fallback to CIED
+        # Turno mapping
+        if turno == 'Mañana':
+            if es_cied or not sede_key:
+                d['tm_cied'] += cnt
+            else:
+                d[f'tm_{sede_key}'] += cnt
+        elif turno == 'Noche':
+            if es_cied or not sede_key:
+                d['tn_cied'] += cnt
+            else:
+                d[f'tn_{sede_key}'] += cnt
+        else:
+            # Turno "Virtual" → todos son CIED
+            d['virt_cied'] += cnt
     result = []
     for cat in catedras_sorted:
         try:
@@ -366,8 +387,13 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                     })
             except Exception:
                 pass
-            desg = desglose_map.get(cat.id, {'total': 0, 'virtual': 0, 'presencial': 0, 'por_turno': {}, 'por_sede': {}})
+            desg = desglose_map.get(cat.id, {
+                'total': 0, 'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0, 'virt_cied': 0,
+            })
             inscriptos = desg['total']
+            tm_total = desg['tm_av'] + desg['tm_cab'] + desg['tm_vl'] + desg['tm_cied']
+            tn_total = desg['tn_av'] + desg['tn_cab'] + desg['tn_vl'] + desg['tn_cied']
             docentes_sugeridos = max(1, -(-inscriptos // 100)) if inscriptos > 0 else 0
             cursos_vinc = []
             try:
@@ -379,19 +405,20 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
                 "link_meet": getattr(cat, 'link_meet', None),
                 "inscriptos": inscriptos,
-                "inscriptos_virtual": desg['virtual'],
-                "inscriptos_presencial": desg['presencial'],
-                "inscriptos_por_turno": desg['por_turno'],
-                "inscriptos_por_sede": desg['por_sede'],
+                "tm_av": desg['tm_av'], "tm_cab": desg['tm_cab'], "tm_vl": desg['tm_vl'], "tm_cied": desg['tm_cied'], "tm_total": tm_total,
+                "tn_av": desg['tn_av'], "tn_cab": desg['tn_cab'], "tn_vl": desg['tn_vl'], "tn_cied": desg['tn_cied'], "tn_total": tn_total,
+                "virt_cied": desg['virt_cied'],
                 "docentes_sugeridos": docentes_sugeridos,
                 "cursos_vinculados": cursos_vinc,
                 "asignaciones": asigs,
             })
         except Exception:
             result.append({"id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
-                "link_meet": None, "inscriptos": 0, "inscriptos_virtual": 0, "inscriptos_presencial": 0,
-                "inscriptos_por_turno": {}, "inscriptos_por_sede": {},
-                "docentes_sugeridos": 0, "cursos_vinculados": [], "asignaciones": []})
+                "link_meet": None, "inscriptos": 0,
+                "tm_av": 0, "tm_cab": 0, "tm_vl": 0, "tm_cied": 0, "tm_total": 0,
+                "tn_av": 0, "tn_cab": 0, "tn_vl": 0, "tn_cied": 0, "tn_total": 0,
+                "virt_cied": 0, "docentes_sugeridos": 0,
+                "cursos_vinculados": [], "asignaciones": []})
     return result
 
 @app.get("/api/catedras/stats")
@@ -881,7 +908,7 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
     try:
         content = await file.read()
         wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-        creados = 0; inscripciones = 0; errores = []
+        creados = 0; inscripciones = 0; actualizados = 0; errores = []
         stats = {'virtual': 0, 'presencial': 0, 'turnos': {}, 'sedes': {}}
         for ws in wb:
             for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
@@ -921,28 +948,30 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
                 if not existe:
                     insc = Inscripcion(alumno_id=alumno.id, catedra_id=catedra.id, cuatrimestre_id=cuatrimestre_id)
                     db.add(insc); db.flush()
-                    # Guardar datos extendidos via SQL directo
                     try:
                         db.execute(text(
-                            f"UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
+                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
                         ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "id": insc.id})
                     except Exception:
                         pass
                     inscripciones += 1
-                    stats[modalidad_alumno] = stats.get(modalidad_alumno, 0) + 1
-                    if turno: stats['turnos'][turno] = stats['turnos'].get(turno, 0) + 1
-                    if sede_ref: stats['sedes'][sede_ref] = stats['sedes'].get(sede_ref, 0) + 1
                 else:
-                    # Actualizar datos extendidos si ya existía pero no tenía clasificación
+                    # SIEMPRE sobreescribir clasificación (no COALESCE)
                     try:
                         db.execute(text(
-                            f"UPDATE inscripciones SET turno = COALESCE(turno, :turno), modalidad_alumno = COALESCE(modalidad_alumno, :mod), sede_referencia = COALESCE(sede_referencia, :sede), curso_nombre = COALESCE(curso_nombre, :curso) WHERE id = :id"
+                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
                         ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "id": existe.id})
+                        actualizados += 1
                     except Exception:
                         pass
+                # Contar stats siempre
+                stats[modalidad_alumno] = stats.get(modalidad_alumno, 0) + 1
+                if turno: stats['turnos'][turno] = stats['turnos'].get(turno, 0) + 1
+                if sede_ref: stats['sedes'][sede_ref] = stats['sedes'].get(sede_ref, 0) + 1
         db.commit(); wb.close()
         return {
-            "alumnos_nuevos": creados, "inscripciones_cargadas": inscripciones,
+            "alumnos_nuevos": creados, "inscripciones_nuevas": inscripciones,
+            "inscripciones_actualizadas": actualizados,
             "virtuales": stats.get('virtual', 0), "presenciales": stats.get('presencial', 0),
             "por_turno": stats['turnos'], "por_sede": stats['sedes'],
             "errores": errores[:20]
@@ -1018,27 +1047,55 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     q = db.query(Asignacion)
     if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = sorted(q.all(), key=lambda a: sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999'))
-    # Inscriptos desglosados
-    insc_q = "SELECT catedra_id, COUNT(*) as total, SUM(CASE WHEN modalidad_alumno='virtual' THEN 1 ELSE 0 END) as virt, SUM(CASE WHEN modalidad_alumno='presencial' THEN 1 ELSE 0 END) as pres FROM inscripciones"
+    # Inscriptos desglosados TM/TN por sede
+    insc_q = """SELECT catedra_id,
+        COALESCE(turno,'Virtual') as turno,
+        COALESCE(modalidad_alumno,'virtual') as mod,
+        COALESCE(sede_referencia,'') as sede,
+        COUNT(*) as cnt
+        FROM inscripciones"""
     if cuatrimestre_id: insc_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
-    insc_q += " GROUP BY catedra_id"
-    try: insc_rows = {r[0]: (r[1], r[2], r[3]) for r in db.execute(text(insc_q)).fetchall()}
-    except: insc_rows = {}
+    insc_q += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
+    insc_desg = {}
+    try:
+        for r in db.execute(text(insc_q)).fetchall():
+            cid, turno, mod, sede, cnt = r
+            if cid not in insc_desg:
+                insc_desg[cid] = {'total':0,'tm_av':0,'tm_cab':0,'tm_vl':0,'tm_cied':0,'tn_av':0,'tn_cab':0,'tn_vl':0,'tn_cied':0,'virt':0}
+            d = insc_desg[cid]; d['total'] += cnt
+            es_cied = (mod == 'virtual')
+            sk = None
+            if not es_cied:
+                sl = (sede or '').lower()
+                if 'avellaneda' in sl: sk = 'av'
+                elif 'caballito' in sl: sk = 'cab'
+                elif 'vicente' in sl: sk = 'vl'
+            if turno == 'Mañana':
+                d[f'tm_{sk}' if sk else 'tm_cied'] += cnt
+            elif turno == 'Noche':
+                d[f'tn_{sk}' if sk else 'tn_cied'] += cnt
+            else:
+                d['virt'] += cnt
+    except: pass
     SEDE_FILL = {'Avellaneda': '3B82F6', 'Caballito': '10B981', 'Vicente López': 'F59E0B', 'Online - Interior': '8B5CF6'}
-    headers = ["#", "Código", "Cátedra", "Inscriptos Total", "Virtuales", "Presenciales", "Docente", "Modalidad", "Día", "Hora", "Sede", "Recibe Presenciales"]
+    headers = ["#","Código","Cátedra","TM Av","TM Cab","TM VL","TM CIED","Total TM","TN Av","TN Cab","TN VL","TN CIED","Total TN","CIED Virt","TOTAL","Docente","Modalidad","Día","Hora","Sede"]
     def write_sheet(ws, title, asigs_list, color='1D6F42'):
         ws.title = title[:31]
         ws.append(headers)
-        hf = Font(bold=True, color="FFFFFF", size=11); hfill = PatternFill("solid", fgColor=color)
+        hf = Font(bold=True, color="FFFFFF", size=10); hfill = PatternFill("solid", fgColor=color)
         for cell in ws[1]: cell.font = hf; cell.fill = hfill; cell.alignment = Alignment(horizontal="center")
         for i, a in enumerate(asigs_list, 1):
-            insc = insc_rows.get(a.catedra_id, (0, 0, 0))
+            d = insc_desg.get(a.catedra_id, {})
+            tm_t = d.get('tm_av',0)+d.get('tm_cab',0)+d.get('tm_vl',0)+d.get('tm_cied',0)
+            tn_t = d.get('tn_av',0)+d.get('tn_cab',0)+d.get('tn_vl',0)+d.get('tn_cied',0)
             ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
-                insc[0], insc[1], insc[2],
+                d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
+                d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
+                d.get('virt',0) or '', d.get('total',0) or '',
                 f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
                 a.modalidad or "", a.dia or "Pendiente", a.hora_inicio or "Pendiente",
-                a.sede.nombre if a.sede else "Remoto", "Sí" if a.recibe_alumnos_presenciales else "No"])
-        for col, w in [('A',5),('B',10),('C',32),('D',12),('E',10),('F',12),('G',30),('H',15),('I',12),('J',10),('K',20),('L',18)]:
+                a.sede.nombre if a.sede else "Remoto"])
+        for col, w in [('A',4),('B',8),('C',30),('D',6),('E',6),('F',6),('G',7),('H',8),('I',6),('J',6),('K',6),('L',7),('M',8),('N',7),('O',7),('P',28),('Q',13),('R',10),('S',8),('T',18)]:
             ws.column_dimensions[col].width = w
     ws1 = wb.active; write_sheet(ws1, "Todas las sedes", asigs)
     for sede in db.query(Sede).all():
