@@ -69,7 +69,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v6.0</p>
+        <p className="text-slate-500 text-sm">Sistema v7.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -333,10 +333,17 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
     const totalVirt = catedras.reduce((s, c) => s + (c.virt_cied || 0), 0);
     const totalSinClasif = catedras.reduce((s, c) => s + (c.sin_clasificar || 0), 0);
     const totalInsc = catedras.reduce((s, c) => s + (c.inscriptos || 0), 0);
+    // v7.0: contar asignaciones por modalidad
+    const allAsig = catedras.flatMap(c => c.asignaciones || []);
+    const tmVirtual = allAsig.filter(a => a.modalidad === 'virtual_tm').length;
+    const tnVirtual = allAsig.filter(a => a.modalidad === 'virtual_tn').length;
+    const presencial = allAsig.filter(a => a.modalidad === 'presencial').length;
+    const asinc = allAsig.filter(a => a.modalidad === 'asincronica').length;
     return {
       total: catedras.length,
       abiertas: catedras.filter(c => (c.asignaciones || []).length > 0).length,
       totalTM, totalTN, totalVirt, totalSinClasif, totalInsc,
+      tmVirtual, tnVirtual, presencial, asinc,
     };
   }, [catedras]);
 
@@ -354,19 +361,32 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
       {/* v4.0 MEJORA 9: Stats separadas */}
-      <div className="grid grid-cols-7 gap-3 mb-6">
+      <div className="grid grid-cols-7 gap-3 mb-4">
         {[
           { label: 'Total Cátedras', val: stats.total, color: '' },
           { label: '📋 Abiertas', val: stats.abiertas, color: 'text-blue-600' },
-          { label: '☀️ Turno Mañana', val: stats.totalTM, color: 'text-yellow-600' },
-          { label: '🌙 Turno Noche', val: stats.totalTN, color: 'text-indigo-600' },
-          { label: '🖥️ CIED Virtual', val: stats.totalVirt, color: 'text-purple-600' },
-          { label: '⚠️ Sin clasificar', val: stats.totalSinClasif, color: 'text-red-500' },
+          { label: '☀️ Insc. TM', val: stats.totalTM, color: 'text-yellow-600' },
+          { label: '🌙 Insc. TN', val: stats.totalTN, color: 'text-indigo-600' },
+          { label: '🖥️ CIED Virt', val: stats.totalVirt, color: 'text-purple-600' },
+          { label: '⚠️ Sin clasif.', val: stats.totalSinClasif, color: 'text-red-500' },
           { label: '👥 Total Inscr.', val: stats.totalInsc, color: 'text-cyan-600' },
         ].map((s, i) => (
           <div key={i} className="bg-white rounded-xl border p-3 text-center">
             <p className="text-slate-500 text-xs">{s.label}</p>
             <p className={`text-2xl font-bold ${s.color}`}>{s.val}</p>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-4 gap-3 mb-4">
+        {[
+          { label: '🖥️☀️ TM Virtual', val: stats.tmVirtual, color: 'text-blue-600' },
+          { label: '🖥️🌙 TN Virtual', val: stats.tnVirtual, color: 'text-indigo-600' },
+          { label: '🏫 Presencial', val: stats.presencial, color: 'text-emerald-600' },
+          { label: '🎥 Asincrónicas', val: stats.asinc, color: 'text-purple-600' },
+        ].map((s, i) => (
+          <div key={i} className="bg-white rounded-xl border p-2 text-center">
+            <p className="text-slate-500 text-[10px]">{s.label}</p>
+            <p className={`text-xl font-bold ${s.color}`}>{s.val}</p>
           </div>
         ))}
       </div>
@@ -395,6 +415,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
               <th className="text-center p-1 text-xs font-semibold bg-indigo-50 border-l" colSpan="5">TURNO NOCHE</th>
               <th className="text-center p-1 text-xs font-semibold bg-purple-50 border-l" rowSpan="2">CIED<br/>Virt</th>
               <th className="text-center p-1 text-xs font-semibold bg-red-50 border-l" rowSpan="2">Sin<br/>clasif</th>
+              <th className="text-center p-1 text-xs font-semibold border-l" colSpan="4">TOTAL SEDE</th>
               <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Total</th>
               <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Doc<br/>sug</th>
               <th className="text-center p-2 text-xs font-semibold border-l" rowSpan="2">Acc.</th>
@@ -410,6 +431,12 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
               <th className="p-1 bg-indigo-50 text-amber-700">VL</th>
               <th className="p-1 bg-indigo-50 text-purple-700">CIED</th>
               <th className="p-1 bg-indigo-50 font-bold">TN</th>
+            </tr>
+            <tr className="bg-slate-50 border-b text-[10px]">
+              <th className="p-1 border-l text-blue-700">Av</th>
+              <th className="p-1 text-emerald-700">Cab</th>
+              <th className="p-1 text-amber-700">VL</th>
+              <th className="p-1 text-purple-700">CIED</th>
             </tr>
           </thead>
           <tbody>
@@ -464,6 +491,10 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                 <td className="p-1 text-center bg-indigo-100/50"><span className="text-sm font-extrabold">{cat.tn_total || ''}</span></td>
                 <td className="p-1 text-center bg-purple-50/30 border-l"><span className="text-sm font-bold text-purple-600">{cat.virt_cied || ''}</span></td>
                 <td className="p-1 text-center bg-red-50/30 border-l text-xs text-red-400">{cat.sin_clasificar || ''}</td>
+                <td className="p-1 text-center border-l"><span className="text-xs font-bold text-blue-700">{cat.sede_av || ''}</span></td>
+                <td className="p-1 text-center"><span className="text-xs font-bold text-emerald-700">{cat.sede_cab || ''}</span></td>
+                <td className="p-1 text-center"><span className="text-xs font-bold text-amber-700">{cat.sede_vl || ''}</span></td>
+                <td className="p-1 text-center"><span className="text-xs font-bold text-purple-600">{cat.sede_cied || ''}</span></td>
                 <td className="p-1 text-center border-l"><span className="text-base font-extrabold text-cyan-600">{cat.inscriptos || ''}</span></td>
                 {/* v4.0 MEJORA 7: Docentes sugeridos */}
                 <td className="p-4 text-center">
@@ -514,45 +545,56 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
 
   if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
 
+  const totalAperturas = datos.reduce((s, d) => s + (d.aperturas_necesarias || []).length, 0);
+
   return (
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
-        <p className="text-slate-500 text-sm">Cátedras con más de 5 inscriptos que necesitan docente asignado. Ideal: 1 docente cada 100 alumnos.</p>
+        <p className="text-slate-500 text-sm">Cátedras con más de 5 inscriptos en una misma sede y turno, sin docente asignado.</p>
       </div>
       {datos.length === 0 ? (
         <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
           <p className="text-4xl mb-2">✅</p>
-          <p className="text-green-700 font-medium">Todas las materias con inscriptos tienen docente asignado</p>
+          <p className="text-green-700 font-medium">Todas las combinaciones sede/turno con +5 inscriptos tienen docente</p>
         </div>
       ) : (
         <>
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-            <p className="text-red-700 font-medium">{datos.length} materias necesitan atención</p>
-            <p className="text-red-600 text-sm">Total docentes faltantes: {datos.reduce((s, d) => s + d.docentes_faltantes, 0)}</p>
+            <p className="text-red-700 font-medium">{datos.length} materias necesitan atención — {totalAperturas} aperturas necesarias</p>
           </div>
           <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
             <table className="w-full">
               <thead><tr className="bg-slate-50 border-b">
-                <th className="text-left p-4 text-sm font-semibold">Cátedra</th>
-                <th className="text-center p-4 text-sm font-semibold">Inscriptos</th>
-                <th className="text-center p-4 text-sm font-semibold">Doc. necesarios</th>
-                <th className="text-center p-4 text-sm font-semibold">Doc. asignados</th>
-                <th className="text-center p-4 text-sm font-semibold">Faltan</th>
-                <th className="text-left p-4 text-sm font-semibold">Docentes actuales</th>
+                <th className="text-left p-3 text-sm font-semibold">Cátedra</th>
+                <th className="text-center p-3 text-sm font-semibold">Total inscr.</th>
+                <th className="text-left p-3 text-sm font-semibold">Aperturas necesarias (sede + turno)</th>
+                <th className="text-left p-3 text-sm font-semibold">Docentes actuales</th>
               </tr></thead>
               <tbody>
                 {datos.map(d => (
                   <tr key={d.catedra_id} className="border-b hover:bg-slate-50">
-                    <td className="p-4">
+                    <td className="p-3">
                       <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{d.codigo}</span>
                       <span className="font-medium">{d.nombre}</span>
                     </td>
-                    <td className="p-4 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos}</span></td>
-                    <td className="p-4 text-center"><span className="text-lg font-bold">{d.docentes_sugeridos}</span></td>
-                    <td className="p-4 text-center"><span className={`text-lg font-bold ${d.docentes_asignados > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{d.docentes_asignados}</span></td>
-                    <td className="p-4 text-center"><span className="px-3 py-1 bg-red-100 text-red-700 rounded-full font-bold">{d.docentes_faltantes}</span></td>
-                    <td className="p-4">{d.docentes_nombres?.length > 0 ? d.docentes_nombres.join(', ') : <span className="text-red-500 italic">Sin docente</span>}</td>
+                    <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos_total}</span></td>
+                    <td className="p-3">
+                      <div className="flex flex-wrap gap-1">
+                        {(d.aperturas_necesarias || []).map((ap, i) => (
+                          <div key={i} className="px-2 py-1 bg-yellow-100 border border-yellow-400 rounded text-xs">
+                            <span className="font-bold text-yellow-800">⚠️ {ap.turno}</span>
+                            <span className={`ml-1 px-1 rounded text-white text-[10px] ${
+                              ap.sede === 'Avellaneda' ? 'bg-blue-500' :
+                              ap.sede === 'Caballito' ? 'bg-emerald-500' :
+                              ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
+                            }`}>{ap.sede}</span>
+                            <span className="ml-1 text-yellow-700">({ap.inscriptos} alumnos)</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="p-3 text-sm">{d.docentes_nombres?.length > 0 ? d.docentes_nombres.join(', ') : <span className="text-red-500 italic">Sin docente</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -573,8 +615,19 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
 
   const stats = useMemo(() => {
     const s = { PRESENCIAL_VIRTUAL: 0, SEDE_VIRTUAL: 0, REMOTO: 0, SIN_ASIGNACIONES: 0 };
-    docentes.forEach(d => { if (s[d.tipo_modalidad] !== undefined) s[d.tipo_modalidad]++; });
-    return s;
+    let horas_cfpea = 0, horas_isftea = 0, horas_total = 0;
+    const por_sede = {};
+    docentes.forEach(d => {
+      if (s[d.tipo_modalidad] !== undefined) s[d.tipo_modalidad]++;
+      const h = d.horas_asignadas || 0;
+      horas_total += h;
+      if (d.sociedad_cfpea) horas_cfpea += h;
+      if (d.sociedad_isftea) horas_isftea += h;
+      (d.sedes || []).forEach(sd => {
+        por_sede[sd.nombre] = (por_sede[sd.nombre] || 0) + 1;
+      });
+    });
+    return { ...s, horas_cfpea, horas_isftea, horas_total, por_sede };
   }, [docentes]);
 
   const docentesFiltrados = useMemo(() => {
@@ -611,6 +664,19 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           </div>
         ))}
       </div>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Total horas</p><p className="text-2xl font-bold">{stats.horas_total}h</p></div>
+        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas CFPEA SRL</p><p className="text-2xl font-bold text-blue-600">{stats.horas_cfpea}h</p></div>
+        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas ISFTEA SRL</p><p className="text-2xl font-bold text-emerald-600">{stats.horas_isftea}h</p></div>
+      </div>
+      {Object.keys(stats.por_sede).length > 0 && (
+        <div className="flex gap-2 mb-4 flex-wrap">
+          <span className="text-xs text-slate-500 py-1">Docentes por sede:</span>
+          {Object.entries(stats.por_sede).map(([sede, cnt]) => (
+            <span key={sede} className={`px-2 py-1 rounded text-white text-xs ${SEDE_COLORS[sede] || 'bg-gray-500'}`}>{sede}: {cnt}</span>
+          ))}
+        </div>
+      )}
       <div className="bg-white rounded-xl border p-3 mb-4">
         <input type="text" placeholder="Buscar por nombre, apellido o DNI..." className="w-full px-3 py-2 border rounded-lg text-sm"
           value={buscar} onChange={e => setBuscar(e.target.value)} />
@@ -1388,37 +1454,40 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v6.0: HORAS DOCENTE INLINE INPUT ====================
+// ==================== v7.0: HORAS + SOCIEDAD con guardado explícito ====================
 function HorasInput({ docente, recargar }) {
   const [val, setVal] = useState(docente.horas_asignadas || 0);
-  const [saving, setSaving] = useState(false);
-  const guardar = async (newVal) => {
-    setSaving(true);
+  const [saved, setSaved] = useState(true);
+  const guardar = async () => {
     try {
-      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ horas_asignadas: parseInt(newVal) || 0 }) });
-      recargar();
+      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ horas_asignadas: parseInt(val) || 0 }) });
+      setSaved(true);
     } catch (e) { alert(e.message); }
-    setSaving(false);
   };
   return (
-    <input type="number" min="0" max="60" className={`w-14 text-center border rounded px-1 py-1 text-sm ${saving ? 'bg-yellow-100' : ''}`}
-      value={val} onChange={e => setVal(e.target.value)}
-      onBlur={e => guardar(e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar(val)} />
+    <div className="flex items-center gap-1">
+      <input type="number" min="0" max="60" className={`w-12 text-center border rounded px-1 py-0.5 text-xs ${!saved ? 'border-amber-500 bg-amber-50' : ''}`}
+        value={val} onChange={e => { setVal(e.target.value); setSaved(false); }}
+        onKeyDown={e => e.key === 'Enter' && guardar()} />
+      {!saved && <button onClick={guardar} className="text-xs bg-amber-500 text-white px-1 rounded">💾</button>}
+    </div>
   );
 }
 
-// ==================== v6.0: SOCIEDAD CHECKBOX ====================
+// ==================== v7.0: SOCIEDAD CHECKBOX (sin reload) ====================
 function SociedadCheck({ docente, campo, recargar }) {
   const [checked, setChecked] = useState(docente[campo] || false);
+  const [saving, setSaving] = useState(false);
   const toggle = async () => {
     const newVal = !checked;
     setChecked(newVal);
+    setSaving(true);
     try {
       await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ [campo]: newVal }) });
-      recargar();
     } catch (e) { alert(e.message); setChecked(!newVal); }
+    setSaving(false);
   };
-  return <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 cursor-pointer" />;
+  return <input type="checkbox" checked={checked} onChange={toggle} className={`w-4 h-4 cursor-pointer ${saving ? 'opacity-50' : ''}`} />;
 }
 
 // ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
