@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="6.0")
+app = FastAPI(title="Sistema Horarios IEA", version="7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -257,7 +257,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v6.0 iniciado")
+    print("🚀 IEA Horarios v7.0 iniciado")
 
 CLAVE_ACCESO = "IEA2026"
 
@@ -419,6 +419,11 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             tm_total = desg['tm_av'] + desg['tm_cab'] + desg['tm_vl'] + desg['tm_cied']
             tn_total = desg['tn_av'] + desg['tn_cab'] + desg['tn_vl'] + desg['tn_cied']
             clasificados = tm_total + tn_total + desg['virt_cied']
+            # v7.0: Sede totals
+            sede_av = desg['tm_av'] + desg['tn_av']
+            sede_cab = desg['tm_cab'] + desg['tn_cab']
+            sede_vl = desg['tm_vl'] + desg['tn_vl']
+            sede_cied = desg['tm_cied'] + desg['tn_cied'] + desg['virt_cied']
             docentes_sugeridos = max(1, -(-inscriptos // 100)) if inscriptos > 0 else 0
             cursos_vinc = []
             try:
@@ -433,6 +438,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "tm_av": desg['tm_av'], "tm_cab": desg['tm_cab'], "tm_vl": desg['tm_vl'], "tm_cied": desg['tm_cied'], "tm_total": tm_total,
                 "tn_av": desg['tn_av'], "tn_cab": desg['tn_cab'], "tn_vl": desg['tn_vl'], "tn_cied": desg['tn_cied'], "tn_total": tn_total,
                 "virt_cied": desg['virt_cied'],
+                "sede_av": sede_av, "sede_cab": sede_cab, "sede_vl": sede_vl, "sede_cied": sede_cied,
                 "sin_clasificar": desg['sin_clasificar'],
                 "docentes_sugeridos": docentes_sugeridos,
                 "cursos_vinculados": cursos_vinc,
@@ -443,7 +449,8 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "link_meet": None, "inscriptos": 0,
                 "tm_av": 0, "tm_cab": 0, "tm_vl": 0, "tm_cied": 0, "tm_total": 0,
                 "tn_av": 0, "tn_cab": 0, "tn_vl": 0, "tn_cied": 0, "tn_total": 0,
-                "virt_cied": 0, "sin_clasificar": 0, "docentes_sugeridos": 0,
+                "virt_cied": 0, "sede_av": 0, "sede_cab": 0, "sede_vl": 0, "sede_cied": 0,
+                "sin_clasificar": 0, "docentes_sugeridos": 0,
                 "cursos_vinculados": [], "asignaciones": []})
     return result
 
@@ -504,30 +511,62 @@ def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db
 
 @app.get("/api/catedras/necesitan-docente")
 def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
-    q = db.query(Inscripcion.catedra_id, func.count(Inscripcion.id).label('cnt'))
-    if cuatrimestre_id:
-        q = q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
-    q = q.group_by(Inscripcion.catedra_id).having(func.count(Inscripcion.id) > 5)
-    inscriptos_por_cat = {row.catedra_id: row.cnt for row in q.all()}
+    from sqlalchemy import text
+    q_txt = """SELECT catedra_id, COALESCE(turno,'Virtual') as turno, COALESCE(modalidad_alumno,'virtual') as mod,
+        COALESCE(sede_referencia,'') as sede, COUNT(*) as cnt
+        FROM inscripciones WHERE modalidad_alumno IS NOT NULL"""
+    if cuatrimestre_id: q_txt += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    q_txt += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
+    try: rows = db.execute(text(q_txt)).fetchall()
+    except: return []
+    cat_desg = {}
+    for r in rows:
+        cat_id, turno, mod, sede, cnt = r
+        if cat_id not in cat_desg: cat_desg[cat_id] = []
+        es_cied = (mod == 'virtual')
+        if es_cied: sede_tipo = 'CIED'
+        else:
+            sn = (sede or '').lower()
+            if 'avellaneda' in sn: sede_tipo = 'Avellaneda'
+            elif 'caballito' in sn: sede_tipo = 'Caballito'
+            elif 'vicente' in sn: sede_tipo = 'Vicente López'
+            else: sede_tipo = 'CIED'
+        cat_desg[cat_id].append({'turno': turno, 'sede_tipo': sede_tipo, 'cant': cnt})
     result = []
-    for cat_id, cant in inscriptos_por_cat.items():
+    for cat_id, items in cat_desg.items():
         cat = db.query(Catedra).filter(Catedra.id == cat_id).first()
         if not cat: continue
+        agrupado = {}
+        for it in items:
+            key = f"{it['turno']}|{it['sede_tipo']}"
+            agrupado[key] = agrupado.get(key, 0) + it['cant']
         asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat_id)
-        if cuatrimestre_id:
-            asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
-        asigs = asigs.all()
-        docentes_asignados = [a for a in asigs if a.docente_id]
-        docentes_sugeridos = max(1, -(-cant // 100))
-        necesita = docentes_sugeridos - len(docentes_asignados)
-        if necesita > 0 or len(docentes_asignados) == 0:
-            result.append({
-                "catedra_id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
-                "inscriptos": cant, "docentes_sugeridos": docentes_sugeridos,
-                "docentes_asignados": len(docentes_asignados),
-                "docentes_faltantes": max(0, necesita),
-                "docentes_nombres": [f"{a.docente.nombre} {a.docente.apellido}" for a in docentes_asignados if a.docente],
-            })
+        if cuatrimestre_id: asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+        asigs_list = asigs.all()
+        total_insc = sum(agrupado.values())
+        aperturas = []
+        for key, cnt in agrupado.items():
+            if cnt <= 5: continue
+            turno, sede_tipo = key.split('|')
+            aperturas.append({'turno': turno, 'sede': sede_tipo, 'inscriptos': cnt, 'tiene_docente': False})
+        if not aperturas: continue
+        # Verificar docentes existentes
+        docs_asig = [a for a in asigs_list if a.docente_id]
+        for ap in aperturas:
+            for a in docs_asig:
+                m = a.modalidad or ''
+                s = a.sede.nombre if a.sede else ''
+                if ap['turno'] == 'Mañana' and 'tm' in m: ap['tiene_docente'] = True
+                elif ap['turno'] == 'Noche' and ('tn' in m or m == 'presencial'): ap['tiene_docente'] = True
+                elif ap['turno'] == 'Virtual' and 'virtual' in m: ap['tiene_docente'] = True
+        sin_doc = [a for a in aperturas if not a['tiene_docente']]
+        if not sin_doc: continue
+        result.append({
+            "catedra_id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+            "inscriptos_total": total_insc, "docentes_asignados": len(docs_asig),
+            "docentes_nombres": [f"{a.docente.nombre} {a.docente.apellido}" for a in docs_asig if a.docente],
+            "aperturas_necesarias": sin_doc,
+        })
     result.sort(key=lambda x: sort_key_codigo(x['codigo']))
     return result
 
@@ -1112,7 +1151,8 @@ def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
     return {"replicadas": replicadas, "ya_existentes": ya_existentes}
 
 
-# ===== v6.0: Exportar COMPLETO - todos los módulos =====
+
+# ===== v7.0: Exportar COMPLETO =====
 @app.get("/api/exportar/horarios")
 def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from openpyxl import Workbook
@@ -1122,6 +1162,7 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     q = db.query(Asignacion)
     if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = sorted(q.all(), key=lambda a: sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999'))
+    # -- Inscriptos desglosados --
     insc_q = """SELECT catedra_id, turno, modalidad_alumno, sede_referencia, COUNT(*) FROM inscripciones WHERE modalidad_alumno IS NOT NULL"""
     if cuatrimestre_id: insc_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
     insc_q += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
@@ -1150,81 +1191,131 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     try:
         for r in db.execute(text(total_insc_q)).fetchall(): total_insc_map[r[0]] = r[1]
     except: pass
-
-    def hdr(ws, headers, color='1D6F42'):
+    hf = Font(bold=True, color="FFFFFF", size=10)
+    YELLOW = PatternFill("solid", fgColor="FFFFCC")
+    def make_hdr(ws, headers, color='1D6F42'):
         ws.append(headers)
         for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF", size=10)
-            cell.fill = PatternFill("solid", fgColor=color)
-            cell.alignment = Alignment(horizontal="center")
-    YELLOW = PatternFill("solid", fgColor="FFFFCC")
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor=color); cell.alignment = Alignment(horizontal="center")
+    all_cats = sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo))
 
-    # === HOJA 1: Todas las sedes ===
-    ws1 = wb.active; ws1.title = "Todas las sedes"
-    hdr(ws1, ["#","Código","Cátedra","TM Avellaneda","TM Caballito","TM Vicente López","TM CIED","Total TM","TN Avellaneda","TN Caballito","TN Vicente López","TN CIED","Total TN","CIED Virtual","TOTAL","Docente","Turno Doc.","Modalidad","Día","Hora","Sede"])
+    # ========== HOJA 1 (PRINCIPAL): Inscriptos de todas las cátedras unificadas ==========
+    ws0 = wb.active; ws0.title = "Inscriptos unificados"
+    make_hdr(ws0, ["#","Código","Cátedra","TM Avellaneda","TM Caballito","TM Vicente López","TM CIED","Total TM","TN Avellaneda","TN Caballito","TN Vicente López","TN CIED","Total TN","CIED Virtual","Sede Avellaneda","Sede Caballito","Sede V.López","Sede CIED","TOTAL"], '0F766E')
+    for i, cat in enumerate(all_cats, 1):
+        d = insc_desg.get(cat.id, {})
+        tm_t = d.get('tm_av',0)+d.get('tm_cab',0)+d.get('tm_vl',0)+d.get('tm_cied',0)
+        tn_t = d.get('tn_av',0)+d.get('tn_cab',0)+d.get('tn_vl',0)+d.get('tn_cied',0)
+        s_av = d.get('tm_av',0)+d.get('tn_av',0)
+        s_cab = d.get('tm_cab',0)+d.get('tn_cab',0)
+        s_vl = d.get('tm_vl',0)+d.get('tn_vl',0)
+        s_cied = d.get('tm_cied',0)+d.get('tn_cied',0)+d.get('virt',0)
+        tot = total_insc_map.get(cat.id, 0)
+        if tot == 0 and d.get('total',0) == 0: continue
+        ws0.append([i, cat.codigo, cat.nombre,
+            d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
+            d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
+            d.get('virt',0) or '', s_av or '', s_cab or '', s_vl or '', s_cied or '', tot or ''])
+        if tot > 5:
+            tiene = any(1 for a in asigs if a.catedra_id == cat.id)
+            if not tiene:
+                for cell in ws0[ws0.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',28),('D',14),('E',13),('F',16),('G',9),('H',9),('I',14),('J',13),('K',16),('L',9),('M',9),('N',11),('O',14),('P',13),('Q',13),('R',10),('S',7)]:
+        ws0.column_dimensions[col].width = w
+
+    # ========== HOJA 2: Totalidad General (antes "Todas las sedes") ==========
+    ws1 = wb.create_sheet("Totalidad General")
+    ws1.append(["#","Código","Cátedra","TM Av","TM Cab","TM VL","TM CIED","Tot TM","TN Av","TN Cab","TN VL","TN CIED","Tot TN","CIED Virt","TOTAL","Docente","Turno Doc.","Modalidad","Día","Hora","Sede"])
+    for cell in ws1[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="1D6F42"); cell.alignment = Alignment(horizontal="center")
     for i, a in enumerate(asigs, 1):
         d = insc_desg.get(a.catedra_id, {})
         tm_t = d.get('tm_av',0)+d.get('tm_cab',0)+d.get('tm_vl',0)+d.get('tm_cied',0)
         tn_t = d.get('tn_av',0)+d.get('tn_cab',0)+d.get('tn_vl',0)+d.get('tn_cied',0)
         tot = total_insc_map.get(a.catedra_id, 0)
         mod = a.modalidad or ''
-        turno_doc = 'Mañana' if 'tm' in mod else ('Noche' if 'tn' in mod else ('Asincrónica' if mod == 'asincronica' else 'Presencial'))
+        td = 'Mañana' if 'tm' in mod else ('Noche' if 'tn' in mod else ('Asincrónica' if mod == 'asincronica' else 'Presencial'))
         ws1.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
             d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
             d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
             d.get('virt',0) or '', tot or '',
-            f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", turno_doc,
-            mod, a.dia or "Pendiente", a.hora_inicio or "Pendiente", a.sede.nombre if a.sede else "Remoto"])
+            f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td,
+            mod, a.dia or "Pend.", a.hora_inicio or "Pend.", a.sede.nombre if a.sede else "Remoto"])
         if tot > 5 and not a.docente_id:
             for cell in ws1[ws1.max_row]: cell.fill = YELLOW
-    for col, w in [('A',4),('B',8),('C',28),('D',14),('E',13),('F',16),('G',9),('H',9),('I',14),('J',13),('K',16),('L',9),('M',9),('N',11),('O',7),('P',26),('Q',10),('R',12),('S',10),('T',7),('U',16)]:
+    for col, w in [('A',4),('B',8),('C',28),('D',7),('E',7),('F',7),('G',7),('H',7),('I',7),('J',7),('K',7),('L',7),('M',7),('N',9),('O',7),('P',26),('Q',10),('R',12),('S',10),('T',7),('U',16)]:
         ws1.column_dimensions[col].width = w
 
-    # === HOJAS POR SEDE (solo docentes/cátedras de esa sede) ===
+    # ========== HOJAS POR SEDE ==========
     for sede_key, sede_name, color in [('av','Avellaneda','3B82F6'),('cab','Caballito','10B981'),('vl','Vicente López','F59E0B'),('cied','CIED','8B5CF6')]:
         ws = wb.create_sheet(sede_name[:31])
         if sede_key == 'cied':
-            hdrs = ["#","Código","Cátedra","TM CIED","TN CIED","Virtual","TOTAL","Docente","Turno","Día","Hora"]
+            ws.append(["#","Código","Cátedra","TM CIED","TN CIED","Virtual","TOTAL","Docente","Turno","Día","Hora"])
             sede_asigs = [a for a in asigs if not a.sede_id or (a.modalidad and ('virtual' in a.modalidad or a.modalidad == 'asincronica'))]
         else:
-            hdrs = ["#","Código","Cátedra",f"TM {sede_name}",f"TN {sede_name}","TOTAL","Docente","Turno","Día","Hora"]
+            ws.append(["#","Código","Cátedra",f"TM {sede_name}",f"TN {sede_name}","TOTAL","Docente","Turno","Día","Hora"])
             sede_db = db.query(Sede).filter(Sede.nombre == sede_name).first()
             sede_asigs = [a for a in asigs if a.sede_id == (sede_db.id if sede_db else -1)]
-        ws.append(hdrs)
-        hf = Font(bold=True, color="FFFFFF", size=10); hfill = PatternFill("solid", fgColor=color)
-        for cell in ws[1]: cell.font = hf; cell.fill = hfill; cell.alignment = Alignment(horizontal="center")
+        for cell in ws[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor=color); cell.alignment = Alignment(horizontal="center")
         for i, a in enumerate(sede_asigs, 1):
             d = insc_desg.get(a.catedra_id, {})
             mod = a.modalidad or ''
-            turno_doc = 'Mañana' if 'tm' in mod else ('Noche' if 'tn' in mod else 'Otro')
+            td = 'Mañana' if 'tm' in mod else ('Noche' if 'tn' in mod else 'Otro')
             if sede_key == 'cied':
-                tm_v = d.get('tm_cied',0); tn_v = d.get('tn_cied',0); virt_v = d.get('virt',0)
+                tm_v=d.get('tm_cied',0); tn_v=d.get('tn_cied',0); vv=d.get('virt',0)
                 ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
-                    tm_v or '', tn_v or '', virt_v or '', (tm_v+tn_v+virt_v) or '',
-                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
-                    turno_doc, a.dia or "Pend.", a.hora_inicio or "Pend."])
+                    tm_v or '', tn_v or '', vv or '', (tm_v+tn_v+vv) or '',
+                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td, a.dia or "Pend.", a.hora_inicio or "Pend."])
             else:
-                tm_v = d.get(f'tm_{sede_key}',0); tn_v = d.get(f'tn_{sede_key}',0)
+                tm_v=d.get(f'tm_{sede_key}',0); tn_v=d.get(f'tn_{sede_key}',0)
                 ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
                     tm_v or '', tn_v or '', (tm_v+tn_v) or '',
-                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar",
-                    turno_doc, a.dia or "Pend.", a.hora_inicio or "Pend."])
-            if total_insc_map.get(a.catedra_id, 0) > 5 and not a.docente_id:
-                for cell in ws[ws.max_row]: cell.fill = YELLOW
+                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td, a.dia or "Pend.", a.hora_inicio or "Pend."])
         for col, w in [('A',4),('B',8),('C',28),('D',14),('E',14),('F',10),('G',7),('H',26),('I',10),('J',10),('K',7)]:
             ws.column_dimensions[col].width = w
 
-    # === HOJA: Docentes Turno Mañana ===
+    # ========== HOJA: Listado Total Docentes (ordenado por sede) ==========
+    docentes_db = db.query(Docente).order_by(Docente.apellido).all()
+    ws_ld = wb.create_sheet("Listado Docentes")
+    ws_ld.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Sedes","Cátedras asignadas","Modalidad","Día","Hora"])
+    for cell in ws_ld[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="334155"); cell.alignment = Alignment(horizontal="center")
+    idx = 1
+    # Ordenar por sede principal
+    def sede_sort_key(doc):
+        sds = [s.sede.nombre for s in (doc.sedes or []) if s.sede]
+        return sds[0] if sds else 'ZZZ'
+    for doc in sorted(docentes_db, key=sede_sort_key):
+        sds = ', '.join([s.sede.nombre for s in (doc.sedes or []) if s.sede]) or 'Sin sede'
+        doc_asigs = [a for a in asigs if a.docente_id == doc.id]
+        if doc_asigs:
+            for a in doc_asigs:
+                ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+                    getattr(doc, 'horas_asignadas', 0) or '',
+                    "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+                    "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+                    sds, f"{a.catedra.codigo} {a.catedra.nombre}" if a.catedra else "",
+                    a.modalidad or '', a.dia or "Pend.", a.hora_inicio or "Pend."])
+                idx += 1
+        else:
+            ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+                getattr(doc, 'horas_asignadas', 0) or '',
+                "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+                "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+                sds, "SIN MATERIA ASIGNADA", '', '', ''])
+            idx += 1
+    for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',20),('I',34),('J',13),('K',10),('L',7)]:
+        ws_ld.column_dimensions[col].width = w
+
+    # ========== HOJA: Docentes TM ==========
     ws_dtm = wb.create_sheet("Docentes TM")
     ws_dtm.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Cátedra","Sede","Día","Hora"])
-    hf = Font(bold=True, color="FFFFFF", size=10); hfill = PatternFill("solid", fgColor="D97706")
-    for cell in ws_dtm[1]: cell.font = hf; cell.fill = hfill; cell.alignment = Alignment(horizontal="center")
-    docentes_db = db.query(Docente).order_by(Docente.apellido).all()
+    for cell in ws_dtm[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="D97706"); cell.alignment = Alignment(horizontal="center")
     idx = 1
     for doc in docentes_db:
-        asigs_doc = [a for a in asigs if a.docente_id == doc.id and a.modalidad and 'tm' in a.modalidad]
-        if not asigs_doc: continue
-        for a in asigs_doc:
+        for a in [a for a in asigs if a.docente_id == doc.id and a.modalidad and 'tm' in a.modalidad]:
             ws_dtm.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
                 getattr(doc, 'horas_asignadas', 0) or '',
                 "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
@@ -1235,16 +1326,14 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',32),('I',16),('J',10),('K',7)]:
         ws_dtm.column_dimensions[col].width = w
 
-    # === HOJA: Docentes Turno Noche ===
+    # ========== HOJA: Docentes TN ==========
     ws_dtn = wb.create_sheet("Docentes TN")
     ws_dtn.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Cátedra","Sede","Día","Hora"])
-    hfill2 = PatternFill("solid", fgColor="4338CA")
-    for cell in ws_dtn[1]: cell.font = hf; cell.fill = hfill2; cell.alignment = Alignment(horizontal="center")
+    for cell in ws_dtn[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="4338CA"); cell.alignment = Alignment(horizontal="center")
     idx = 1
     for doc in docentes_db:
-        asigs_doc = [a for a in asigs if a.docente_id == doc.id and a.modalidad and ('tn' in a.modalidad or a.modalidad == 'presencial')]
-        if not asigs_doc: continue
-        for a in asigs_doc:
+        for a in [a for a in asigs if a.docente_id == doc.id and a.modalidad and ('tn' in a.modalidad or a.modalidad == 'presencial')]:
             ws_dtn.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
                 getattr(doc, 'horas_asignadas', 0) or '',
                 "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
@@ -1255,11 +1344,11 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',32),('I',16),('J',10),('K',7)]:
         ws_dtn.column_dimensions[col].width = w
 
-    # === HOJA: Inscriptos por Curso ===
+    # ========== HOJA: Inscriptos por Curso ==========
     ws_cur = wb.create_sheet("Inscriptos por Curso")
-    ws_cur.append(["#","Curso","Sede","Modalidad","Tipo","Alumnos (DNI único)","Inscripciones"])
-    hfill3 = PatternFill("solid", fgColor="6B21A8")
-    for cell in ws_cur[1]: cell.font = hf; cell.fill = hfill3; cell.alignment = Alignment(horizontal="center")
+    ws_cur.append(["#","Curso","Sede","Modalidad","Tipo","Alumnos (DNI)","Inscripciones"])
+    for cell in ws_cur[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="6B21A8"); cell.alignment = Alignment(horizontal="center")
     c_q = """SELECT curso_nombre, COUNT(DISTINCT alumno_id), COUNT(*) FROM inscripciones WHERE curso_nombre IS NOT NULL AND curso_nombre != ''"""
     if cuatrimestre_id: c_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
     c_q += " GROUP BY curso_nombre ORDER BY COUNT(*) DESC"
@@ -1274,48 +1363,48 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
             tipo = 'BCE' if es_bce else ('BEA' if 'BEA' in curso_raw.upper() else 'Superior')
             ws_cur.append([i, curso_raw, sede_r, mod, tipo, unicos, total])
     except: pass
-    for col, w in [('A',4),('B',60),('C',18),('D',12),('E',10),('F',18),('G',14)]:
+    for col, w in [('A',4),('B',60),('C',18),('D',12),('E',10),('F',16),('G',14)]:
         ws_cur.column_dimensions[col].width = w
 
-    # === HOJA: Necesitan Docente ===
+    # ========== HOJA: Necesitan Docente (con sede+turno) ==========
     ws_nd = wb.create_sheet("Necesitan Docente")
-    ws_nd.append(["#","Código","Cátedra","Inscriptos","Doc. necesarios","Doc. asignados","Faltan","Docentes"])
-    hfill4 = PatternFill("solid", fgColor="DC2626")
-    for cell in ws_nd[1]: cell.font = hf; cell.fill = hfill4; cell.alignment = Alignment(horizontal="center")
+    ws_nd.append(["#","Código","Cátedra","Turno","Sede necesaria","Inscriptos en esa sede/turno","Docentes actuales"])
+    for cell in ws_nd[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="DC2626"); cell.alignment = Alignment(horizontal="center")
     nd_data = get_catedras_necesitan_docente(cuatrimestre_id, db)
-    for i, nd in enumerate(nd_data, 1):
-        ws_nd.append([i, nd['codigo'], nd['nombre'], nd['inscriptos'], nd['docentes_sugeridos'], nd['docentes_asignados'], nd['docentes_faltantes'], ', '.join(nd['docentes_nombres']) or "Sin docente"])
-        if nd['docentes_faltantes'] > 0:
+    idx = 1
+    for nd in nd_data:
+        for ap in nd.get('aperturas_necesarias', []):
+            ws_nd.append([idx, nd['codigo'], nd['nombre'], ap['turno'], ap['sede'], ap['inscriptos'],
+                ', '.join(nd['docentes_nombres']) or "Sin docente"])
             for cell in ws_nd[ws_nd.max_row]: cell.fill = YELLOW
-    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',14),('F',14),('G',8),('H',36)]:
+            idx += 1
+    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',16),('F',24),('G',36)]:
         ws_nd.column_dimensions[col].width = w
 
-    # === HOJA: Recomendación Apertura (>5 inscriptos) ===
+    # ========== HOJA: Recomendar Apertura ==========
     ws_rec = wb.create_sheet("Recomendar Apertura")
     ws_rec.append(["#","Código","Cátedra","Inscriptos","Abierta","Recomendación"])
-    hfill5 = PatternFill("solid", fgColor="059669")
-    for cell in ws_rec[1]: cell.font = hf; cell.fill = hfill5; cell.alignment = Alignment(horizontal="center")
+    for cell in ws_rec[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="059669"); cell.alignment = Alignment(horizontal="center")
     idx = 1
-    for cat in sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo)):
-        insc_count = total_insc_map.get(cat.id, 0)
-        if insc_count <= 5: continue
-        tiene = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
-        if cuatrimestre_id: tiene = tiene.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
-        abierta = tiene.count() > 0
-        ws_rec.append([idx, cat.codigo, cat.nombre, insc_count, "Sí" if abierta else "No", "Ya abierta" if abierta else "ABRIR"])
-        if not abierta:
+    for cat in all_cats:
+        ic = total_insc_map.get(cat.id, 0)
+        if ic <= 5: continue
+        tiene = any(1 for a in asigs if a.catedra_id == cat.id)
+        ws_rec.append([idx, cat.codigo, cat.nombre, ic, "Sí" if tiene else "No", "Ya abierta" if tiene else "ABRIR"])
+        if not tiene:
             for cell in ws_rec[ws_rec.max_row]: cell.fill = YELLOW
         idx += 1
     for col, w in [('A',4),('B',8),('C',30),('D',10),('E',10),('F',20)]:
         ws_rec.column_dimensions[col].width = w
 
-    # === HOJA: Solapamientos ===
+    # ========== HOJA: Solapamientos ==========
     ws_sol = wb.create_sheet("Solapamientos")
     ws_sol.append(["#","Tipo","Severidad","Mensaje","Día","Hora"])
-    hfill6 = PatternFill("solid", fgColor="B91C1C")
-    for cell in ws_sol[1]: cell.font = hf; cell.fill = hfill6; cell.alignment = Alignment(horizontal="center")
-    solaps = get_solapamientos(cuatrimestre_id, db)
-    for i, s in enumerate(solaps, 1):
+    for cell in ws_sol[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="B91C1C"); cell.alignment = Alignment(horizontal="center")
+    for i, s in enumerate(get_solapamientos(cuatrimestre_id, db), 1):
         ws_sol.append([i, s.get('tipo',''), s.get('severidad',''), s.get('mensaje',''), s.get('dia',''), s.get('hora','')])
     for col, w in [('A',4),('B',12),('C',12),('D',60),('E',12),('F',7)]:
         ws_sol.column_dimensions[col].width = w
