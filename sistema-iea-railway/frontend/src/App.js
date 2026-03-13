@@ -61,6 +61,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
+    { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
   ];
@@ -68,7 +69,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v5.0</p>
+        <p className="text-slate-500 text-sm">Sistema v6.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -124,7 +125,7 @@ function LoginScreen({ onLogin }) {
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión v5.0</p>
+          <p className="text-slate-500 mt-1">Sistema de Gestión v6.0</p>
         </div>
         <div className="space-y-4">
           <div>
@@ -412,11 +413,14 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
             </tr>
           </thead>
           <tbody>
-            {catedrasPag.map(cat => (
-              <tr key={cat.id} className="border-b hover:bg-slate-50">
-                <td className="p-4">
+            {catedrasPag.map(cat => {
+              const necesitaApertura = (cat.inscriptos || 0) > 5 && (!cat.asignaciones || cat.asignaciones.length === 0);
+              return (
+              <tr key={cat.id} className={`border-b hover:bg-slate-50 ${necesitaApertura ? 'bg-yellow-50' : ''}`}>
+                <td className="p-3">
                   <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{cat.codigo}</span>
                   <span className="font-medium">{cat.nombre}</span>
+                  {necesitaApertura && <span className="ml-2 px-2 py-0.5 bg-yellow-300 text-yellow-900 rounded text-xs font-bold">⚠️ ABRIR</span>}
                 </td>
                 <td className="p-4">
                   {cat.asignaciones?.length > 0 ? (
@@ -448,19 +452,19 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                     </div>
                   ) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
                 </td>
-                <td className="p-1 text-center bg-yellow-50/30 border-l text-xs">{cat.tm_av || ''}</td>
-                <td className="p-1 text-center bg-yellow-50/30 text-xs">{cat.tm_cab || ''}</td>
-                <td className="p-1 text-center bg-yellow-50/30 text-xs">{cat.tm_vl || ''}</td>
-                <td className="p-1 text-center bg-yellow-50/30 text-xs text-purple-600">{cat.tm_cied || ''}</td>
-                <td className="p-1 text-center bg-yellow-50/30 text-xs font-bold">{cat.tm_total || ''}</td>
-                <td className="p-1 text-center bg-indigo-50/30 border-l text-xs">{cat.tn_av || ''}</td>
-                <td className="p-1 text-center bg-indigo-50/30 text-xs">{cat.tn_cab || ''}</td>
-                <td className="p-1 text-center bg-indigo-50/30 text-xs">{cat.tn_vl || ''}</td>
-                <td className="p-1 text-center bg-indigo-50/30 text-xs text-purple-600">{cat.tn_cied || ''}</td>
-                <td className="p-1 text-center bg-indigo-50/30 text-xs font-bold">{cat.tn_total || ''}</td>
-                <td className="p-1 text-center bg-purple-50/30 border-l text-xs text-purple-600">{cat.virt_cied || ''}</td>
-                <td className="p-1 text-center bg-red-50/30 border-l text-xs text-red-500">{cat.sin_clasificar || ''}</td>
-                <td className="p-1 text-center border-l text-sm font-bold text-cyan-600">{cat.inscriptos || ''}</td>
+                <td className="p-1 text-center bg-yellow-50/30 border-l"><span className="text-sm font-bold text-blue-700">{cat.tm_av || ''}</span></td>
+                <td className="p-1 text-center bg-yellow-50/30"><span className="text-sm font-bold text-emerald-700">{cat.tm_cab || ''}</span></td>
+                <td className="p-1 text-center bg-yellow-50/30"><span className="text-sm font-bold text-amber-700">{cat.tm_vl || ''}</span></td>
+                <td className="p-1 text-center bg-yellow-50/30"><span className="text-sm font-bold text-purple-600">{cat.tm_cied || ''}</span></td>
+                <td className="p-1 text-center bg-yellow-100/50"><span className="text-sm font-extrabold">{cat.tm_total || ''}</span></td>
+                <td className="p-1 text-center bg-indigo-50/30 border-l"><span className="text-sm font-bold text-blue-700">{cat.tn_av || ''}</span></td>
+                <td className="p-1 text-center bg-indigo-50/30"><span className="text-sm font-bold text-emerald-700">{cat.tn_cab || ''}</span></td>
+                <td className="p-1 text-center bg-indigo-50/30"><span className="text-sm font-bold text-amber-700">{cat.tn_vl || ''}</span></td>
+                <td className="p-1 text-center bg-indigo-50/30"><span className="text-sm font-bold text-purple-600">{cat.tn_cied || ''}</span></td>
+                <td className="p-1 text-center bg-indigo-100/50"><span className="text-sm font-extrabold">{cat.tn_total || ''}</span></td>
+                <td className="p-1 text-center bg-purple-50/30 border-l"><span className="text-sm font-bold text-purple-600">{cat.virt_cied || ''}</span></td>
+                <td className="p-1 text-center bg-red-50/30 border-l text-xs text-red-400">{cat.sin_clasificar || ''}</td>
+                <td className="p-1 text-center border-l"><span className="text-base font-extrabold text-cyan-600">{cat.inscriptos || ''}</span></td>
                 {/* v4.0 MEJORA 7: Docentes sugeridos */}
                 <td className="p-4 text-center">
                   {cat.docentes_sugeridos > 0 ? (
@@ -473,7 +477,8 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                   <button onClick={() => setModalCatedra(cat)} className="px-3 py-1.5 bg-amber-500 text-slate-900 rounded text-sm font-medium hover:bg-amber-400">+ Asignar</button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -617,6 +622,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-center p-4 text-sm font-semibold">Tipo</th>
             <th className="text-center p-4 text-sm font-semibold">Sedes</th>
             <th className="text-center p-4 text-sm font-semibold w-16">Horas</th>
+            <th className="text-center p-4 text-sm font-semibold w-16">CFPEA</th>
+            <th className="text-center p-4 text-sm font-semibold w-16">ISFTEA</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
             <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
@@ -642,6 +649,12 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                   </td>
                   <td className="p-4 text-center">
                     <HorasInput docente={d} recargar={recargar} />
+                  </td>
+                  <td className="p-4 text-center">
+                    <SociedadCheck docente={d} campo="sociedad_cfpea" recargar={recargar} />
+                  </td>
+                  <td className="p-4 text-center">
+                    <SociedadCheck docente={d} campo="sociedad_isftea" recargar={recargar} />
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -940,12 +953,13 @@ function SolapamientosView({ solapamientos }) {
   );
 }
 
-// ==================== v5.0: INSCRIPTOS POR CURSO ====================
+// ==================== v6.0: INSCRIPTOS POR CURSO ====================
 function InscriptosPorCursoView({ cuatrimestre }) {
   const [datos, setDatos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [buscar, setBuscar] = useState('');
   const [filtroMod, setFiltroMod] = useState('');
+  const [filtroTipo, setFiltroTipo] = useState('');
 
   useEffect(() => {
     const cargar = async () => {
@@ -966,13 +980,13 @@ function InscriptosPorCursoView({ cuatrimestre }) {
       if (buscar && !d.curso_completo.toLowerCase().includes(buscar.toLowerCase()) &&
           !d.curso_nombre.toLowerCase().includes(buscar.toLowerCase())) return false;
       if (filtroMod && d.modalidad !== filtroMod) return false;
+      if (filtroTipo && d.tipo_curso !== filtroTipo) return false;
       return true;
     });
-  }, [datos, buscar, filtroMod]);
+  }, [datos, buscar, filtroMod, filtroTipo]);
 
-  const totalInsc = filtrados.reduce((s, d) => s + d.inscriptos, 0);
-  const totalCIED = filtrados.filter(d => d.modalidad === 'CIED').reduce((s, d) => s + d.inscriptos, 0);
-  const totalPres = filtrados.filter(d => d.modalidad === 'Presencial').reduce((s, d) => s + d.inscriptos, 0);
+  const totalAlumnos = filtrados.reduce((s, d) => s + (d.alumnos_unicos || 0), 0);
+  const totalInsc = filtrados.reduce((s, d) => s + (d.inscripciones || 0), 0);
 
   if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
 
@@ -982,19 +996,24 @@ function InscriptosPorCursoView({ cuatrimestre }) {
         <h2 className="text-2xl font-bold text-slate-800">📊 Inscriptos por Curso</h2>
         <p className="text-slate-500 text-sm">Cantidad de alumnos inscriptos en cada curso/carrera. Datos importados del Excel de alumnos.</p>
       </div>
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">Total Cursos</p><p className="text-2xl font-bold">{filtrados.length}</p></div>
-        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">Total Inscripciones</p><p className="text-2xl font-bold text-cyan-600">{totalInsc}</p></div>
-        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">🖥️ CIED (Virtual)</p><p className="text-2xl font-bold text-purple-600">{totalCIED}</p></div>
-        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">🏫 Presencial</p><p className="text-2xl font-bold text-emerald-600">{totalPres}</p></div>
+        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">👤 Alumnos (DNI único)</p><p className="text-2xl font-bold text-blue-600">{totalAlumnos}</p></div>
+        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">📚 Inscripciones a materias</p><p className="text-2xl font-bold text-cyan-600">{totalInsc}</p></div>
       </div>
       <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
         <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm"
           value={buscar} onChange={e => setBuscar(e.target.value)} />
         <select className="border rounded-lg px-3 py-2 text-sm" value={filtroMod} onChange={e => setFiltroMod(e.target.value)}>
           <option value="">Todas las modalidades</option>
-          <option value="CIED">🖥️ CIED (Virtual)</option>
+          <option value="CIED">🖥️ CIED</option>
           <option value="Presencial">🏫 Presencial</option>
+        </select>
+        <select className="border rounded-lg px-3 py-2 text-sm" value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}>
+          <option value="">Todos los tipos</option>
+          <option value="Superior">Superior</option>
+          <option value="BCE">BCE Secundario</option>
+          <option value="BEA">BEA</option>
         </select>
       </div>
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
@@ -1004,7 +1023,9 @@ function InscriptosPorCursoView({ cuatrimestre }) {
             <th className="text-left p-3 text-sm font-semibold">Curso</th>
             <th className="text-center p-3 text-sm font-semibold">Sede</th>
             <th className="text-center p-3 text-sm font-semibold">Modalidad</th>
-            <th className="text-center p-3 text-sm font-semibold">Inscriptos</th>
+            <th className="text-center p-3 text-sm font-semibold">Tipo</th>
+            <th className="text-center p-3 text-sm font-semibold">Alumnos</th>
+            <th className="text-center p-3 text-sm font-semibold">Inscripciones</th>
           </tr></thead>
           <tbody>
             {filtrados.map((d, i) => (
@@ -1019,13 +1040,17 @@ function InscriptosPorCursoView({ cuatrimestre }) {
                     {d.modalidad === 'CIED' ? '🖥️ CIED' : '🏫 Presencial'}
                   </span>
                 </td>
-                <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos}</span></td>
+                <td className="p-3 text-center">
+                  {d.tipo_curso !== 'Superior' ? <span className={`px-2 py-0.5 rounded text-xs font-bold ${d.tipo_curso === 'BCE' ? 'bg-orange-100 text-orange-700' : 'bg-teal-100 text-teal-700'}`}>{d.tipo_curso}</span> : ''}
+                </td>
+                <td className="p-3 text-center"><span className="text-lg font-bold text-blue-600">{d.alumnos_unicos || 0}</span></td>
+                <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscripciones || 0}</span></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{filtrados.length} cursos — {totalInsc} inscripciones</p>
+      <p className="text-sm text-slate-500 mt-3 text-center">{filtrados.length} cursos — {totalAlumnos} alumnos — {totalInsc} inscripciones a materias</p>
     </div>
   );
 }
@@ -1086,6 +1111,95 @@ function CursosView({ cursos, sedes, recargar }) {
         </table>
       </div>
       <p className="text-sm text-slate-500 mt-3 text-center">{cursosFiltrados.length} cursos</p>
+    </div>
+  );
+}
+
+// ==================== v6.0: BCE / BEA SECUNDARIO ====================
+function BceBeaView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
+  const [modalCatedra, setModalCatedra] = useState(null);
+  const [modalEditar, setModalEditar] = useState(null);
+  const [editCatInfo, setEditCatInfo] = useState(null);
+  const [buscar, setBuscar] = useState('');
+
+  const catedrasBCE = useMemo(() => {
+    return catedras.filter(c => {
+      const n = (c.nombre || '').toUpperCase();
+      const vinc = c.cursos_vinculados || [];
+      return vinc.some(v => {
+        const cn = (v.curso_nombre || '').toUpperCase();
+        return cn.includes('BCE') || cn.includes('BEA') || cn.includes('SECUNDARIO') || cn.includes('BACHILLERATO');
+      }) || n.includes('BCE') || n.includes('BEA') || n.includes('SECUNDARIO');
+    });
+  }, [catedras]);
+
+  const lista = useMemo(() => {
+    const base = catedrasBCE.length > 0 ? catedrasBCE : catedras;
+    if (!buscar) return base;
+    const b = buscar.toLowerCase();
+    return base.filter(c => c.nombre.toLowerCase().includes(b) || c.codigo.toLowerCase().includes(b));
+  }, [catedras, catedrasBCE, buscar]);
+
+  const eliminarAsig = async (id) => {
+    if (!window.confirm('¿Eliminar?')) return;
+    try { await apiFetch(`/api/asignaciones/${id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
+  };
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🏫 BCE Secundario / BEA</h2>
+        <p className="text-slate-500 text-sm">Cátedras del secundario acelerado. Asignaciones y horarios se tratan aparte.</p>
+      </div>
+      <div className="bg-white rounded-xl border p-3 mb-4">
+        <input type="text" placeholder="Buscar cátedra por código o nombre..." className="w-full px-3 py-2 border rounded-lg text-sm"
+          value={buscar} onChange={e => setBuscar(e.target.value)} />
+      </div>
+      {catedrasBCE.length === 0 && !buscar && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+          <p className="text-amber-700 text-sm">No se detectaron cátedras vinculadas a cursos BCE/BEA automáticamente. Usá el buscador para encontrar las cátedras que necesitás, o vinculá los cursos BCE/BEA desde Importar.</p>
+        </div>
+      )}
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full">
+          <thead><tr className="bg-orange-50 border-b">
+            <th className="text-left p-3 text-sm font-semibold">Cátedra</th>
+            <th className="text-left p-3 text-sm font-semibold">Asignaciones</th>
+            <th className="text-center p-3 text-sm font-semibold w-20">Inscriptos</th>
+            <th className="text-center p-3 text-sm font-semibold w-24">Acciones</th>
+          </tr></thead>
+          <tbody>
+            {lista.slice(0, 50).map(cat => (
+              <tr key={cat.id} className="border-b hover:bg-slate-50">
+                <td className="p-3">
+                  <span className="px-2 py-1 bg-orange-700 text-white rounded text-xs font-mono mr-2">{cat.codigo}</span>
+                  <span className="font-medium">{cat.nombre}</span>
+                </td>
+                <td className="p-3">
+                  {cat.asignaciones?.length > 0 ? cat.asignaciones.map(a => {
+                    const mod = MODALIDAD_CONFIG[a.modalidad] || {};
+                    return (
+                      <div key={a.id} className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border mr-1 mb-1" style={{background: mod.bg ? undefined : '#f8f8f8'}}>
+                        <span>{a.docente ? a.docente.nombre : '⚠️ Sin doc.'}</span>
+                        {a.dia && <span className="text-slate-400">{a.dia} {a.hora_inicio}</span>}
+                        <button onClick={() => { setModalEditar(a); setEditCatInfo({codigo: cat.codigo, nombre: cat.nombre}); }} className="text-blue-500">✏️</button>
+                        <button onClick={() => eliminarAsig(a.id)} className="text-red-400">×</button>
+                      </div>
+                    );
+                  }) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
+                </td>
+                <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{cat.inscriptos || 0}</span></td>
+                <td className="p-3 text-center">
+                  <button onClick={() => setModalCatedra(cat)} className="px-3 py-1 bg-amber-500 text-slate-900 rounded text-sm font-medium">+ Asignar</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-sm text-slate-500 mt-3 text-center">{lista.length} cátedras</p>
+      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
+      {modalEditar && editCatInfo && <ModalEditarAsignacion asignacion={modalEditar} docentes={docentes} sedes={sedes} onClose={() => { setModalEditar(null); setEditCatInfo(null); }} recargar={recargar} catCodigo={editCatInfo.codigo} catNombre={editCatInfo.nombre} />}
     </div>
   );
 }
@@ -1202,7 +1316,7 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
       {/* v4.0 MEJORA 4: Alumnos consolidados */}
       <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
       <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
-        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos (v5.0)</h3>
+        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos (v6.0)</h3>
         <p className="text-sm text-slate-500 mb-1">El sistema ahora clasifica automáticamente cada alumno según su CURSO:</p>
         <p className="text-xs text-slate-500 mb-1">🖥️ <strong>Virtual</strong>: Si el curso dice "CIED" o es "Online-Interior"</p>
         <p className="text-xs text-slate-500 mb-1">🏫 <strong>Presencial</strong>: Si el curso NO dice "CIED" (requiere profesor en aula)</p>
@@ -1274,7 +1388,7 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v5.0: HORAS DOCENTE INLINE INPUT ====================
+// ==================== v6.0: HORAS DOCENTE INLINE INPUT ====================
 function HorasInput({ docente, recargar }) {
   const [val, setVal] = useState(docente.horas_asignadas || 0);
   const [saving, setSaving] = useState(false);
@@ -1293,7 +1407,21 @@ function HorasInput({ docente, recargar }) {
   );
 }
 
-// ==================== v5.0: DISPONIBILIDAD DOCENTE ====================
+// ==================== v6.0: SOCIEDAD CHECKBOX ====================
+function SociedadCheck({ docente, campo, recargar }) {
+  const [checked, setChecked] = useState(docente[campo] || false);
+  const toggle = async () => {
+    const newVal = !checked;
+    setChecked(newVal);
+    try {
+      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ [campo]: newVal }) });
+      recargar();
+    } catch (e) { alert(e.message); setChecked(!newVal); }
+  };
+  return <input type="checkbox" checked={checked} onChange={toggle} className="w-4 h-4 cursor-pointer" />;
+}
+
+// ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
 function DisponibilidadView({ docentes }) {
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [buscar, setBuscar] = useState('');
@@ -1419,7 +1547,7 @@ function DisponibilidadView({ docentes }) {
   );
 }
 
-// ==================== EXPORTAR VIEW (v5.0 con desglose) ====================
+// ==================== EXPORTAR VIEW (v6.0 con desglose) ====================
 function ExportarView({ cuatrimestre, cuatrimestres }) {
   const [descargando, setDescargando] = useState(false);
   const descargar = async () => {
@@ -1442,7 +1570,7 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
     <div className="p-8">
       <h2 className="text-2xl font-bold text-slate-800 mb-6">Exportar</h2>
       <div className="bg-white rounded-xl border p-6 max-w-xl">
-        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v5.0)</h3>
+        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v6.0)</h3>
         <p className="text-sm text-slate-500 mb-4">
           Excel con una solapa por sede. Incluye columnas de inscriptos total, virtuales y presenciales.
           Cátedras ordenadas por código. Múltiples docentes en filas separadas.
@@ -1505,6 +1633,7 @@ export default function App() {
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
+        {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
       </main>
