@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="7.0")
+app = FastAPI(title="Sistema Horarios IEA", version="8.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -257,7 +257,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v7.0 iniciado")
+    print("🚀 IEA Horarios v8.0 iniciado")
 
 CLAVE_ACCESO = "IEA2026"
 
@@ -424,7 +424,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             sede_cab = desg['tm_cab'] + desg['tn_cab']
             sede_vl = desg['tm_vl'] + desg['tn_vl']
             sede_cied = desg['tm_cied'] + desg['tn_cied'] + desg['virt_cied']
-            docentes_sugeridos = max(1, -(-inscriptos // 50)) if inscriptos > 0 else 0
+            docentes_sugeridos = (1 if inscriptos <= 50 else (1 + -(-max(0, inscriptos - 50) // 50))) if inscriptos >= 10 else 0
             cursos_vinc = []
             try:
                 for cc in (cat.cursos or []):
@@ -560,49 +560,26 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
                 elif ap['turno'] == 'Noche' and ('tn' in m or m == 'presencial'): ap['tiene_docente'] = True
                 elif ap['turno'] == 'Virtual' and 'virtual' in m: ap['tiene_docente'] = True
         sin_doc = [a for a in aperturas if not a['tiene_docente']]
-        if not sin_doc: continue
+        if not sin_doc and not any(a['tiene_docente'] for a in aperturas): continue
         result.append({
             "catedra_id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
             "inscriptos_total": total_insc, "docentes_asignados": len(docs_asig),
             "docentes_nombres": [f"{a.docente.nombre} {a.docente.apellido}" for a in docs_asig if a.docente],
-            "aperturas_necesarias": sin_doc,
+            "aperturas_necesarias": aperturas,  # ALL aperturas, both covered and uncovered
+            "tiene_sin_cubrir": len(sin_doc) > 0,
         })
     result.sort(key=lambda x: sort_key_codigo(x['codigo']))
     return result
 
-# ===== v7.0: Criterio de apertura de cátedras =====
+# ===== v8.0: Criterio de apertura simplificado =====
 @app.get("/api/catedras/criterio-apertura")
 def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     """
-    Criterio: >=10 alumnos en alguna combo sede+turno → ABRIR (1 doc cada 50, orden descendente)
-    Total >=1 pero ninguna combo >=10 → ASINCRÓNICA
-    Total = 0 → SIN ALUMNOS
+    >=10 total → ABRIR. 1 doc hasta 50, luego +1 cada 50 adicionales.
+    1-9 total → ASINCRÓNICA
+    0 → SIN ALUMNOS
     """
     from sqlalchemy import text
-    q_txt = """SELECT catedra_id, COALESCE(turno,'Virtual') as turno, COALESCE(modalidad_alumno,'virtual') as mod,
-        COALESCE(sede_referencia,'') as sede, COUNT(*) as cnt
-        FROM inscripciones WHERE modalidad_alumno IS NOT NULL"""
-    if cuatrimestre_id: q_txt += f" AND cuatrimestre_id = {cuatrimestre_id}"
-    q_txt += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
-    try: rows = db.execute(text(q_txt)).fetchall()
-    except: rows = []
-    # Build desglose
-    cat_combos = {}
-    for r in rows:
-        cid, turno, mod, sede, cnt = r
-        if cid not in cat_combos: cat_combos[cid] = {}
-        es_cied = (mod == 'virtual')
-        if es_cied: sede_tipo = 'CIED'
-        else:
-            sn = (sede or '').lower()
-            if 'avellaneda' in sn: sede_tipo = 'Avellaneda'
-            elif 'caballito' in sn: sede_tipo = 'Caballito'
-            elif 'vicente' in sn: sede_tipo = 'Vicente López'
-            else: sede_tipo = 'CIED'
-        if turno == 'Virtual': combo = 'CIED Virtual'
-        else: combo = f"{turno} {sede_tipo}"
-        cat_combos[cid][combo] = cat_combos[cid].get(combo, 0) + cnt
-    # Total inscriptos
     total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
     if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
     total_q += " GROUP BY catedra_id"
@@ -610,33 +587,28 @@ def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get
     try:
         for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
     except: pass
-    # Classify
-    abrir = []
-    asincronica = []
-    sin_alumnos = []
     all_cats = sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo))
+    abrir = []; asincronica = []; sin_alumnos = []
     for cat in all_cats:
         total = total_map.get(cat.id, 0)
-        combos = cat_combos.get(cat.id, {})
         if total == 0:
             sin_alumnos.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": 0})
-            continue
-        # Sort combos by count desc
-        sorted_combos = sorted(combos.items(), key=lambda x: -x[1])
-        aperturas = []
-        for combo_name, cant in sorted_combos:
-            if cant >= 10:
-                docs = max(1, -(-cant // 50))
-                aperturas.append({"combo": combo_name, "inscriptos": cant, "docentes_sugeridos": docs})
-        if aperturas:
-            abrir.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total, "aperturas": aperturas,
-                "total_docs_sugeridos": sum(a["docentes_sugeridos"] for a in aperturas)})
+        elif total < 10:
+            asincronica.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total})
         else:
-            asincronica.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total,
-                "combos": [{"combo": k, "inscriptos": v} for k, v in sorted_combos if v > 0]})
+            docs = 1 if total <= 50 else (1 + -(-max(0, total - 50) // 50))
+            # Check if already has asignacion
+            tiene = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
+            if cuatrimestre_id: tiene = tiene.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+            tiene_asig = tiene.count() > 0
+            docs_actuales = tiene.filter(Asignacion.docente_id.isnot(None)).count() if tiene_asig else 0
+            abrir.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total,
+                "docentes_sugeridos": docs, "docentes_actuales": docs_actuales,
+                "faltan": max(0, docs - docs_actuales), "tiene_asignacion": tiene_asig})
     return {"abrir": abrir, "asincronica": asincronica, "sin_alumnos": sin_alumnos,
-        "stats": {"total_abrir": len(abrir), "total_asincronica": len(asincronica), "total_sin_alumnos": len(sin_alumnos),
-            "total_docentes_sugeridos": sum(a["total_docs_sugeridos"] for a in abrir)}}
+        "stats": {"total_abrir": len(abrir), "total_asincronica": len(asincronica),
+            "total_sin_alumnos": len(sin_alumnos),
+            "total_docentes_sugeridos": sum(a["docentes_sugeridos"] for a in abrir)}}
 
 
 @app.get("/api/inscriptos/por-curso")
@@ -1436,58 +1408,47 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
 
     # ========== HOJA: Necesitan Docente (con sede+turno) ==========
     ws_nd = wb.create_sheet("Necesitan Docente")
-    ws_nd.append(["#","Código","Cátedra","Turno","Sede necesaria","Inscriptos en esa sede/turno","Docentes actuales"])
+    ws_nd.append(["#","Código","Cátedra","Turno","Sede","Inscriptos","Cubierto","Docentes actuales"])
     for cell in ws_nd[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="DC2626"); cell.alignment = Alignment(horizontal="center")
     nd_data = get_catedras_necesitan_docente(cuatrimestre_id, db)
     idx = 1
     for nd in nd_data:
         for ap in nd.get('aperturas_necesarias', []):
+            cubierto = "✅ Sí" if ap.get('tiene_docente') else "❌ No"
             ws_nd.append([idx, nd['codigo'], nd['nombre'], ap['turno'], ap['sede'], ap['inscriptos'],
-                ', '.join(nd['docentes_nombres']) or "Sin docente"])
-            for cell in ws_nd[ws_nd.max_row]: cell.fill = YELLOW
+                cubierto, ', '.join(nd['docentes_nombres']) or "Sin docente"])
+            if not ap.get('tiene_docente'):
+                for cell in ws_nd[ws_nd.max_row]: cell.fill = YELLOW
             idx += 1
-    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',16),('F',24),('G',36)]:
+    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',16),('F',12),('G',10),('H',36)]:
         ws_nd.column_dimensions[col].width = w
 
     # ========== v7.0: 3 nuevas solapas de criterio de apertura ==========
     criterio = get_criterio_apertura(cuatrimestre_id, db)
 
-    # --- HOJA: Abrir Cátedra (>=10 en algún combo) ---
+    # --- HOJA: Abrir Cátedra (>=10 inscriptos total) ---
     ws_abrir = wb.create_sheet("Abrir cátedra")
-    ws_abrir.append(["#","Código","Cátedra","Total inscriptos","Turno + Sede/Modalidad","Inscriptos en esa combo","Docentes sugeridos","Total docs sugeridos"])
+    ws_abrir.append(["#","Código","Cátedra","Total inscriptos","Docentes sugeridos","Docentes actuales","Faltan","Estado"])
     for cell in ws_abrir[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="059669"); cell.alignment = Alignment(horizontal="center")
-    idx = 1
-    for item in criterio['abrir']:
-        first = True
-        for ap in item['aperturas']:
-            ws_abrir.append([
-                idx if first else '',
-                item['codigo'] if first else '',
-                item['nombre'] if first else '',
-                item['total'] if first else '',
-                ap['combo'],
-                ap['inscriptos'],
-                ap['docentes_sugeridos'],
-                item['total_docs_sugeridos'] if first else '',
-            ])
-            if ap['inscriptos'] >= 50:
-                for cell in ws_abrir[ws_abrir.max_row]: cell.fill = PatternFill("solid", fgColor="FEF3C7")
-            first = False
-            idx += 1
-    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',22),('F',20),('G',16),('H',16)]:
+    for i, item in enumerate(criterio['abrir'], 1):
+        estado = "✅ Cubierto" if item['faltan'] == 0 else "⚠️ Faltan docentes"
+        ws_abrir.append([i, item['codigo'], item['nombre'], item['total'],
+            item['docentes_sugeridos'], item['docentes_actuales'], item['faltan'], estado])
+        if item['faltan'] > 0:
+            for cell in ws_abrir[ws_abrir.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',16),('F',16),('G',8),('H',18)]:
         ws_abrir.column_dimensions[col].width = w
 
-    # --- HOJA: Cátedra Asincrónica (tiene alumnos pero ningún combo >=10) ---
+    # --- HOJA: Cátedra Asincrónica (1-9 inscriptos total) ---
     ws_asinc = wb.create_sheet("Cátedra asincrónica")
-    ws_asinc.append(["#","Código","Cátedra","Total inscriptos","Detalle por combo","Observación"])
+    ws_asinc.append(["#","Código","Cátedra","Total inscriptos","Observación"])
     for cell in ws_asinc[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="7C3AED"); cell.alignment = Alignment(horizontal="center")
     for i, item in enumerate(criterio['asincronica'], 1):
-        detalle = ', '.join([f"{c['combo']}: {c['inscriptos']}" for c in item.get('combos', [])])
-        ws_asinc.append([i, item['codigo'], item['nombre'], item['total'], detalle, "No alcanza 10 en ninguna combo → Asincrónica"])
-    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',40),('F',40)]:
+        ws_asinc.append([i, item['codigo'], item['nombre'], item['total'], "1 a 9 inscriptos → Se dicta de forma asincrónica (pregrabada)"])
+    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',50)]:
         ws_asinc.column_dimensions[col].width = w
 
     # --- HOJA: Cátedra sin alumnos ---
@@ -1496,7 +1457,6 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     for cell in ws_sin[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="6B7280"); cell.alignment = Alignment(horizontal="center")
     idx = 1
-    # Include cats with 0 inscriptos AND cats <10 total
     for cat in all_cats:
         ic = total_insc_map.get(cat.id, 0)
         if ic == 0:
