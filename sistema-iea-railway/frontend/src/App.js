@@ -441,7 +441,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
           </thead>
           <tbody>
             {catedrasPag.map(cat => {
-              const necesitaApertura = (cat.inscriptos || 0) > 5 && (!cat.asignaciones || cat.asignaciones.length === 0);
+              const necesitaApertura = (cat.inscriptos || 0) > 9 && (!cat.asignaciones || cat.asignaciones.length === 0);
               return (
               <tr key={cat.id} className={`border-b hover:bg-slate-50 ${necesitaApertura ? 'bg-yellow-50' : ''}`}>
                 <td className="p-3">
@@ -551,7 +551,7 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
-        <p className="text-slate-500 text-sm">Cátedras con más de 5 inscriptos en una misma sede y turno, sin docente asignado.</p>
+        <p className="text-slate-500 text-sm">Cátedras con 10 o más inscriptos en una misma sede y turno, sin docente asignado.</p>
       </div>
       {datos.length === 0 ? (
         <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
