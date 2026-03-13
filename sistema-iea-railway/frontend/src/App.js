@@ -58,6 +58,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
+    { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
@@ -69,7 +70,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v7.0</p>
+        <p className="text-slate-500 text-sm">Sistema v8.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -408,104 +409,88 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full">
           <thead>
-            <tr className="bg-slate-50 border-b">
-              <th className="text-left p-2 text-xs font-semibold w-48" rowSpan="2">Cátedra</th>
-              <th className="text-left p-2 text-xs font-semibold" rowSpan="2">Asignaciones</th>
-              <th className="text-center p-1 text-xs font-semibold bg-yellow-50 border-l" colSpan="5">TURNO MAÑANA</th>
-              <th className="text-center p-1 text-xs font-semibold bg-indigo-50 border-l" colSpan="5">TURNO NOCHE</th>
-              <th className="text-center p-1 text-xs font-semibold bg-purple-50 border-l" rowSpan="2">CIED<br/>Virt</th>
-              <th className="text-center p-1 text-xs font-semibold bg-red-50 border-l" rowSpan="2">Sin<br/>clasif</th>
-              <th className="text-center p-1 text-xs font-semibold border-l" colSpan="4">TOTAL SEDE</th>
-              <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Total</th>
-              <th className="text-center p-1 text-xs font-semibold border-l" rowSpan="2">Doc<br/>sug</th>
-              <th className="text-center p-2 text-xs font-semibold border-l" rowSpan="2">Acc.</th>
+            <tr className="bg-slate-800 text-white text-[10px]">
+              <th className="p-2 text-left font-semibold" rowSpan="2" style={{width:'180px'}}>Cátedra</th>
+              <th className="p-1 text-center bg-yellow-700" colSpan="5">TURNO MAÑANA</th>
+              <th className="p-1 text-center bg-indigo-700" colSpan="5">TURNO NOCHE</th>
+              <th className="p-1 text-center bg-purple-700" rowSpan="2">Virt</th>
+              <th className="p-1 text-center bg-slate-600" colSpan="4">TOTAL SEDE</th>
+              <th className="p-1 text-center bg-cyan-700" rowSpan="2">Total</th>
+              <th className="p-1 text-center bg-red-700" rowSpan="2">?</th>
+              <th className="p-1 text-center bg-slate-600" rowSpan="2">Doc</th>
+              <th className="p-1 text-center font-semibold" rowSpan="2" style={{width:'120px'}}>Asignaciones</th>
+              <th className="p-1 text-center" rowSpan="2">Acc.</th>
             </tr>
-            <tr className="bg-slate-50 border-b text-[10px]">
-              <th className="p-1 bg-yellow-50 border-l text-blue-700">Av</th>
-              <th className="p-1 bg-yellow-50 text-emerald-700">Cab</th>
-              <th className="p-1 bg-yellow-50 text-amber-700">VL</th>
-              <th className="p-1 bg-yellow-50 text-purple-700">CIED</th>
-              <th className="p-1 bg-yellow-50 font-bold">TM</th>
-              <th className="p-1 bg-indigo-50 border-l text-blue-700">Av</th>
-              <th className="p-1 bg-indigo-50 text-emerald-700">Cab</th>
-              <th className="p-1 bg-indigo-50 text-amber-700">VL</th>
-              <th className="p-1 bg-indigo-50 text-purple-700">CIED</th>
-              <th className="p-1 bg-indigo-50 font-bold">TN</th>
-            </tr>
-            <tr className="bg-slate-50 border-b text-[10px]">
-              <th className="p-1 border-l text-blue-700">Av</th>
-              <th className="p-1 text-emerald-700">Cab</th>
-              <th className="p-1 text-amber-700">VL</th>
-              <th className="p-1 text-purple-700">CIED</th>
+            <tr className="bg-slate-700 text-white text-[9px]">
+              <th className="p-0.5 bg-yellow-800">Av</th>
+              <th className="p-0.5 bg-yellow-800">Cab</th>
+              <th className="p-0.5 bg-yellow-800">VL</th>
+              <th className="p-0.5 bg-yellow-800">CIED</th>
+              <th className="p-0.5 bg-yellow-800 font-bold">TM</th>
+              <th className="p-0.5 bg-indigo-800">Av</th>
+              <th className="p-0.5 bg-indigo-800">Cab</th>
+              <th className="p-0.5 bg-indigo-800">VL</th>
+              <th className="p-0.5 bg-indigo-800">CIED</th>
+              <th className="p-0.5 bg-indigo-800 font-bold">TN</th>
+              <th className="p-0.5 bg-slate-600">Av</th>
+              <th className="p-0.5 bg-slate-600">Cab</th>
+              <th className="p-0.5 bg-slate-600">VL</th>
+              <th className="p-0.5 bg-slate-600">CIED</th>
             </tr>
           </thead>
           <tbody>
             {catedrasPag.map(cat => {
               const necesitaApertura = (cat.inscriptos || 0) > 9 && (!cat.asignaciones || cat.asignaciones.length === 0);
               return (
-              <tr key={cat.id} className={`border-b hover:bg-slate-50 ${necesitaApertura ? 'bg-yellow-50' : ''}`}>
-                <td className="p-3">
-                  <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{cat.codigo}</span>
-                  <span className="font-medium">{cat.nombre}</span>
-                  {necesitaApertura && <span className="ml-2 px-2 py-0.5 bg-yellow-300 text-yellow-900 rounded text-xs font-bold">⚠️ ABRIR</span>}
+              <tr key={cat.id} className={`border-b hover:bg-slate-50 text-xs ${necesitaApertura ? 'bg-yellow-50' : ''}`}>
+                <td className="p-1.5" style={{minWidth:'160px'}}>
+                  <span className="px-1.5 py-0.5 bg-slate-800 text-white rounded text-[10px] font-mono mr-1">{cat.codigo}</span>
+                  <span className="text-xs font-medium">{cat.nombre}</span>
+                  {necesitaApertura && <span className="ml-1 px-1 py-0.5 bg-yellow-300 text-yellow-900 rounded text-[9px] font-bold">ABRIR</span>}
                 </td>
-                <td className="p-4">
+                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-blue-700">{cat.tm_av || ''}</span></td>
+                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-emerald-700">{cat.tm_cab || ''}</span></td>
+                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-amber-700">{cat.tm_vl || ''}</span></td>
+                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-purple-600">{cat.tm_cied || ''}</span></td>
+                <td className="p-0.5 text-center bg-yellow-100/60"><span className="font-extrabold text-sm">{cat.tm_total || ''}</span></td>
+                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-blue-700">{cat.tn_av || ''}</span></td>
+                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-emerald-700">{cat.tn_cab || ''}</span></td>
+                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-amber-700">{cat.tn_vl || ''}</span></td>
+                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-purple-600">{cat.tn_cied || ''}</span></td>
+                <td className="p-0.5 text-center bg-indigo-100/60"><span className="font-extrabold text-sm">{cat.tn_total || ''}</span></td>
+                <td className="p-0.5 text-center bg-purple-50/40"><span className="font-bold text-purple-600">{cat.virt_cied || ''}</span></td>
+                <td className="p-0.5 text-center"><span className="font-bold text-blue-700">{cat.sede_av || ''}</span></td>
+                <td className="p-0.5 text-center"><span className="font-bold text-emerald-700">{cat.sede_cab || ''}</span></td>
+                <td className="p-0.5 text-center"><span className="font-bold text-amber-700">{cat.sede_vl || ''}</span></td>
+                <td className="p-0.5 text-center"><span className="font-bold text-purple-600">{cat.sede_cied || ''}</span></td>
+                <td className="p-0.5 text-center"><span className="text-sm font-extrabold text-cyan-600">{cat.inscriptos || ''}</span></td>
+                <td className="p-0.5 text-center text-[10px] text-red-400">{cat.sin_clasificar || ''}</td>
+                <td className="p-0.5 text-center">
+                  {cat.docentes_sugeridos > 0 ? (
+                    <span className={`text-xs font-bold ${(cat.asignaciones?.filter(a => a.docente)?.length || 0) < cat.docentes_sugeridos ? 'text-red-500' : 'text-emerald-500'}`}>
+                      {cat.asignaciones?.filter(a => a.docente)?.length || 0}/{cat.docentes_sugeridos}
+                    </span>
+                  ) : <span className="text-slate-300 text-[10px]">-</span>}
+                </td>
+                <td className="p-1" style={{maxWidth:'120px'}}>
                   {cat.asignaciones?.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-0.5">
                       {cat.asignaciones.map(a => {
                         const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                        const pendiente = !a.dia && !a.hora_inicio;
                         return (
-                          <div key={a.id} className={`px-3 py-2 rounded-lg ${pendiente ? 'bg-yellow-50 border-yellow-300' : mod.bg} border ${pendiente ? 'border-yellow-300' : mod.border} text-sm`}>
-                            <div className="flex items-center gap-2">
-                              <span>{pendiente ? '⏳' : mod.icon}</span>
-                              <div>
-                                <p className={`font-medium ${pendiente ? 'text-yellow-700' : mod.color}`}>{pendiente ? 'Pendiente' : mod.label}</p>
-                                {a.modalidad !== 'asincronica' && (
-                                  <p className="text-xs text-slate-500">
-                                    {a.docente ? a.docente.nombre : '⚠️ Sin docente'}
-                                    {a.dia ? ` • ${a.dia} ${a.hora_inicio}` : ''}
-                                    {a.sede_nombre ? ` • ${a.sede_nombre}` : ''}
-                                  </p>
-                                )}
-                              </div>
-                              {/* v4.0 MEJORA 3: Botón editar */}
-                              <button onClick={() => abrirEditar(a, cat)} className="text-blue-500 hover:text-blue-700 ml-1" title="Editar">✏️</button>
-                              <button onClick={() => eliminarAsig(a.id)} className="text-red-400 hover:text-red-600" title="Eliminar">×</button>
-                            </div>
+                          <div key={a.id} className="px-1 py-0.5 rounded text-[9px] border bg-white" title={`${mod.label || ''} ${a.docente ? a.docente.nombre : 'Sin doc.'} ${a.dia||''} ${a.hora_inicio||''} ${a.sede_nombre||''}`}>
+                            <span>{mod.icon || '⏳'}</span>
+                            <span className="ml-0.5">{a.docente ? a.docente.nombre.split(' ')[0] : '⚠️'}</span>
+                            <button onClick={() => abrirEditar(a, cat)} className="text-blue-500 ml-0.5">✏️</button>
+                            <button onClick={() => eliminarAsig(a.id)} className="text-red-400 ml-0.5">×</button>
                           </div>
                         );
                       })}
                     </div>
-                  ) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
+                  ) : <span className="text-slate-300 text-[10px]">—</span>}
                 </td>
-                <td className="p-1 text-center bg-yellow-50/30 border-l"><span className="text-sm font-bold text-blue-700">{cat.tm_av || ''}</span></td>
-                <td className="p-1 text-center bg-yellow-50/30"><span className="text-sm font-bold text-emerald-700">{cat.tm_cab || ''}</span></td>
-                <td className="p-1 text-center bg-yellow-50/30"><span className="text-sm font-bold text-amber-700">{cat.tm_vl || ''}</span></td>
-                <td className="p-1 text-center bg-yellow-50/30"><span className="text-sm font-bold text-purple-600">{cat.tm_cied || ''}</span></td>
-                <td className="p-1 text-center bg-yellow-100/50"><span className="text-sm font-extrabold">{cat.tm_total || ''}</span></td>
-                <td className="p-1 text-center bg-indigo-50/30 border-l"><span className="text-sm font-bold text-blue-700">{cat.tn_av || ''}</span></td>
-                <td className="p-1 text-center bg-indigo-50/30"><span className="text-sm font-bold text-emerald-700">{cat.tn_cab || ''}</span></td>
-                <td className="p-1 text-center bg-indigo-50/30"><span className="text-sm font-bold text-amber-700">{cat.tn_vl || ''}</span></td>
-                <td className="p-1 text-center bg-indigo-50/30"><span className="text-sm font-bold text-purple-600">{cat.tn_cied || ''}</span></td>
-                <td className="p-1 text-center bg-indigo-100/50"><span className="text-sm font-extrabold">{cat.tn_total || ''}</span></td>
-                <td className="p-1 text-center bg-purple-50/30 border-l"><span className="text-sm font-bold text-purple-600">{cat.virt_cied || ''}</span></td>
-                <td className="p-1 text-center bg-red-50/30 border-l text-xs text-red-400">{cat.sin_clasificar || ''}</td>
-                <td className="p-1 text-center border-l"><span className="text-xs font-bold text-blue-700">{cat.sede_av || ''}</span></td>
-                <td className="p-1 text-center"><span className="text-xs font-bold text-emerald-700">{cat.sede_cab || ''}</span></td>
-                <td className="p-1 text-center"><span className="text-xs font-bold text-amber-700">{cat.sede_vl || ''}</span></td>
-                <td className="p-1 text-center"><span className="text-xs font-bold text-purple-600">{cat.sede_cied || ''}</span></td>
-                <td className="p-1 text-center border-l"><span className="text-base font-extrabold text-cyan-600">{cat.inscriptos || ''}</span></td>
-                {/* v4.0 MEJORA 7: Docentes sugeridos */}
-                <td className="p-4 text-center">
-                  {cat.docentes_sugeridos > 0 ? (
-                    <span className={`text-lg font-bold ${(cat.asignaciones?.filter(a => a.docente)?.length || 0) < cat.docentes_sugeridos ? 'text-red-500' : 'text-emerald-500'}`}>
-                      {cat.asignaciones?.filter(a => a.docente)?.length || 0}/{cat.docentes_sugeridos}
-                    </span>
-                  ) : <span className="text-slate-300">-</span>}
-                </td>
-                <td className="p-4 text-center">
-                  <button onClick={() => setModalCatedra(cat)} className="px-3 py-1.5 bg-amber-500 text-slate-900 rounded text-sm font-medium hover:bg-amber-400">+ Asignar</button>
+                <td className="p-1 text-center">
+                  <button onClick={() => setModalCatedra(cat)} className="px-2 py-1 bg-amber-500 text-slate-900 rounded text-[10px] font-medium">+</button>
                 </td>
               </tr>
               );
@@ -582,14 +567,17 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
                     <td className="p-3">
                       <div className="flex flex-wrap gap-1">
                         {(d.aperturas_necesarias || []).map((ap, i) => (
-                          <div key={i} className="px-2 py-1 bg-yellow-100 border border-yellow-400 rounded text-xs">
-                            <span className="font-bold text-yellow-800">⚠️ {ap.turno}</span>
+                          <div key={i} className={`px-2 py-1 rounded text-xs border ${ap.tiene_docente ? 'bg-emerald-50 border-emerald-300' : 'bg-yellow-100 border-yellow-400'}`}>
+                            <span className={`font-bold ${ap.tiene_docente ? 'text-emerald-700' : 'text-yellow-800'}`}>
+                              {ap.tiene_docente ? '✅' : '⚠️'} {ap.turno}
+                            </span>
                             <span className={`ml-1 px-1 rounded text-white text-[10px] ${
                               ap.sede === 'Avellaneda' ? 'bg-blue-500' :
                               ap.sede === 'Caballito' ? 'bg-emerald-500' :
                               ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
                             }`}>{ap.sede}</span>
-                            <span className="ml-1 text-yellow-700">({ap.inscriptos} alumnos)</span>
+                            <span className="ml-1 text-slate-500">({ap.inscriptos})</span>
+                            {ap.tiene_docente && <span className="ml-1 text-emerald-600 text-[10px]">cubierto</span>}
                           </div>
                         ))}
                       </div>
@@ -601,6 +589,75 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
             </table>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ==================== v8.0: MATERIAS ASINCRÓNICAS (1-9 alumnos) ====================
+function AsincronicasView({ cuatrimestre }) {
+  const [datos, setDatos] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        const r = await apiFetch(`/api/catedras/criterio-apertura${qParam}`);
+        setDatos(r);
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
+  if (!datos) return null;
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🎥 Materias Asincrónicas</h2>
+        <p className="text-slate-500 text-sm">Cátedras con 1 a 9 inscriptos totales. Se dictan con material pregrabado (sin docente en vivo).</p>
+      </div>
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
+          <p className="text-xs text-emerald-600">Abrir con docente</p><p className="text-3xl font-bold text-emerald-700">{datos.stats.total_abrir}</p><p className="text-xs text-emerald-500">≥10 inscriptos</p>
+        </div>
+        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 text-center">
+          <p className="text-xs text-purple-600">Asincrónicas</p><p className="text-3xl font-bold text-purple-700">{datos.stats.total_asincronica}</p><p className="text-xs text-purple-500">1-9 inscriptos</p>
+        </div>
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-center">
+          <p className="text-xs text-slate-600">Sin alumnos</p><p className="text-3xl font-bold text-slate-400">{datos.stats.total_sin_alumnos}</p><p className="text-xs text-slate-400">0 inscriptos</p>
+        </div>
+      </div>
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden mb-6">
+        <div className="p-3 bg-purple-50 border-b"><h3 className="font-semibold text-purple-800">🎥 Asincrónicas ({datos.asincronica.length})</h3></div>
+        <table className="w-full">
+          <thead><tr className="bg-slate-50 border-b text-sm">
+            <th className="p-3 text-left">Cátedra</th><th className="p-3 text-center w-24">Inscriptos</th><th className="p-3 text-left">Estado</th>
+          </tr></thead>
+          <tbody>
+            {datos.asincronica.map((d, i) => (
+              <tr key={i} className="border-b hover:bg-purple-50/30">
+                <td className="p-3"><span className="font-mono text-xs bg-purple-800 text-white px-1 rounded mr-2">{d.codigo}</span>{d.nombre}</td>
+                <td className="p-3 text-center"><span className="text-lg font-bold text-purple-600">{d.total}</span></td>
+                <td className="p-3"><span className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">🎥 Asincrónica — Material pregrabado</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {datos.sin_alumnos.length > 0 && (
+        <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+          <div className="p-3 bg-slate-50 border-b"><h3 className="font-semibold text-slate-600">Sin alumnos ({datos.sin_alumnos.length})</h3></div>
+          <div className="p-4 flex flex-wrap gap-2">
+            {datos.sin_alumnos.map((d, i) => (
+              <span key={i} className="px-2 py-1 bg-slate-100 rounded text-xs text-slate-500">
+                <span className="font-mono">{d.codigo}</span> {d.nombre}
+              </span>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1491,7 +1548,7 @@ function SociedadCheck({ docente, campo, recargar }) {
 }
 
 // ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
-function DisponibilidadView({ docentes }) {
+function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimestres, recargar }) {
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [buscar, setBuscar] = useState('');
   const [disponibilidad, setDisponibilidad] = useState([]);
@@ -1506,50 +1563,41 @@ function DisponibilidadView({ docentes }) {
 
   const cargarDisp = async (docId) => {
     setLoading(true);
-    try {
-      const r = await apiFetch(`/api/docentes/${docId}/disponibilidad`);
-      setDisponibilidad(r);
-    } catch (e) { setDisponibilidad([]); }
+    try { setDisponibilidad(await apiFetch(`/api/docentes/${docId}/disponibilidad`)); }
+    catch (e) { setDisponibilidad([]); }
     setLoading(false);
   };
-
-  const seleccionar = (d) => {
-    setSelectedDoc(d);
-    cargarDisp(d.id);
-  };
-
-  const isDisponible = (dia, hora) => {
-    const item = disponibilidad.find(d => d.dia === dia && d.hora === hora);
-    return item ? item.disponible : false;
-  };
-
+  const seleccionar = (d) => { setSelectedDoc(d); cargarDisp(d.id); };
+  const isDisponible = (dia, hora) => disponibilidad.find(d => d.dia === dia && d.hora === hora)?.disponible || false;
   const toggleCelda = (dia, hora) => {
     const existe = disponibilidad.find(d => d.dia === dia && d.hora === hora);
-    if (existe) {
-      setDisponibilidad(disponibilidad.map(d => d.dia === dia && d.hora === hora ? {...d, disponible: !d.disponible} : d));
-    } else {
-      setDisponibilidad([...disponibilidad, {dia, hora, disponible: true}]);
-    }
+    if (existe) setDisponibilidad(disponibilidad.map(d => d.dia === dia && d.hora === hora ? {...d, disponible: !d.disponible} : d));
+    else setDisponibilidad([...disponibilidad, {dia, hora, disponible: true}]);
   };
-
   const guardar = async () => {
     if (!selectedDoc) return;
     setGuardando(true);
     try {
-      await apiFetch(`/api/docentes/${selectedDoc.id}/disponibilidad`, {
-        method: 'PUT',
-        body: JSON.stringify({ disponibilidad: disponibilidad.filter(d => d.disponible) }),
-      });
+      await apiFetch(`/api/docentes/${selectedDoc.id}/disponibilidad`, { method: 'PUT', body: JSON.stringify({ disponibilidad: disponibilidad.filter(d => d.disponible) }) });
       alert('Disponibilidad guardada');
     } catch (e) { alert('Error: ' + e.message); }
     setGuardando(false);
   };
 
+  // Cátedras asignadas a este docente
+  const asigDocente = useMemo(() => {
+    if (!selectedDoc) return [];
+    return catedras.flatMap(c => (c.asignaciones || []).filter(a => a.docente?.id === selectedDoc.id).map(a => ({...a, cat_codigo: c.codigo, cat_nombre: c.nombre})));
+  }, [selectedDoc, catedras]);
+
+  // Find assigned class at a specific dia+hora
+  const asigEnCelda = (dia, hora) => asigDocente.find(a => a.dia === dia && a.hora_inicio === hora);
+
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🕐 Disponibilidad Horaria</h2>
-        <p className="text-slate-500 text-sm">Seleccioná un docente y marcá las horas en las que puede dar clases.</p>
+        <h2 className="text-2xl font-bold text-slate-800">🕐 Disponibilidad y Asignaciones</h2>
+        <p className="text-slate-500 text-sm">Marcá disponibilidad (verde) y visualizá las cátedras asignadas (azul) en formato calendario.</p>
       </div>
       <div className="grid grid-cols-4 gap-6">
         <div className="col-span-1">
@@ -1560,14 +1608,14 @@ function DisponibilidadView({ docentes }) {
               <div key={d.id} onClick={() => seleccionar(d)}
                 className={`p-3 border-b cursor-pointer hover:bg-amber-50 ${selectedDoc?.id === d.id ? 'bg-amber-100 font-medium' : ''}`}>
                 <p className="text-sm">{d.nombre} {d.apellido}</p>
-                <p className="text-xs text-slate-400">Horas: {d.horas_asignadas || 0}h</p>
+                <p className="text-xs text-slate-400">{d.horas_asignadas || 0}h — {d.asignaciones?.length || 0} cátedras</p>
               </div>
             ))}
           </div>
         </div>
         <div className="col-span-3">
           {!selectedDoc ? (
-            <div className="bg-slate-50 rounded-xl p-12 text-center text-slate-400">← Seleccioná un docente para ver/editar su disponibilidad</div>
+            <div className="bg-slate-50 rounded-xl p-12 text-center text-slate-400">← Seleccioná un docente</div>
           ) : loading ? (
             <div className="text-center p-8">⏳ Cargando...</div>
           ) : (
@@ -1575,31 +1623,49 @@ function DisponibilidadView({ docentes }) {
               <div className="flex justify-between items-center mb-4">
                 <div>
                   <h3 className="font-bold text-lg">{selectedDoc.nombre} {selectedDoc.apellido}</h3>
-                  <p className="text-sm text-slate-500">Hacé clic en las celdas para marcar disponibilidad (verde = disponible)</p>
+                  <p className="text-sm text-slate-500">🟢 Disponible — 🔵 Cátedra asignada — Clic para marcar disponibilidad</p>
                 </div>
                 <button onClick={guardar} disabled={guardando}
                   className="px-6 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium disabled:opacity-50">
-                  {guardando ? '⏳...' : '💾 Guardar'}
+                  {guardando ? '⏳...' : '💾 Guardar disponibilidad'}
                 </button>
               </div>
+              {/* Cátedras asignadas resumen */}
+              {asigDocente.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                  <span className="text-xs text-blue-600 font-medium py-1">Cátedras asignadas:</span>
+                  {asigDocente.map(a => (
+                    <span key={a.id} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                      {a.cat_codigo} • {a.dia || 'Pend.'} {a.hora_inicio || ''}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="bg-white rounded-xl border overflow-auto">
                 <table className="w-full text-sm">
-                  <thead><tr className="bg-slate-50 border-b">
+                  <thead><tr className="bg-slate-800 text-white">
                     <th className="p-2 border-r w-20">Hora</th>
                     {DIAS.map(d => <th key={d} className="p-2 border-r">{d}</th>)}
                   </tr></thead>
                   <tbody>
                     {HORAS.map(hora => (
                       <tr key={hora} className="border-b">
-                        <td className="p-2 border-r bg-slate-50 font-medium text-center">{hora}</td>
+                        <td className="p-2 border-r bg-slate-50 font-medium text-center text-xs">{hora}</td>
                         {DIAS.map(dia => {
                           const disp = isDisponible(dia, hora);
+                          const asig = asigEnCelda(dia, hora);
                           return (
-                            <td key={dia} className="p-1 border-r text-center cursor-pointer select-none"
-                              onClick={() => toggleCelda(dia, hora)}>
-                              <div className={`rounded py-2 transition-all ${disp ? 'bg-emerald-400 text-white font-bold' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}>
-                                {disp ? '✓' : ''}
-                              </div>
+                            <td key={dia} className="p-0.5 border-r text-center cursor-pointer select-none"
+                              onClick={() => !asig && toggleCelda(dia, hora)}>
+                              {asig ? (
+                                <div className="rounded py-1.5 bg-blue-500 text-white text-[10px] font-bold px-1">
+                                  {asig.cat_codigo}
+                                </div>
+                              ) : (
+                                <div className={`rounded py-1.5 transition-all ${disp ? 'bg-emerald-400 text-white font-bold' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}>
+                                  {disp ? '✓' : ''}
+                                </div>
+                              )}
                             </td>
                           );
                         })}
@@ -1699,7 +1765,8 @@ export default function App() {
         {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
-        {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} />}
+        {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
+        {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
