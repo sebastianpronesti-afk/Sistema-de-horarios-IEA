@@ -53,6 +53,7 @@ async function apiFetch(endpoint, options = {}) {
 // ==================== SIDEBAR ====================
 function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount }) {
   const menuItems = [
+    { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
@@ -70,7 +71,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v9.0</p>
+        <p className="text-slate-500 text-sm">Sistema v10.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -307,6 +308,75 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
   );
 }
 
+// ==================== v10.0: DASHBOARD SEMÁFORO ====================
+function DashboardView({ cuatrimestre, setActiveView }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        setData(await apiFetch(`/api/dashboard${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`));
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+  if (loading || !data) return <div className="p-8 text-center text-xl">⏳ Cargando dashboard...</div>;
+  const cob = data.cobertura_pct;
+  const sColor = cob >= 80 ? '#059669' : cob >= 50 ? '#D97706' : '#DC2626';
+  const sBg = cob >= 80 ? 'bg-emerald-50 border-emerald-300' : cob >= 50 ? 'bg-amber-50 border-amber-300' : 'bg-red-50 border-red-300';
+  return (
+    <div className="p-8">
+      <h2 className="text-2xl font-bold text-slate-800 mb-6">🏠 Dashboard — Estado del Cuatrimestre</h2>
+      <div className={`${sBg} border-2 rounded-2xl p-8 mb-8 text-center`}>
+        <p className="text-6xl font-extrabold" style={{color: sColor}}>{cob}%</p>
+        <p className="text-xl font-bold mt-2" style={{color: sColor}}>Cobertura de docentes</p>
+        <p className="text-slate-500 mt-1">{data.con_docente} con docente de {data.con_docente + data.sin_docente} asignaciones</p>
+      </div>
+      <div className="grid grid-cols-4 gap-4 mb-6">
+        {[
+          {val: data.total_catedras, sub: `${data.catedras_abiertas} abiertas`, label: 'Cátedras', color: 'text-slate-800', subColor: 'text-blue-600', view: 'catedras'},
+          {val: data.total_inscripciones, label: 'Inscripciones', color: 'text-cyan-600', view: 'catedras'},
+          {val: data.total_docentes, sub: `${data.docentes_con_asignacion} con cátedra`, label: 'Docentes', color: 'text-slate-800', subColor: 'text-emerald-600', view: 'docentes'},
+          {val: data.docs_sugeridos, label: 'Docentes sugeridos', color: 'text-purple-600', view: 'necesitan_docente'},
+        ].map((s, i) => (
+          <div key={i} onClick={() => setActiveView(s.view)} className="bg-white rounded-xl border p-5 text-center cursor-pointer hover:shadow-lg transition-shadow">
+            <p className={`text-4xl font-extrabold ${s.color}`}>{s.val}</p>
+            <p className="text-sm text-slate-500 mt-1">{s.label}</p>
+            {s.sub && <p className={`text-lg font-bold ${s.subColor || ''}`}>{s.sub}</p>}
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        <div onClick={() => setActiveView('necesitan_docente')} className={`rounded-xl border-2 p-5 text-center cursor-pointer hover:shadow-lg ${data.sin_docente > 0 ? 'bg-red-50 border-red-300' : 'bg-green-50 border-green-300'}`}>
+          <p className={`text-3xl font-extrabold ${data.sin_docente > 0 ? 'text-red-600' : 'text-green-600'}`}>{data.sin_docente}</p>
+          <p className="text-sm mt-1">{data.sin_docente > 0 ? '⚠️ Sin docente' : '✅ Cubiertos'}</p>
+        </div>
+        <div onClick={() => setActiveView('solapamientos')} className={`rounded-xl border-2 p-5 text-center cursor-pointer hover:shadow-lg ${data.solapamientos > 0 ? 'bg-orange-50 border-orange-300' : 'bg-green-50 border-green-300'}`}>
+          <p className={`text-3xl font-extrabold ${data.solapamientos > 0 ? 'text-orange-600' : 'text-green-600'}`}>{data.solapamientos}</p>
+          <p className="text-sm mt-1">{data.solapamientos > 0 ? '⚠️ Solapamientos' : '✅ OK'}</p>
+        </div>
+        <div onClick={() => setActiveView('asincronicas')} className="bg-purple-50 border-2 border-purple-200 rounded-xl p-5 text-center cursor-pointer hover:shadow-lg">
+          <p className="text-3xl font-extrabold text-purple-600">{data.asincronicas}</p>
+          <p className="text-sm mt-1">🎥 Asincrónicas</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 text-center">
+          <p className="text-3xl font-extrabold text-emerald-600">{data.abrir}</p>
+          <p className="text-sm text-emerald-700">Cátedras a abrir (≥10 insc.)</p>
+        </div>
+        <div className="bg-slate-50 rounded-xl border p-5 text-center">
+          <p className="text-3xl font-extrabold text-slate-400">{data.sin_alumnos}</p>
+          <p className="text-sm text-slate-500">Sin alumnos</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==================== CÁTEDRAS VIEW (con mejoras 5, 7, 9) ====================
 function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
   const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
@@ -418,6 +488,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
               <th className="p-1 text-center bg-cyan-700" rowSpan="2">Total</th>
               <th className="p-1 text-center bg-red-700" rowSpan="2">?</th>
               <th className="p-1 text-center bg-slate-600" rowSpan="2">Doc</th>
+              <th className="p-1 text-center bg-emerald-700" rowSpan="2" style={{width:'90px'}}>Decisión</th>
               <th className="p-1 text-center font-semibold" rowSpan="2" style={{width:'120px'}}>Asignaciones</th>
               <th className="p-1 text-center" rowSpan="2">Acc.</th>
             </tr>
@@ -471,6 +542,9 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
                       {cat.asignaciones?.filter(a => a.docente)?.length || 0}/{cat.docentes_sugeridos}
                     </span>
                   ) : <span className="text-slate-300 text-[10px]">-</span>}
+                </td>
+                <td className="p-0.5" style={{minWidth:'85px'}}>
+                  <DecisionInput catedra={cat} />
                 </td>
                 <td className="p-1" style={{maxWidth:'120px'}}>
                   {cat.asignaciones?.length > 0 ? (
@@ -759,6 +833,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-center p-2 text-xs font-semibold">Mat.<br/>VL</th>
             <th className="text-center p-2 text-xs font-semibold">CFPEA</th>
             <th className="text-center p-2 text-xs font-semibold">ISFTEA</th>
+            <th className="text-left p-2 text-xs font-semibold">Notas</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
             <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
@@ -799,6 +874,9 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                   </td>
                   <td className="p-2 text-center">
                     <DocFieldInput docente={d} campo="sociedad_isftea" tipo="checkbox" />
+                  </td>
+                  <td className="p-1">
+                    <NotasInput item={d} endpoint="docentes" />
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -1574,6 +1652,52 @@ function DocFieldInput({ docente, campo, tipo = 'number', min = 0, max = 99 }) {
 
 // SociedadCheck is now handled by DocFieldInput with tipo='checkbox'
 
+// ==================== v10.0: NOTAS INPUT ====================
+function NotasInput({ item, endpoint }) {
+  const [val, setVal] = useState(item.notas || '');
+  const [saved, setSaved] = useState(true);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setVal(item.notas || ''); setSaved(true); }, [item.notas]);
+  const guardar = async () => {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/${endpoint}/${item.id}`, { method: 'PUT', body: JSON.stringify({ notas: val }) });
+      setSaved(true);
+    } catch (e) { alert(e.message); }
+    setSaving(false);
+  };
+  return (
+    <div className="flex items-center gap-0.5">
+      <input type="text" className={`w-full border rounded px-1 py-0.5 text-[10px] ${!saved ? 'border-amber-500 bg-amber-50' : 'border-slate-200'}`}
+        placeholder="Notas..." value={val} onChange={e => { setVal(e.target.value); setSaved(false); }}
+        onBlur={() => { if (!saved) guardar(); }} onKeyDown={e => e.key === 'Enter' && guardar()} />
+      {!saved && !saving && <button onClick={guardar} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
+    </div>
+  );
+}
+
+// ==================== v10.0: DECISION INPUT (for catedras) ====================
+function DecisionInput({ catedra, recargar }) {
+  const [val, setVal] = useState(catedra.decision_apertura || '');
+  const [saved, setSaved] = useState(true);
+  useEffect(() => { setVal(catedra.decision_apertura || ''); setSaved(true); }, [catedra.decision_apertura]);
+  const guardar = async () => {
+    try {
+      await apiFetch(`/api/catedras/${catedra.id}`, { method: 'PUT', body: JSON.stringify({ decision_apertura: val }) });
+      setSaved(true);
+    } catch (e) { alert(e.message); }
+  };
+  const opciones = ['','TM Avellaneda','TN Avellaneda','TM Caballito','TN Caballito','TM Vicente López','TN Vicente López','Todas las sedes','CIED Virtual','Asincrónica','No abrir'];
+  return (
+    <select className={`w-full border rounded px-0.5 py-0.5 text-[9px] ${!saved ? 'border-amber-500 bg-amber-50' : val ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200'}`}
+      value={val} onChange={e => { setVal(e.target.value); setSaved(false); setTimeout(() => {
+        fetch(`${API_URL}/api/catedras/${catedra.id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ decision_apertura: e.target.value }) });
+      }, 100); setSaved(true); }}>
+      {opciones.map(o => <option key={o} value={o}>{o || '— Decidir —'}</option>)}
+    </select>
+  );
+}
+
 // ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
 function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimestres, recargar }) {
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -1752,7 +1876,7 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
 // ==================== APP PRINCIPAL ====================
 export default function App() {
   const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
-  const [activeView, setActiveView] = useState('catedras');
+  const [activeView, setActiveView] = useState('dashboard');
   const [cuatrimestre, setCuatrimestre] = useState('todos');
   const [catedras, setCatedras] = useState([]);
   const [cursos, setCursos] = useState([]);
@@ -1787,6 +1911,7 @@ export default function App() {
         setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres}
         solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} />
       <main className="flex-1 overflow-auto">
+        {activeView === 'dashboard' && <DashboardView cuatrimestre={cuatrimestre} setActiveView={setActiveView} />}
         {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
         {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
