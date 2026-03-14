@@ -29,7 +29,7 @@ const TIPO_DOCENTE_CONFIG = {
 };
 
 const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','18:00','19:00','20:00','21:00','22:00'];
+const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00'];
 const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
 
 function sortByCodigo(a, b) {
@@ -70,7 +70,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v8.0</p>
+        <p className="text-slate-500 text-sm">Sistema v9.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -673,6 +673,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
   const stats = useMemo(() => {
     const s = { PRESENCIAL_VIRTUAL: 0, SEDE_VIRTUAL: 0, REMOTO: 0, SIN_ASIGNACIONES: 0 };
     let horas_cfpea = 0, horas_isftea = 0, horas_total = 0;
+    let mat_av_total = 0, mat_cab_total = 0, mat_vl_total = 0;
     const por_sede = {};
     docentes.forEach(d => {
       if (s[d.tipo_modalidad] !== undefined) s[d.tipo_modalidad]++;
@@ -680,11 +681,14 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
       horas_total += h;
       if (d.sociedad_cfpea) horas_cfpea += h;
       if (d.sociedad_isftea) horas_isftea += h;
+      mat_av_total += d.materias_av || 0;
+      mat_cab_total += d.materias_cab || 0;
+      mat_vl_total += d.materias_vl || 0;
       (d.sedes || []).forEach(sd => {
         por_sede[sd.nombre] = (por_sede[sd.nombre] || 0) + 1;
       });
     });
-    return { ...s, horas_cfpea, horas_isftea, horas_total, por_sede };
+    return { ...s, horas_cfpea, horas_isftea, horas_total, mat_av_total, mat_cab_total, mat_vl_total, por_sede };
   }, [docentes]);
 
   const docentesFiltrados = useMemo(() => {
@@ -726,6 +730,11 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
         <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas CFPEA SRL</p><p className="text-2xl font-bold text-blue-600">{stats.horas_cfpea}h</p></div>
         <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas ISFTEA SRL</p><p className="text-2xl font-bold text-emerald-600">{stats.horas_isftea}h</p></div>
       </div>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-blue-50 rounded-xl border border-blue-200 p-3"><p className="text-xs text-blue-600">Materias Avellaneda</p><p className="text-2xl font-bold text-blue-700">{stats.mat_av_total}</p></div>
+        <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-3"><p className="text-xs text-emerald-600">Materias Caballito</p><p className="text-2xl font-bold text-emerald-700">{stats.mat_cab_total}</p></div>
+        <div className="bg-amber-50 rounded-xl border border-amber-200 p-3"><p className="text-xs text-amber-600">Materias V. López</p><p className="text-2xl font-bold text-amber-700">{stats.mat_vl_total}</p></div>
+      </div>
       {Object.keys(stats.por_sede).length > 0 && (
         <div className="flex gap-2 mb-4 flex-wrap">
           <span className="text-xs text-slate-500 py-1">Docentes por sede:</span>
@@ -744,9 +753,12 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-left p-4 text-sm font-semibold">Docente</th>
             <th className="text-center p-4 text-sm font-semibold">Tipo</th>
             <th className="text-center p-4 text-sm font-semibold">Sedes</th>
-            <th className="text-center p-4 text-sm font-semibold w-16">Horas</th>
-            <th className="text-center p-4 text-sm font-semibold w-16">CFPEA</th>
-            <th className="text-center p-4 text-sm font-semibold w-16">ISFTEA</th>
+            <th className="text-center p-2 text-xs font-semibold">Horas</th>
+            <th className="text-center p-2 text-xs font-semibold">Mat.<br/>Av</th>
+            <th className="text-center p-2 text-xs font-semibold">Mat.<br/>Cab</th>
+            <th className="text-center p-2 text-xs font-semibold">Mat.<br/>VL</th>
+            <th className="text-center p-2 text-xs font-semibold">CFPEA</th>
+            <th className="text-center p-2 text-xs font-semibold">ISFTEA</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
             <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
@@ -770,14 +782,23 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                     </div>
                     <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
                   </td>
-                  <td className="p-4 text-center">
-                    <HorasInput docente={d} recargar={recargar} />
+                  <td className="p-2 text-center">
+                    <DocFieldInput docente={d} campo="horas_asignadas" />
                   </td>
-                  <td className="p-4 text-center">
-                    <SociedadCheck docente={d} campo="sociedad_cfpea" recargar={recargar} />
+                  <td className="p-2 text-center">
+                    <DocFieldInput docente={d} campo="materias_av" />
                   </td>
-                  <td className="p-4 text-center">
-                    <SociedadCheck docente={d} campo="sociedad_isftea" recargar={recargar} />
+                  <td className="p-2 text-center">
+                    <DocFieldInput docente={d} campo="materias_cab" />
+                  </td>
+                  <td className="p-2 text-center">
+                    <DocFieldInput docente={d} campo="materias_vl" />
+                  </td>
+                  <td className="p-2 text-center">
+                    <DocFieldInput docente={d} campo="sociedad_cfpea" tipo="checkbox" />
+                  </td>
+                  <td className="p-2 text-center">
+                    <DocFieldInput docente={d} campo="sociedad_isftea" tipo="checkbox" />
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -875,6 +896,7 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   const [filtroSede, setFiltroSede] = useState('');
   const [filtroDocente, setFiltroDocente] = useState('');
   const [filtroCatedra, setFiltroCatedra] = useState('');
+  const [filtroDia, setFiltroDia] = useState('');
   const [buscarDocente, setBuscarDocente] = useState('');
   const [buscarCatedra, setBuscarCatedra] = useState('');
   const [mostrarSugDoc, setMostrarSugDoc] = useState(false);
@@ -893,6 +915,7 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
 
   const asigFiltradas = useMemo(() => {
     return asigOrdenadas.filter(a => a.dia && a.hora_inicio).filter(a => {
+      if (filtroDia && a.dia !== filtroDia) return false;
       if (filtroSede === 'remoto') return !a.sede_id;
       if (filtroSede) return a.sede_id === parseInt(filtroSede);
       return true;
@@ -929,7 +952,14 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Calendario</h2></div>
-      <div className="bg-white rounded-xl border p-4 mb-6 grid grid-cols-3 gap-4">
+      <div className="bg-white rounded-xl border p-4 mb-6 grid grid-cols-4 gap-4">
+        <div>
+          <label className="text-sm text-slate-600 font-medium">Día:</label>
+          <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroDia} onChange={e => setFiltroDia(e.target.value)}>
+            <option value="">Todos los días</option>
+            {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
         <div>
           <label className="text-sm text-slate-600 font-medium">Sede:</label>
           <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
@@ -978,17 +1008,18 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
         </div>
       </div>
       {/* Grilla */}
+      {(() => { const diasMostrar = filtroDia ? [filtroDia] : DIAS; return (
       <div className="bg-white rounded-xl border shadow-sm overflow-auto mb-6">
         <table className="w-full text-sm">
           <thead><tr className="bg-slate-50 border-b">
             <th className="p-2 border-r w-20">Hora</th>
-            {DIAS.map(d => <th key={d} className="p-2 border-r min-w-[130px]">{d}</th>)}
+            {diasMostrar.map(d => <th key={d} className="p-2 border-r min-w-[130px]">{d}</th>)}
           </tr></thead>
           <tbody>
             {HORAS.map(hora => (
               <tr key={hora} className="border-b">
                 <td className="p-2 border-r bg-slate-50 font-medium text-center">{hora}</td>
-                {DIAS.map(dia => {
+                {diasMostrar.map(dia => {
                   const celdas = asigFiltradas.filter(a => a.dia === dia && a.hora_inicio === hora);
                   return (
                     <td key={dia} className="p-1 border-r align-top">
@@ -1018,6 +1049,7 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
           </tbody>
         </table>
       </div>
+      ); })()}
       {/* Lista ordenada por código */}
       <div className="bg-white rounded-xl border shadow-sm p-4">
         <h3 className="font-semibold mb-3">📋 Lista ({asigFiltradas.length} asignaciones) — ordenadas por código</h3>
@@ -1511,41 +1543,36 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v7.0: HORAS + SOCIEDAD con guardado explícito ====================
-function HorasInput({ docente, recargar }) {
-  const [val, setVal] = useState(docente.horas_asignadas || 0);
+// ==================== v9.0: DOCENTE FIELD INPUT (generic, saves independently) ====================
+function DocFieldInput({ docente, campo, tipo = 'number', min = 0, max = 99 }) {
+  const [val, setVal] = useState(docente[campo] || (tipo === 'number' ? 0 : false));
   const [saved, setSaved] = useState(true);
-  const guardar = async () => {
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setVal(docente[campo] || (tipo === 'number' ? 0 : false)); setSaved(true); }, [docente, campo, tipo]);
+  const guardar = async (newVal) => {
+    setSaving(true);
     try {
-      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ horas_asignadas: parseInt(val) || 0 }) });
+      const payload = tipo === 'number' ? { [campo]: parseInt(newVal) || 0 } : { [campo]: newVal };
+      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify(payload) });
       setSaved(true);
     } catch (e) { alert(e.message); }
+    setSaving(false);
   };
+  if (tipo === 'checkbox') {
+    return <input type="checkbox" checked={!!val} onChange={async (e) => { setVal(e.target.checked); await guardar(e.target.checked); }} className={`w-4 h-4 cursor-pointer ${saving ? 'opacity-50' : ''}`} />;
+  }
   return (
-    <div className="flex items-center gap-1">
-      <input type="number" min="0" max="60" className={`w-12 text-center border rounded px-1 py-0.5 text-xs ${!saved ? 'border-amber-500 bg-amber-50' : ''}`}
+    <div className="flex items-center gap-0.5">
+      <input type="number" min={min} max={max} className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${!saved ? 'border-amber-500 bg-amber-50' : ''} ${saving ? 'opacity-50' : ''}`}
         value={val} onChange={e => { setVal(e.target.value); setSaved(false); }}
-        onKeyDown={e => e.key === 'Enter' && guardar()} />
-      {!saved && <button onClick={guardar} className="text-xs bg-amber-500 text-white px-1 rounded">💾</button>}
+        onBlur={e => { if (!saved) guardar(e.target.value); }}
+        onKeyDown={e => e.key === 'Enter' && guardar(val)} />
+      {!saved && <button onClick={() => guardar(val)} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
     </div>
   );
 }
 
-// ==================== v7.0: SOCIEDAD CHECKBOX (sin reload) ====================
-function SociedadCheck({ docente, campo, recargar }) {
-  const [checked, setChecked] = useState(docente[campo] || false);
-  const [saving, setSaving] = useState(false);
-  const toggle = async () => {
-    const newVal = !checked;
-    setChecked(newVal);
-    setSaving(true);
-    try {
-      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify({ [campo]: newVal }) });
-    } catch (e) { alert(e.message); setChecked(!newVal); }
-    setSaving(false);
-  };
-  return <input type="checkbox" checked={checked} onChange={toggle} className={`w-4 h-4 cursor-pointer ${saving ? 'opacity-50' : ''}`} />;
-}
+// SociedadCheck is now handled by DocFieldInput with tipo='checkbox'
 
 // ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
 function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimestres, recargar }) {
