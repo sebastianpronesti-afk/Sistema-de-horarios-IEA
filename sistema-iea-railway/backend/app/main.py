@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="9.0")
+app = FastAPI(title="Sistema Horarios IEA", version="10.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -101,6 +101,12 @@ def run_migration(db):
                 db.execute(text("ALTER TABLE catedras ADD COLUMN link_meet VARCHAR"))
                 db.commit()
                 resultado.append("✅ catedras.link_meet")
+            for col_c in ['notas', 'decision_apertura']:
+                if col_c not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE catedras ADD COLUMN {col_c} VARCHAR"))
+                        db.commit()
+                    except Exception: db.rollback()
         # --- Migrar asignaciones ---
         if 'asignaciones' in tables:
             cols = [c['name'] for c in inspector.get_columns('asignaciones')]
@@ -165,6 +171,11 @@ def run_migration(db):
                         db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_s} INTEGER DEFAULT 0"))
                         db.commit()
                     except Exception: db.rollback()
+            if 'notas' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE docentes ADD COLUMN notas VARCHAR"))
+                    db.commit()
+                except Exception: db.rollback()
         # --- Crear tabla docente_disponibilidad (v5.0) ---
         if 'docente_disponibilidad' not in tables:
             try:
@@ -263,7 +274,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v9.0 iniciado")
+    print("🚀 IEA Horarios v10.0 iniciado")
 
 CLAVE_ACCESO = "IEA2026"
 
@@ -440,6 +451,8 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             result.append({
                 "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
                 "link_meet": getattr(cat, 'link_meet', None),
+                "notas": getattr(cat, 'notas', None),
+                "decision_apertura": getattr(cat, 'decision_apertura', None),
                 "inscriptos": inscriptos,
                 "tm_av": desg['tm_av'], "tm_cab": desg['tm_cab'], "tm_vl": desg['tm_vl'], "tm_cied": desg['tm_cied'], "tm_total": tm_total,
                 "tn_av": desg['tn_av'], "tn_cab": desg['tn_cab'], "tn_vl": desg['tn_vl'], "tn_cied": desg['tn_cied'], "tn_total": tn_total,
@@ -512,6 +525,13 @@ def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="No encontrada")
     if "nombre" in data: cat.nombre = data["nombre"]
     if "link_meet" in data: cat.link_meet = data["link_meet"]
+    from sqlalchemy import text as sql_text
+    if "notas" in data:
+        try: db.execute(sql_text(f"UPDATE catedras SET notas = :val WHERE id = :id"), {"val": data["notas"], "id": catedra_id})
+        except: pass
+    if "decision_apertura" in data:
+        try: db.execute(sql_text(f"UPDATE catedras SET decision_apertura = :val WHERE id = :id"), {"val": data["decision_apertura"], "id": catedra_id})
+        except: pass
     db.commit()
     return {"ok": True}
 
@@ -769,7 +789,7 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             result.append({
                 "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
                 "email": d.email, "tipo_modalidad": tipo,
-                "horas_asignadas": horas,
+                "horas_asignadas": horas, "notas": getattr(d, 'notas', None),
                 "sociedad_cfpea": cfpea, "sociedad_isftea": isftea,
                 "materias_av": mat_av, "materias_cab": mat_cab, "materias_vl": mat_vl,
                 "sedes": sedes_data, "asignaciones": asigs_data,
@@ -811,6 +831,9 @@ def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db
                 val = 'TRUE' if data[fld] else 'FALSE'
                 db.execute(text(f"UPDATE docentes SET {fld} = {val} WHERE id = {docente_id}"))
             except: pass
+    if "notas" in data:
+        try: db.execute(text("UPDATE docentes SET notas = :val WHERE id = :id"), {"val": data["notas"], "id": docente_id})
+        except: pass
     db.commit()
     return {"ok": True}
 
@@ -1212,9 +1235,39 @@ def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
     db.commit()
     return {"replicadas": replicadas, "ya_existentes": ya_existentes}
 
+# ===== v10.0: Dashboard =====
+@app.get("/api/dashboard")
+def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    total_cats = db.query(Catedra).count()
+    q_a = db.query(Asignacion)
+    if cuatrimestre_id: q_a = q_a.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = q_a.all()
+    cats_abiertas = len(set(a.catedra_id for a in asigs))
+    con_docente = len([a for a in asigs if a.docente_id])
+    sin_docente = len([a for a in asigs if not a.docente_id])
+    q_i = "SELECT COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: q_i += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_insc = db.execute(text(q_i)).scalar() or 0
+    solaps = len(get_solapamientos(cuatrimestre_id, db))
+    criterio = get_criterio_apertura(cuatrimestre_id, db)
+    total_docs = db.query(Docente).count()
+    docs_con_asig = len(set(a.docente_id for a in asigs if a.docente_id))
+    cobertura = round((con_docente / max(1, con_docente + sin_docente)) * 100) if asigs else 0
+    return {
+        "total_catedras": total_cats, "catedras_abiertas": cats_abiertas,
+        "con_docente": con_docente, "sin_docente": sin_docente,
+        "total_inscripciones": total_insc, "solapamientos": solaps,
+        "abrir": criterio['stats']['total_abrir'],
+        "asincronicas": criterio['stats']['total_asincronica'],
+        "sin_alumnos": criterio['stats']['total_sin_alumnos'],
+        "docs_sugeridos": criterio['stats']['total_docentes_sugeridos'],
+        "total_docentes": total_docs, "docentes_con_asignacion": docs_con_asig,
+        "cobertura_pct": cobertura,
+    }
 
 
-# ===== v7.0: Exportar COMPLETO =====
+# ===== v10.0: Exportar COMPLETO =====
 @app.get("/api/exportar/horarios")
 def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from openpyxl import Workbook
@@ -1530,6 +1583,71 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         ws_dia.column_dimensions['A'].width = 7
         for col in ['B','C','D','E','F','G']:
             ws_dia.column_dimensions[col].width = 35
+
+    # ========== v10.0: BORRADOR HORARIOS TM-TN (formato como usan ellas) ==========
+    DIAS_ORDEN2 = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+    HORAS_TM = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00']
+    HORAS_TN = ['17:00','18:00','19:00','20:00','21:00','22:00','23:00']
+    ws_bor = wb.create_sheet("Borrador Horarios")
+    ws_bor.append(["Código","Cátedra","Día","Hora","Sede","Docente","Estado","Notas"])
+    for cell in ws_bor[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E3A5F"); cell.alignment = Alignment(horizontal="center")
+    PENDIENTE_FILL = PatternFill("solid", fgColor="FEF3C7")
+    HEADER_DIA = PatternFill("solid", fgColor="FBBF24")
+    row_num = 2
+    for dia in DIAS_ORDEN2:
+        # TM header
+        ws_bor.append([f"{dia.upper()} - TM",'','','','','','',''])
+        for cell in ws_bor[ws_bor.max_row]:
+            cell.font = Font(bold=True, size=11); cell.fill = HEADER_DIA
+        row_num += 1
+        dia_asigs_tm = sorted([a for a in asigs if a.dia == dia and a.hora_inicio in HORAS_TM],
+            key=lambda a: (a.hora_inicio or '', sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999')))
+        for a in dia_asigs_tm:
+            cat = a.catedra
+            doc_nombre = f"{a.docente.nombre} {a.docente.apellido}" if a.docente else ""
+            estado = "✅ Asignado" if a.docente_id else "⚠️ PENDIENTE"
+            notas_cat = ""
+            try: notas_cat = getattr(cat, 'notas', '') or ''
+            except: pass
+            ws_bor.append([
+                cat.codigo if cat else "", f"{cat.nombre}" if cat else "",
+                dia, a.hora_inicio or "", a.sede.nombre if a.sede else "Remoto",
+                doc_nombre or "SIN DOCENTE", estado, notas_cat
+            ])
+            if not a.docente_id:
+                for cell in ws_bor[ws_bor.max_row]: cell.fill = PENDIENTE_FILL
+            row_num += 1
+        ws_bor.append(['','','','','','','',''])  # blank row
+        row_num += 1
+        # TN header
+        ws_bor.append([f"{dia.upper()} - TN",'','','','','','',''])
+        for cell in ws_bor[ws_bor.max_row]:
+            cell.font = Font(bold=True, size=11); cell.fill = PatternFill("solid", fgColor="6366F1")
+            cell.font = Font(bold=True, size=11, color="FFFFFF")
+        row_num += 1
+        dia_asigs_tn = sorted([a for a in asigs if a.dia == dia and a.hora_inicio in HORAS_TN],
+            key=lambda a: (a.hora_inicio or '', sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999')))
+        for a in dia_asigs_tn:
+            cat = a.catedra
+            doc_nombre = f"{a.docente.nombre} {a.docente.apellido}" if a.docente else ""
+            estado = "✅ Asignado" if a.docente_id else "⚠️ PENDIENTE"
+            notas_cat = ""
+            try: notas_cat = getattr(cat, 'notas', '') or ''
+            except: pass
+            ws_bor.append([
+                cat.codigo if cat else "", f"{cat.nombre}" if cat else "",
+                dia, a.hora_inicio or "", a.sede.nombre if a.sede else "Remoto",
+                doc_nombre or "SIN DOCENTE", estado, notas_cat
+            ])
+            if not a.docente_id:
+                for cell in ws_bor[ws_bor.max_row]: cell.fill = PENDIENTE_FILL
+            row_num += 1
+        ws_bor.append(['','','','','','','',''])  # separator
+        ws_bor.append(['','','','','','','',''])
+        row_num += 2
+    for col, w in [('A',8),('B',32),('C',12),('D',10),('E',16),('F',28),('G',14),('H',30)]:
+        ws_bor.column_dimensions[col].width = w
 
     output = io.BytesIO(); wb.save(output); output.seek(0)
     nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}.xlsx"
