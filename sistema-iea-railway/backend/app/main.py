@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="8.0")
+app = FastAPI(title="Sistema Horarios IEA", version="9.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -159,6 +159,12 @@ def run_migration(db):
                         resultado.append(f"✅ docentes.{col_s}")
                     except Exception as e:
                         db.rollback()
+            for col_s in ['materias_av', 'materias_cab', 'materias_vl']:
+                if col_s not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_s} INTEGER DEFAULT 0"))
+                        db.commit()
+                    except Exception: db.rollback()
         # --- Crear tabla docente_disponibilidad (v5.0) ---
         if 'docente_disponibilidad' not in tables:
             try:
@@ -257,7 +263,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v8.0 iniciado")
+    print("🚀 IEA Horarios v9.0 iniciado")
 
 CLAVE_ACCESO = "IEA2026"
 
@@ -658,13 +664,27 @@ def crear_asignacion(data: dict, db: Session = Depends(get_db)):
         dia = data.get("dia")
         hora = data.get("hora_inicio")
         sede_id = data.get("sede_id")
+        docente_id = data.get("docente_id")
         if dia and hora and modalidad != 'asincronica':
             conflict = verificar_solapamiento_catedra(cat_id, dia, hora, cuat_id, None, db)
             if conflict:
                 raise HTTPException(status_code=400, detail=conflict)
+        # v9.0: Verificar disponibilidad del docente
+        if docente_id and dia and hora:
+            from sqlalchemy import text
+            try:
+                disp_rows = db.execute(text(f"SELECT COUNT(*) FROM docente_disponibilidad WHERE docente_id = {docente_id}")).scalar()
+                if disp_rows and disp_rows > 0:
+                    tiene_disp = db.execute(text(
+                        f"SELECT disponible FROM docente_disponibilidad WHERE docente_id = {docente_id} AND dia = '{dia}' AND hora = '{hora}'"
+                    )).fetchone()
+                    if not tiene_disp or not tiene_disp[0]:
+                        raise HTTPException(status_code=400, detail=f"⛔ El docente no tiene disponibilidad el {dia} a las {hora}. Revisá su disponibilidad horaria antes de asignarle.")
+            except HTTPException: raise
+            except Exception: pass
         asig = Asignacion(
             catedra_id=cat_id, cuatrimestre_id=cuat_id,
-            docente_id=data.get("docente_id") if data.get("docente_id") else None,
+            docente_id=docente_id if docente_id else None,
             modalidad=modalidad,
             dia=dia if dia else None, hora_inicio=hora if hora else None,
             hora_fin=data.get("hora_fin") if data.get("hora_fin") else None,
@@ -743,17 +763,22 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             horas = getattr(d, 'horas_asignadas', 0) or 0
             cfpea = getattr(d, 'sociedad_cfpea', False) or False
             isftea = getattr(d, 'sociedad_isftea', False) or False
+            mat_av = getattr(d, 'materias_av', 0) or 0
+            mat_cab = getattr(d, 'materias_cab', 0) or 0
+            mat_vl = getattr(d, 'materias_vl', 0) or 0
             result.append({
                 "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
                 "email": d.email, "tipo_modalidad": tipo,
                 "horas_asignadas": horas,
                 "sociedad_cfpea": cfpea, "sociedad_isftea": isftea,
+                "materias_av": mat_av, "materias_cab": mat_cab, "materias_vl": mat_vl,
                 "sedes": sedes_data, "asignaciones": asigs_data,
             })
         except Exception:
             result.append({"id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
                 "email": d.email, "tipo_modalidad": "SIN_ASIGNACIONES",
                 "horas_asignadas": 0, "sociedad_cfpea": False, "sociedad_isftea": False,
+                "materias_av": 0, "materias_cab": 0, "materias_vl": 0,
                 "sedes": [], "asignaciones": []})
     return result
 
@@ -774,21 +799,18 @@ def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db
     for field in ["nombre", "apellido", "email", "dni"]:
         if field in data and data[field]:
             setattr(d, field, data[field])
-    # v6.0: horas and sociedad
-    if "horas_asignadas" in data:
-        try:
-            db.execute(text(f"UPDATE docentes SET horas_asignadas = {int(data['horas_asignadas'])} WHERE id = {docente_id}"))
-        except Exception: pass
-    if "sociedad_cfpea" in data:
-        try:
-            val = 'TRUE' if data['sociedad_cfpea'] else 'FALSE'
-            db.execute(text(f"UPDATE docentes SET sociedad_cfpea = {val} WHERE id = {docente_id}"))
-        except Exception: pass
-    if "sociedad_isftea" in data:
-        try:
-            val = 'TRUE' if data['sociedad_isftea'] else 'FALSE'
-            db.execute(text(f"UPDATE docentes SET sociedad_isftea = {val} WHERE id = {docente_id}"))
-        except Exception: pass
+    # v9.0: all numeric and boolean fields via SQL
+    from sqlalchemy import text
+    for fld in ['horas_asignadas', 'materias_av', 'materias_cab', 'materias_vl']:
+        if fld in data:
+            try: db.execute(text(f"UPDATE docentes SET {fld} = {int(data[fld])} WHERE id = {docente_id}"))
+            except: pass
+    for fld in ['sociedad_cfpea', 'sociedad_isftea']:
+        if fld in data:
+            try:
+                val = 'TRUE' if data[fld] else 'FALSE'
+                db.execute(text(f"UPDATE docentes SET {fld} = {val} WHERE id = {docente_id}"))
+            except: pass
     db.commit()
     return {"ok": True}
 
@@ -1474,6 +1496,40 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         ws_sol.append([i, s.get('tipo',''), s.get('severidad',''), s.get('mensaje',''), s.get('dia',''), s.get('hora','')])
     for col, w in [('A',4),('B',12),('C',12),('D',60),('E',12),('F',7)]:
         ws_sol.column_dimensions[col].width = w
+
+    # ========== HOJA: Horarios por Día y Sede ==========
+    DIAS_ORDEN = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+    HORAS_EXPORT = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00']
+    for sede_db_obj in [None] + list(db.query(Sede).all()):
+        if sede_db_obj:
+            sede_asigs_dia = [a for a in asigs if a.sede_id == sede_db_obj.id]
+            sheet_name = f"Horario {sede_db_obj.nombre}"[:31]
+            color_h = '2563EB'
+        else:
+            sede_asigs_dia = asigs
+            sheet_name = "Horario General"
+            color_h = '1E3A5F'
+        if not sede_asigs_dia and sede_db_obj: continue
+        ws_dia = wb.create_sheet(sheet_name)
+        ws_dia.append(["Hora"] + DIAS_ORDEN)
+        for cell in ws_dia[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor=color_h); cell.alignment = Alignment(horizontal="center")
+        for hora in HORAS_EXPORT:
+            row_data = [hora]
+            for dia in DIAS_ORDEN:
+                celdas = [a for a in sede_asigs_dia if a.dia == dia and a.hora_inicio == hora]
+                if celdas:
+                    txt = " | ".join([
+                        f"{a.catedra.codigo} {(a.docente.apellido if a.docente else 'Sin doc.')}"
+                        for a in celdas
+                    ])
+                else:
+                    txt = ""
+                row_data.append(txt)
+            ws_dia.append(row_data)
+        ws_dia.column_dimensions['A'].width = 7
+        for col in ['B','C','D','E','F','G']:
+            ws_dia.column_dimensions[col].width = 35
 
     output = io.BytesIO(); wb.save(output); output.seek(0)
     nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}.xlsx"
