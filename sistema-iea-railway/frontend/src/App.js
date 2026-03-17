@@ -71,7 +71,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v10.0</p>
+        <p className="text-slate-500 text-sm">Sistema v11.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -308,7 +308,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
   );
 }
 
-// ==================== v10.0: DASHBOARD SEMÁFORO ====================
+// ==================== v11.0: DASHBOARD SEMÁFORO CON FLUJO GUIADO ====================
 function DashboardView({ cuatrimestre, setActiveView }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -324,54 +324,97 @@ function DashboardView({ cuatrimestre, setActiveView }) {
     cargar();
   }, [cuatrimestre]);
   if (loading || !data) return <div className="p-8 text-center text-xl">⏳ Cargando dashboard...</div>;
+
   const cob = data.cobertura_pct;
   const sColor = cob >= 80 ? '#059669' : cob >= 50 ? '#D97706' : '#DC2626';
   const sBg = cob >= 80 ? 'bg-emerald-50 border-emerald-300' : cob >= 50 ? 'bg-amber-50 border-amber-300' : 'bg-red-50 border-red-300';
+  const pasos = data.pasos || [];
+  const pasoActual = pasos.find(p => !p.completo) || pasos[pasos.length - 1];
+
   return (
-    <div className="p-8">
-      <h2 className="text-2xl font-bold text-slate-800 mb-6">🏠 Dashboard — Estado del Cuatrimestre</h2>
-      <div className={`${sBg} border-2 rounded-2xl p-8 mb-8 text-center`}>
-        <p className="text-6xl font-extrabold" style={{color: sColor}}>{cob}%</p>
-        <p className="text-xl font-bold mt-2" style={{color: sColor}}>Cobertura de docentes</p>
-        <p className="text-slate-500 mt-1">{data.con_docente} con docente de {data.con_docente + data.sin_docente} asignaciones</p>
+    <div className="p-8 max-w-5xl mx-auto">
+      <h2 className="text-2xl font-bold text-slate-800 mb-2">🏠 Dashboard — Estado del Cuatrimestre</h2>
+      <p className="text-slate-500 mb-6">Seguí los pasos en orden para armar los horarios del cuatrimestre.</p>
+
+      {/* Semáforo + resumen */}
+      <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className={`${sBg} border-2 rounded-2xl p-6 text-center`}>
+          <p className="text-5xl font-extrabold" style={{color: sColor}}>{cob}%</p>
+          <p className="text-sm font-bold mt-1" style={{color: sColor}}>Cobertura docentes</p>
+        </div>
+        <div className="bg-white border rounded-2xl p-6 text-center">
+          <p className="text-3xl font-extrabold text-cyan-600">{data.total_inscripciones}</p>
+          <p className="text-sm text-slate-500">Inscripciones</p>
+          <p className="text-lg font-bold text-slate-700 mt-1">{data.catedras_abiertas} cátedras abiertas</p>
+        </div>
+        <div className="bg-white border rounded-2xl p-6 text-center">
+          <div className="flex justify-center gap-4">
+            {data.sin_docente > 0 && <div><p className="text-2xl font-bold text-red-500">{data.sin_docente}</p><p className="text-[10px] text-red-400">sin docente</p></div>}
+            {data.solapamientos > 0 && <div><p className="text-2xl font-bold text-orange-500">{data.solapamientos}</p><p className="text-[10px] text-orange-400">solapamientos</p></div>}
+            {data.sin_docente === 0 && data.solapamientos === 0 && <div><p className="text-3xl">✅</p><p className="text-sm text-emerald-600">Todo OK</p></div>}
+          </div>
+        </div>
       </div>
-      <div className="grid grid-cols-4 gap-4 mb-6">
+
+      {/* Flujo paso a paso */}
+      <div className="space-y-3">
+        {pasos.map(paso => {
+          const esActual = paso.num === pasoActual?.num;
+          const estado = paso.completo ? 'completo' : paso.parcial ? 'parcial' : (esActual ? 'actual' : 'pendiente');
+          return (
+            <div key={paso.num}
+              onClick={() => setActiveView(paso.seccion)}
+              className={`rounded-xl border-2 p-5 cursor-pointer transition-all hover:shadow-lg ${
+                estado === 'completo' ? 'bg-emerald-50 border-emerald-300' :
+                estado === 'parcial' ? 'bg-amber-50 border-amber-300' :
+                esActual ? 'bg-blue-50 border-blue-400 shadow-md ring-2 ring-blue-200' :
+                'bg-white border-slate-200 opacity-60'
+              }`}>
+              <div className="flex items-center gap-4">
+                {/* Número/estado */}
+                <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-extrabold flex-shrink-0 ${
+                  estado === 'completo' ? 'bg-emerald-500 text-white' :
+                  estado === 'parcial' ? 'bg-amber-500 text-white' :
+                  esActual ? 'bg-blue-500 text-white animate-pulse' :
+                  'bg-slate-200 text-slate-400'
+                }`}>
+                  {estado === 'completo' ? '✓' : paso.num}
+                </div>
+                {/* Contenido */}
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <h3 className={`font-bold text-lg ${estado === 'completo' ? 'text-emerald-700' : esActual ? 'text-blue-700' : 'text-slate-700'}`}>
+                      {paso.titulo}
+                    </h3>
+                    {estado === 'parcial' && <span className="px-2 py-0.5 bg-amber-200 text-amber-800 rounded text-xs font-bold">EN PROGRESO</span>}
+                    {esActual && estado !== 'parcial' && <span className="px-2 py-0.5 bg-blue-200 text-blue-800 rounded text-xs font-bold">← SIGUIENTE PASO</span>}
+                  </div>
+                  <p className="text-sm text-slate-500">{paso.desc}</p>
+                  <p className={`text-sm font-medium mt-1 ${estado === 'completo' ? 'text-emerald-600' : estado === 'parcial' ? 'text-amber-700' : 'text-slate-400'}`}>
+                    {paso.detalle}
+                  </p>
+                </div>
+                {/* Flecha */}
+                <div className="text-slate-300 text-2xl flex-shrink-0">→</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Resumen rápido abajo */}
+      <div className="grid grid-cols-4 gap-3 mt-8">
         {[
-          {val: data.total_catedras, sub: `${data.catedras_abiertas} abiertas`, label: 'Cátedras', color: 'text-slate-800', subColor: 'text-blue-600', view: 'catedras'},
-          {val: data.total_inscripciones, label: 'Inscripciones', color: 'text-cyan-600', view: 'catedras'},
-          {val: data.total_docentes, sub: `${data.docentes_con_asignacion} con cátedra`, label: 'Docentes', color: 'text-slate-800', subColor: 'text-emerald-600', view: 'docentes'},
-          {val: data.docs_sugeridos, label: 'Docentes sugeridos', color: 'text-purple-600', view: 'necesitan_docente'},
+          {val: data.abrir, label: 'A abrir', color: 'text-emerald-600', bg: 'bg-emerald-50'},
+          {val: data.asincronicas, label: 'Asincrónicas', color: 'text-purple-600', bg: 'bg-purple-50'},
+          {val: data.sin_alumnos, label: 'Sin alumnos', color: 'text-slate-400', bg: 'bg-slate-50'},
+          {val: data.docs_sugeridos, label: 'Docentes sugeridos', color: 'text-blue-600', bg: 'bg-blue-50'},
         ].map((s, i) => (
-          <div key={i} onClick={() => setActiveView(s.view)} className="bg-white rounded-xl border p-5 text-center cursor-pointer hover:shadow-lg transition-shadow">
-            <p className={`text-4xl font-extrabold ${s.color}`}>{s.val}</p>
-            <p className="text-sm text-slate-500 mt-1">{s.label}</p>
-            {s.sub && <p className={`text-lg font-bold ${s.subColor || ''}`}>{s.sub}</p>}
+          <div key={i} className={`${s.bg} rounded-xl p-3 text-center`}>
+            <p className={`text-2xl font-extrabold ${s.color}`}>{s.val}</p>
+            <p className="text-xs text-slate-500">{s.label}</p>
           </div>
         ))}
-      </div>
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div onClick={() => setActiveView('necesitan_docente')} className={`rounded-xl border-2 p-5 text-center cursor-pointer hover:shadow-lg ${data.sin_docente > 0 ? 'bg-red-50 border-red-300' : 'bg-green-50 border-green-300'}`}>
-          <p className={`text-3xl font-extrabold ${data.sin_docente > 0 ? 'text-red-600' : 'text-green-600'}`}>{data.sin_docente}</p>
-          <p className="text-sm mt-1">{data.sin_docente > 0 ? '⚠️ Sin docente' : '✅ Cubiertos'}</p>
-        </div>
-        <div onClick={() => setActiveView('solapamientos')} className={`rounded-xl border-2 p-5 text-center cursor-pointer hover:shadow-lg ${data.solapamientos > 0 ? 'bg-orange-50 border-orange-300' : 'bg-green-50 border-green-300'}`}>
-          <p className={`text-3xl font-extrabold ${data.solapamientos > 0 ? 'text-orange-600' : 'text-green-600'}`}>{data.solapamientos}</p>
-          <p className="text-sm mt-1">{data.solapamientos > 0 ? '⚠️ Solapamientos' : '✅ OK'}</p>
-        </div>
-        <div onClick={() => setActiveView('asincronicas')} className="bg-purple-50 border-2 border-purple-200 rounded-xl p-5 text-center cursor-pointer hover:shadow-lg">
-          <p className="text-3xl font-extrabold text-purple-600">{data.asincronicas}</p>
-          <p className="text-sm mt-1">🎥 Asincrónicas</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 text-center">
-          <p className="text-3xl font-extrabold text-emerald-600">{data.abrir}</p>
-          <p className="text-sm text-emerald-700">Cátedras a abrir (≥10 insc.)</p>
-        </div>
-        <div className="bg-slate-50 rounded-xl border p-5 text-center">
-          <p className="text-3xl font-extrabold text-slate-400">{data.sin_alumnos}</p>
-          <p className="text-sm text-slate-500">Sin alumnos</p>
-        </div>
       </div>
     </div>
   );
