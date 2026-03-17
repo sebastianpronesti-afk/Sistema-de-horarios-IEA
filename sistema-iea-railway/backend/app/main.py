@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="10.0")
+app = FastAPI(title="Sistema Horarios IEA", version="11.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -274,7 +274,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v10.0 iniciado")
+    print("🚀 IEA Horarios v11.0 iniciado")
 
 CLAVE_ACCESO = "IEA2026"
 
@@ -1235,26 +1235,83 @@ def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
     db.commit()
     return {"replicadas": replicadas, "ya_existentes": ya_existentes}
 
-# ===== v10.0: Dashboard =====
+# ===== v11.0: Dashboard con flujo guiado =====
 @app.get("/api/dashboard")
 def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
     total_cats = db.query(Catedra).count()
+    total_docs = db.query(Docente).count()
+    total_cursos = db.query(Curso).count()
+    # Asignaciones
     q_a = db.query(Asignacion)
     if cuatrimestre_id: q_a = q_a.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = q_a.all()
     cats_abiertas = len(set(a.catedra_id for a in asigs))
     con_docente = len([a for a in asigs if a.docente_id])
     sin_docente = len([a for a in asigs if not a.docente_id])
+    # Inscriptos
     q_i = "SELECT COUNT(*) FROM inscripciones"
     if cuatrimestre_id: q_i += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
     total_insc = db.execute(text(q_i)).scalar() or 0
+    # Inscriptos clasificados vs sin clasificar
+    q_clas = "SELECT COUNT(*) FROM inscripciones WHERE modalidad_alumno IS NOT NULL"
+    if cuatrimestre_id: q_clas += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    clasificados = db.execute(text(q_clas)).scalar() or 0
+    sin_clasificar = total_insc - clasificados
+    # Decisiones tomadas
+    q_dec = "SELECT COUNT(*) FROM catedras WHERE decision_apertura IS NOT NULL AND decision_apertura != ''"
+    decisiones_tomadas = db.execute(text(q_dec)).scalar() or 0
+    cats_con_inscriptos_q = "SELECT COUNT(DISTINCT catedra_id) FROM inscripciones"
+    if cuatrimestre_id: cats_con_inscriptos_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    cats_con_inscriptos = db.execute(text(cats_con_inscriptos_q)).scalar() or 0
+    decisiones_pendientes = max(0, cats_con_inscriptos - decisiones_tomadas)
+    # Disponibilidad docentes
+    docs_con_dispo = db.execute(text("SELECT COUNT(DISTINCT docente_id) FROM docente_disponibilidad")).scalar() or 0
+    # Solapamientos
     solaps = len(get_solapamientos(cuatrimestre_id, db))
+    # Criterio
     criterio = get_criterio_apertura(cuatrimestre_id, db)
-    total_docs = db.query(Docente).count()
-    docs_con_asig = len(set(a.docente_id for a in asigs if a.docente_id))
+    # Cobertura
     cobertura = round((con_docente / max(1, con_docente + sin_docente)) * 100) if asigs else 0
+    docs_con_asig = len(set(a.docente_id for a in asigs if a.docente_id))
+    # Pasos
+    pasos = [
+        {"num": 1, "titulo": "Cargar datos base", "desc": "Cátedras, docentes y cursos",
+         "completo": total_cats > 0 and total_docs > 0,
+         "detalle": f"{total_cats} cátedras, {total_docs} docentes, {total_cursos} cursos",
+         "seccion": "importar"},
+        {"num": 2, "titulo": "Importar inscriptos", "desc": "Subir archivos de alumnos por materia",
+         "completo": total_insc > 0 and sin_clasificar == 0,
+         "parcial": total_insc > 0 and sin_clasificar > 0,
+         "detalle": f"{total_insc} inscripciones ({clasificados} clasificadas" + (f", {sin_clasificar} sin clasificar)" if sin_clasificar > 0 else ")"),
+         "seccion": "importar"},
+        {"num": 3, "titulo": "Decidir qué abrir", "desc": "Marcar decisión en cada cátedra con inscriptos",
+         "completo": decisiones_pendientes == 0 and cats_con_inscriptos > 0,
+         "parcial": decisiones_tomadas > 0 and decisiones_pendientes > 0,
+         "detalle": f"{decisiones_tomadas} decididas, {decisiones_pendientes} pendientes de {cats_con_inscriptos}",
+         "seccion": "catedras"},
+        {"num": 4, "titulo": "Cargar disponibilidad", "desc": "Horarios disponibles de cada docente",
+         "completo": docs_con_dispo >= total_docs * 0.8 if total_docs > 0 else False,
+         "parcial": docs_con_dispo > 0,
+         "detalle": f"{docs_con_dispo} de {total_docs} docentes con disponibilidad cargada",
+         "seccion": "disponibilidad"},
+        {"num": 5, "titulo": "Asignar docentes", "desc": "Vincular docentes a cátedras con día y horario",
+         "completo": sin_docente == 0 and con_docente > 0,
+         "parcial": con_docente > 0,
+         "detalle": f"{con_docente} asignados, {sin_docente} sin docente",
+         "seccion": "catedras"},
+        {"num": 6, "titulo": "Verificar solapamientos", "desc": "Revisar que no haya conflictos de horarios",
+         "completo": solaps == 0 and con_docente > 0,
+         "parcial": False,
+         "detalle": f"{solaps} solapamientos detectados" if solaps > 0 else "Sin solapamientos",
+         "seccion": "solapamientos"},
+        {"num": 7, "titulo": "Exportar y distribuir", "desc": "Descargar el Excel completo",
+         "completo": False, "parcial": False,
+         "detalle": "Listo para exportar cuando los pasos anteriores estén completos",
+         "seccion": "exportar"},
+    ]
     return {
+        "cobertura_pct": cobertura, "pasos": pasos,
         "total_catedras": total_cats, "catedras_abiertas": cats_abiertas,
         "con_docente": con_docente, "sin_docente": sin_docente,
         "total_inscripciones": total_insc, "solapamientos": solaps,
@@ -1263,7 +1320,6 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
         "sin_alumnos": criterio['stats']['total_sin_alumnos'],
         "docs_sugeridos": criterio['stats']['total_docentes_sugeridos'],
         "total_docentes": total_docs, "docentes_con_asignacion": docs_con_asig,
-        "cobertura_pct": cobertura,
     }
 
 
