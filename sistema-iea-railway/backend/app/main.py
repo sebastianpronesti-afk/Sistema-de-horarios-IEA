@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="11.0")
+app = FastAPI(title="Sistema Horarios IEA", version="12.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -635,6 +635,31 @@ def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get
         "stats": {"total_abrir": len(abrir), "total_asincronica": len(asincronica),
             "total_sin_alumnos": len(sin_alumnos),
             "total_docentes_sugeridos": sum(a["docentes_sugeridos"] for a in abrir)}}
+
+# ===== v12.0: Auto-marcar asincrónicas como "No abrir" =====
+@app.post("/api/catedras/auto-decision-asincronicas")
+def auto_decision_asincronicas(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    criterio = get_criterio_apertura(cuatrimestre_id, db)
+    count = 0
+    for item in criterio['asincronica']:
+        cat = db.query(Catedra).filter(Catedra.codigo == item['codigo']).first()
+        if cat:
+            try:
+                db.execute(text("UPDATE catedras SET decision_apertura = :val WHERE id = :id"),
+                    {"val": "Asincrónica", "id": cat.id})
+                count += 1
+            except: pass
+    for item in criterio['sin_alumnos']:
+        cat = db.query(Catedra).filter(Catedra.codigo == item['codigo']).first()
+        if cat:
+            try:
+                db.execute(text("UPDATE catedras SET decision_apertura = :val WHERE id = :id"),
+                    {"val": "No abrir", "id": cat.id})
+                count += 1
+            except: pass
+    db.commit()
+    return {"marcadas": count, "asincronicas": len(criterio['asincronica']), "sin_alumnos": len(criterio['sin_alumnos'])}
 
 
 @app.get("/api/inscriptos/por-curso")
@@ -1285,11 +1310,11 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
          "parcial": total_insc > 0 and sin_clasificar > 0,
          "detalle": f"{total_insc} inscripciones ({clasificados} clasificadas" + (f", {sin_clasificar} sin clasificar)" if sin_clasificar > 0 else ")"),
          "seccion": "importar"},
-        {"num": 3, "titulo": "Decidir qué abrir", "desc": "Marcar decisión en cada cátedra con inscriptos",
+        {"num": 3, "titulo": "Decidir qué abrir", "desc": "≥10 inscriptos total = abrir con docente (1 cada 50). 1-9 = asincrónica (pregrabada). 0 = no abrir.",
          "completo": decisiones_pendientes == 0 and cats_con_inscriptos > 0,
          "parcial": decisiones_tomadas > 0 and decisiones_pendientes > 0,
          "detalle": f"{decisiones_tomadas} decididas, {decisiones_pendientes} pendientes de {cats_con_inscriptos}",
-         "seccion": "catedras"},
+         "seccion": "decisiones"},
         {"num": 4, "titulo": "Cargar disponibilidad", "desc": "Horarios disponibles de cada docente",
          "completo": docs_con_dispo >= total_docs * 0.8 if total_docs > 0 else False,
          "parcial": docs_con_dispo > 0,
@@ -1320,6 +1345,8 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
         "sin_alumnos": criterio['stats']['total_sin_alumnos'],
         "docs_sugeridos": criterio['stats']['total_docentes_sugeridos'],
         "total_docentes": total_docs, "docentes_con_asignacion": docs_con_asig,
+        "total_asignaciones": len(asigs),
+        "decisiones_tomadas": decisiones_tomadas, "decisiones_pendientes": decisiones_pendientes,
     }
 
 
@@ -1640,6 +1667,30 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         for col in ['B','C','D','E','F','G']:
             ws_dia.column_dimensions[col].width = 35
 
+    # ========== v12.0: HOJA Criterio de Decisión ==========
+    ws_dec = wb.create_sheet("Criterio de Decisión")
+    ws_dec.append(["#","Código","Cátedra","Total inscriptos","Criterio sistema","Docentes sugeridos","Decisión tomada","Notas"])
+    for cell in ws_dec[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E40AF"); cell.alignment = Alignment(horizontal="center")
+    for i, cat in enumerate(all_cats, 1):
+        ic = total_insc_map.get(cat.id, 0)
+        if ic >= 10:
+            criterio_txt = f"ABRIR ({ic} inscriptos)"
+            docs_sug = 1 if ic <= 50 else (1 + -(-max(0, ic - 50) // 50))
+        elif ic > 0:
+            criterio_txt = f"ASINCRÓNICA ({ic} inscriptos)"
+            docs_sug = 0
+        else:
+            criterio_txt = "SIN ALUMNOS"
+            docs_sug = 0
+        decision = getattr(cat, 'decision_apertura', '') or ''
+        notas_c = getattr(cat, 'notas', '') or ''
+        ws_dec.append([i, cat.codigo, cat.nombre, ic, criterio_txt, docs_sug or '', decision, notas_c])
+        if ic >= 10 and not decision:
+            for cell in ws_dec[ws_dec.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',22),('F',16),('G',28),('H',30)]:
+        ws_dec.column_dimensions[col].width = w
+
     # ========== v10.0: BORRADOR HORARIOS TM-TN (formato como usan ellas) ==========
     DIAS_ORDEN2 = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
     HORAS_TM = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00']
@@ -1706,7 +1757,9 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         ws_bor.column_dimensions[col].width = w
 
     output = io.BytesIO(); wb.save(output); output.seek(0)
-    nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}.xlsx"
+    from datetime import datetime
+    ahora = datetime.now().strftime("%d-%m-%Y_%H_%M_hs")
+    nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}_{ahora}.xlsx"
     return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={nombre}"})
 
 if __name__ == "__main__":
