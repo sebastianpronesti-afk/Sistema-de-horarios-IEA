@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 
 const API_URL = '';
 
@@ -58,6 +58,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
+    { id: 'decisiones', icon: '🎯', label: 'Decisiones' },
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
@@ -71,7 +72,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v11.0</p>
+        <p className="text-slate-500 text-sm">Sistema v12.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -345,7 +346,11 @@ function DashboardView({ cuatrimestre, setActiveView }) {
         <div className="bg-white border rounded-2xl p-6 text-center">
           <p className="text-3xl font-extrabold text-cyan-600">{data.total_inscripciones}</p>
           <p className="text-sm text-slate-500">Inscripciones</p>
-          <p className="text-lg font-bold text-slate-700 mt-1">{data.catedras_abiertas} cátedras abiertas</p>
+          <div className="mt-2 text-xs text-slate-500">
+            <span className="font-bold text-slate-700">{data.total_docentes}</span> docentes ·
+            <span className="font-bold text-blue-600 ml-1">{data.docentes_con_asignacion}</span> con cátedra ·
+            <span className="font-bold text-purple-600 ml-1">{data.total_asignaciones || 0}</span> asignaciones
+          </div>
         </div>
         <div className="bg-white border rounded-2xl p-6 text-center">
           <div className="flex justify-center gap-4">
@@ -626,6 +631,110 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
   );
 }
 
+// ==================== v12.0: DECISIONES - Módulo central ====================
+function DecisionesView({ catedras, cuatrimestre, recargar }) {
+  const [criterio, setCriterio] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [filtro, setFiltro] = useState('todas');
+  const [marcando, setMarcando] = useState(false);
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        setCriterio(await apiFetch(`/api/catedras/criterio-apertura${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`));
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+  const autoMarcarAsinc = async () => {
+    setMarcando(true);
+    try {
+      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+      const r = await apiFetch(`/api/catedras/auto-decision-asincronicas${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`, { method: 'POST' });
+      alert(`✅ ${r.marcadas} cátedras marcadas (${r.asincronicas} asincrónicas + ${r.sin_alumnos} sin alumnos)`);
+      recargar();
+    } catch (e) { alert(e.message); }
+    setMarcando(false);
+  };
+  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
+  const catsConInfo = catedras.map(c => {
+    const enAbrir = criterio?.abrir?.find(a => a.codigo === c.codigo);
+    const enAsinc = criterio?.asincronica?.find(a => a.codigo === c.codigo);
+    let sug = 'SIN ALUMNOS'; let docs = 0;
+    if (enAbrir) { sug = 'ABRIR'; docs = enAbrir.docentes_sugeridos; }
+    else if (enAsinc) sug = 'ASINCRÓNICA';
+    return { ...c, sugerencia: sug, docs_sug_calc: docs };
+  }).filter(c => {
+    if (filtro === 'abrir') return c.sugerencia === 'ABRIR';
+    if (filtro === 'asinc') return c.sugerencia === 'ASINCRÓNICA';
+    if (filtro === 'sin') return c.sugerencia === 'SIN ALUMNOS';
+    if (filtro === 'pendientes') return !c.decision_apertura && c.sugerencia === 'ABRIR';
+    if (filtro === 'decididas') return !!c.decision_apertura;
+    return true;
+  });
+  const totalDecididas = catedras.filter(c => c.decision_apertura).length;
+  const totalPendAbrir = catedras.filter(c => !c.decision_apertura && criterio?.abrir?.find(a => a.codigo === c.codigo)).length;
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🎯 Criterio de Decisión de Apertura</h2>
+        <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
+          <p className="text-blue-800 font-semibold mb-2">¿Cómo funciona el criterio?</p>
+          <div className="text-sm text-blue-700 space-y-1">
+            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente). 1 docente hasta 50 alumnos, +1 cada 50 adicionales.</p>
+            <p>• <strong>1 a 9 inscriptos</strong> → <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente en vivo). Se dicta pero no se "abre".</p>
+            <p>• <strong>0 inscriptos</strong> → <strong>NO SE ABRE</strong> ni se dicta.</p>
+            <p className="text-blue-600 mt-2 italic">"Abrir" = contratar docente con horas. "Asincrónica" = el alumno cursa sin docente presencial.</p>
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-3 mb-4">
+        {[{v: criterio?.stats?.total_abrir||0, l:'A abrir (≥10)', c:'text-emerald-600', b:'bg-emerald-50 border-emerald-200'},
+          {v: criterio?.stats?.total_asincronica||0, l:'Asincrónicas (1-9)', c:'text-purple-600', b:'bg-purple-50 border-purple-200'},
+          {v: criterio?.stats?.total_sin_alumnos||0, l:'Sin alumnos', c:'text-slate-400', b:'bg-slate-50'},
+          {v: totalPendAbrir, l:'Pendientes', c:'text-amber-600', b:'bg-amber-50 border-amber-200'}
+        ].map((s,i) => <div key={i} className={`${s.b} rounded-xl border p-3 text-center`}><p className={`text-2xl font-bold ${s.c}`}>{s.v}</p><p className="text-xs">{s.l}</p></div>)}
+      </div>
+      <div className="flex gap-2 mb-4 flex-wrap items-center">
+        {[['todas','Todas'],['abrir','A abrir'],['asinc','Asincrónicas'],['sin','Sin alumnos'],['pendientes','⚠️ Pendientes'],['decididas','✅ Decididas']].map(([k,l]) => (
+          <button key={k} onClick={() => setFiltro(k)} className={`px-3 py-1.5 rounded-lg text-sm ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
+        ))}
+        <div className="flex-1" />
+        <button onClick={autoMarcarAsinc} disabled={marcando} className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
+          {marcando ? '⏳...' : '🎥 Auto-marcar asincrónicas'}
+        </button>
+      </div>
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-slate-800 text-white text-xs">
+            <th className="p-2 text-left">Cátedra</th>
+            <th className="p-2 text-center w-20">Inscr.</th>
+            <th className="p-2 text-center w-24">Sugerencia</th>
+            <th className="p-2 text-center w-14">Doc.</th>
+            <th className="p-2 text-center" style={{width:'160px'}}>Decisión (multi-sede)</th>
+            <th className="p-2 text-left" style={{width:'120px'}}>Notas</th>
+          </tr></thead>
+          <tbody>
+            {catsConInfo.map(cat => (
+              <tr key={cat.id} className={`border-b hover:bg-slate-50 ${!cat.decision_apertura && cat.sugerencia === 'ABRIR' ? 'bg-yellow-50' : ''}`}>
+                <td className="p-2"><span className="font-mono text-[10px] bg-slate-800 text-white px-1 rounded mr-1">{cat.codigo}</span><span className="text-xs">{cat.nombre}</span></td>
+                <td className="p-2 text-center"><span className="text-lg font-bold text-cyan-600">{cat.inscriptos || 0}</span></td>
+                <td className="p-2 text-center"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.sugerencia==='ABRIR'?'bg-emerald-100 text-emerald-700':cat.sugerencia==='ASINCRÓNICA'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-400'}`}>{cat.sugerencia}</span></td>
+                <td className="p-2 text-center font-bold">{cat.docs_sug_calc || ''}</td>
+                <td className="p-2"><DecisionInput catedra={cat} /></td>
+                <td className="p-2"><NotasInput item={cat} endpoint="catedras" /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-sm text-slate-500 mt-3 text-center">{catsConInfo.length} cátedras — {totalDecididas} con decisión</p>
+    </div>
+  );
+}
+
 // ==================== v4.0 MEJORA 8: NECESITAN DOCENTE ====================
 function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
   const [datos, setDatos] = useState([]);
@@ -670,11 +779,15 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
               <thead><tr className="bg-slate-50 border-b">
                 <th className="text-left p-3 text-sm font-semibold">Cátedra</th>
                 <th className="text-center p-3 text-sm font-semibold">Total inscr.</th>
-                <th className="text-left p-3 text-sm font-semibold">Aperturas necesarias (sede + turno)</th>
+                <th className="text-left p-3 text-sm font-semibold">✅ Sedes ya asignadas</th>
+                <th className="text-left p-3 text-sm font-semibold">⚠️ Aperturas necesarias</th>
                 <th className="text-left p-3 text-sm font-semibold">Docentes actuales</th>
               </tr></thead>
               <tbody>
-                {datos.map(d => (
+                {datos.map(d => {
+                  const cubiertos = (d.aperturas_necesarias || []).filter(a => a.tiene_docente);
+                  const sinCubrir = (d.aperturas_necesarias || []).filter(a => !a.tiene_docente);
+                  return (
                   <tr key={d.catedra_id} className="border-b hover:bg-slate-50">
                     <td className="p-3">
                       <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{d.codigo}</span>
@@ -682,26 +795,41 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
                     </td>
                     <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos_total}</span></td>
                     <td className="p-3">
-                      <div className="flex flex-wrap gap-1">
-                        {(d.aperturas_necesarias || []).map((ap, i) => (
-                          <div key={i} className={`px-2 py-1 rounded text-xs border ${ap.tiene_docente ? 'bg-emerald-50 border-emerald-300' : 'bg-yellow-100 border-yellow-400'}`}>
-                            <span className={`font-bold ${ap.tiene_docente ? 'text-emerald-700' : 'text-yellow-800'}`}>
-                              {ap.tiene_docente ? '✅' : '⚠️'} {ap.turno}
-                            </span>
-                            <span className={`ml-1 px-1 rounded text-white text-[10px] ${
-                              ap.sede === 'Avellaneda' ? 'bg-blue-500' :
-                              ap.sede === 'Caballito' ? 'bg-emerald-500' :
-                              ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
-                            }`}>{ap.sede}</span>
-                            <span className="ml-1 text-slate-500">({ap.inscriptos})</span>
-                            {ap.tiene_docente && <span className="ml-1 text-emerald-600 text-[10px]">cubierto</span>}
-                          </div>
-                        ))}
-                      </div>
+                      {cubiertos.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {cubiertos.map((ap, i) => (
+                            <div key={i} className="px-2 py-1 bg-emerald-50 border border-emerald-300 rounded text-xs">
+                              <span className="font-bold text-emerald-700">✅ {ap.turno}</span>
+                              <span className={`ml-1 px-1 rounded text-white text-[10px] ${
+                                ap.sede === 'Avellaneda' ? 'bg-blue-500' : ap.sede === 'Caballito' ? 'bg-emerald-500' :
+                                ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
+                              }`}>{ap.sede}</span>
+                              <span className="ml-1 text-emerald-500 text-[10px]">({ap.inscriptos})</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : <span className="text-slate-300 text-sm">—</span>}
+                    </td>
+                    <td className="p-3">
+                      {sinCubrir.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {sinCubrir.map((ap, i) => (
+                            <div key={i} className="px-2 py-1 bg-yellow-100 border border-yellow-400 rounded text-xs">
+                              <span className="font-bold text-yellow-800">⚠️ {ap.turno}</span>
+                              <span className={`ml-1 px-1 rounded text-white text-[10px] ${
+                                ap.sede === 'Avellaneda' ? 'bg-blue-500' : ap.sede === 'Caballito' ? 'bg-emerald-500' :
+                                ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
+                              }`}>{ap.sede}</span>
+                              <span className="ml-1 text-yellow-700">({ap.inscriptos})</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : <span className="text-emerald-500 text-sm">✅ Todo cubierto</span>}
                     </td>
                     <td className="p-3 text-sm">{d.docentes_nombres?.length > 0 ? d.docentes_nombres.join(', ') : <span className="text-red-500 italic">Sin docente</span>}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1664,31 +1792,61 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v9.0: DOCENTE FIELD INPUT (generic, saves independently) ====================
+// ==================== v12.0: DOCENTE FIELD INPUT - DEFINITIVO ====================
 function DocFieldInput({ docente, campo, tipo = 'number', min = 0, max = 99 }) {
-  const [val, setVal] = useState(docente[campo] || (tipo === 'number' ? 0 : false));
-  const [saved, setSaved] = useState(true);
+  // Use ref to track the actual saved value from server
+  const serverVal = docente[campo];
+  const [localVal, setLocalVal] = useState(serverVal || (tipo === 'number' ? 0 : false));
+  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { setVal(docente[campo] || (tipo === 'number' ? 0 : false)); setSaved(true); }, [docente, campo, tipo]);
-  const guardar = async (newVal) => {
+  const mountedRef = useRef(true);
+  
+  // Only sync from server when NOT dirty (user hasn't changed it)
+  useEffect(() => {
+    if (!dirty && !saving) {
+      setLocalVal(serverVal || (tipo === 'number' ? 0 : false));
+    }
+  }, [serverVal, dirty, saving, tipo]);
+  
+  useEffect(() => { return () => { mountedRef.current = false; }; }, []);
+
+  const guardar = async (valToSave) => {
     setSaving(true);
     try {
-      const payload = tipo === 'number' ? { [campo]: parseInt(newVal) || 0 } : { [campo]: newVal };
-      await apiFetch(`/api/docentes/${docente.id}`, { method: 'PUT', body: JSON.stringify(payload) });
-      setSaved(true);
-    } catch (e) { alert(e.message); }
-    setSaving(false);
+      const payload = tipo === 'number' 
+        ? { [campo]: parseInt(valToSave) || 0 } 
+        : { [campo]: !!valToSave };
+      const res = await fetch(`${API_URL}/api/docentes/${docente.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('Error al guardar');
+      if (mountedRef.current) { setDirty(false); }
+    } catch (e) { alert('Error guardando: ' + e.message); }
+    if (mountedRef.current) setSaving(false);
   };
+
   if (tipo === 'checkbox') {
-    return <input type="checkbox" checked={!!val} onChange={async (e) => { setVal(e.target.checked); await guardar(e.target.checked); }} className={`w-4 h-4 cursor-pointer ${saving ? 'opacity-50' : ''}`} />;
+    return (
+      <input type="checkbox" checked={!!localVal} 
+        className={`w-4 h-4 cursor-pointer ${saving ? 'opacity-50' : ''}`}
+        onChange={async (e) => {
+          const nv = e.target.checked;
+          setLocalVal(nv); setDirty(true);
+          await guardar(nv);
+        }} />
+    );
   }
   return (
     <div className="flex items-center gap-0.5">
-      <input type="number" min={min} max={max} className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${!saved ? 'border-amber-500 bg-amber-50' : ''} ${saving ? 'opacity-50' : ''}`}
-        value={val} onChange={e => { setVal(e.target.value); setSaved(false); }}
-        onBlur={e => { if (!saved) guardar(e.target.value); }}
-        onKeyDown={e => e.key === 'Enter' && guardar(val)} />
-      {!saved && <button onClick={() => guardar(val)} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
+      <input type="number" min={min} max={max} 
+        className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-500 bg-amber-50' : ''} ${saving ? 'opacity-50' : ''}`}
+        value={localVal} 
+        onChange={e => { setLocalVal(e.target.value); setDirty(true); }}
+        onBlur={() => { if (dirty) guardar(localVal); }}
+        onKeyDown={e => { if (e.key === 'Enter') { e.target.blur(); guardar(localVal); }}} />
+      {dirty && !saving && <button onClick={() => guardar(localVal)} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
     </div>
   );
 }
@@ -1719,25 +1877,57 @@ function NotasInput({ item, endpoint }) {
   );
 }
 
-// ==================== v10.0: DECISION INPUT (for catedras) ====================
-function DecisionInput({ catedra, recargar }) {
-  const [val, setVal] = useState(catedra.decision_apertura || '');
-  const [saved, setSaved] = useState(true);
-  useEffect(() => { setVal(catedra.decision_apertura || ''); setSaved(true); }, [catedra.decision_apertura]);
-  const guardar = async () => {
+// ==================== v12.0: DECISION INPUT MULTI-SELECT ====================
+function DecisionInput({ catedra }) {
+  const opciones = ['TM Avellaneda','TN Avellaneda','TM Caballito','TN Caballito','TM Vicente López','TN Vicente López','CIED Virtual','Asincrónica','No abrir'];
+  const [selected, setSelected] = useState(() => {
+    const d = catedra.decision_apertura || '';
+    return d ? d.split(',').map(s => s.trim()).filter(Boolean) : [];
+  });
+  const [open, setOpen] = useState(false);
+  
+  useEffect(() => {
+    const d = catedra.decision_apertura || '';
+    setSelected(d ? d.split(',').map(s => s.trim()).filter(Boolean) : []);
+  }, [catedra.decision_apertura]);
+  
+  const toggle = async (op) => {
+    let newSel;
+    if (op === 'No abrir' || op === 'Asincrónica') {
+      newSel = selected.includes(op) ? [] : [op];
+    } else {
+      newSel = selected.filter(s => s !== 'No abrir' && s !== 'Asincrónica');
+      newSel = newSel.includes(op) ? newSel.filter(s => s !== op) : [...newSel, op];
+    }
+    setSelected(newSel);
     try {
-      await apiFetch(`/api/catedras/${catedra.id}`, { method: 'PUT', body: JSON.stringify({ decision_apertura: val }) });
-      setSaved(true);
-    } catch (e) { alert(e.message); }
+      await fetch(`${API_URL}/api/catedras/${catedra.id}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ decision_apertura: newSel.join(', ') })
+      });
+    } catch (e) {}
   };
-  const opciones = ['','TM Avellaneda','TN Avellaneda','TM Caballito','TN Caballito','TM Vicente López','TN Vicente López','Todas las sedes','CIED Virtual','Asincrónica','No abrir'];
+  
+  const color = selected.length === 0 ? 'border-slate-200' : 
+    selected.includes('No abrir') ? 'border-red-300 bg-red-50' : 
+    selected.includes('Asincrónica') ? 'border-purple-300 bg-purple-50' : 'border-emerald-300 bg-emerald-50';
+  
   return (
-    <select className={`w-full border rounded px-0.5 py-0.5 text-[9px] ${!saved ? 'border-amber-500 bg-amber-50' : val ? 'bg-emerald-50 border-emerald-300' : 'border-slate-200'}`}
-      value={val} onChange={e => { setVal(e.target.value); setSaved(false); setTimeout(() => {
-        fetch(`${API_URL}/api/catedras/${catedra.id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ decision_apertura: e.target.value }) });
-      }, 100); setSaved(true); }}>
-      {opciones.map(o => <option key={o} value={o}>{o || '— Decidir —'}</option>)}
-    </select>
+    <div className="relative">
+      <button onClick={() => setOpen(!open)} className={`w-full border rounded px-1 py-0.5 text-[8px] text-left ${color}`}>
+        {selected.length > 0 ? selected.join(', ') : '— Decidir —'}
+      </button>
+      {open && (
+        <div className="absolute z-50 bg-white border shadow-xl rounded-lg p-2 w-48 left-0 top-full mt-1" onMouseLeave={() => setOpen(false)}>
+          {opciones.map(op => (
+            <label key={op} className="flex items-center gap-1.5 py-0.5 px-1 hover:bg-slate-50 rounded cursor-pointer text-[10px]">
+              <input type="checkbox" checked={selected.includes(op)} onChange={() => toggle(op)} className="w-3 h-3" />
+              {op}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1959,6 +2149,7 @@ export default function App() {
         {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
         {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
+        {activeView === 'decisiones' && <DecisionesView catedras={catedras} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
         {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
