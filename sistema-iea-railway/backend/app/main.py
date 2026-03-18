@@ -441,7 +441,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             sede_cab = desg['tm_cab'] + desg['tn_cab']
             sede_vl = desg['tm_vl'] + desg['tn_vl']
             sede_cied = desg['tm_cied'] + desg['tn_cied'] + desg['virt_cied']
-            docentes_sugeridos = (1 if inscriptos <= 50 else (1 + -(-max(0, inscriptos - 50) // 50))) if inscriptos >= 10 else 0
+            docentes_sugeridos = (1 if inscriptos <= 100 else (1 + -(-max(0, inscriptos - 100) // 100))) if inscriptos >= 10 else 0
             cursos_vinc = []
             try:
                 for cc in (cat.cursos or []):
@@ -601,7 +601,7 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
 @app.get("/api/catedras/criterio-apertura")
 def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     """
-    >=10 total → ABRIR. 1 doc hasta 50, luego +1 cada 50 adicionales.
+    >=10 total → ABRIR. 1 doc hasta 100, luego +1 cada 100 adicionales.
     1-9 total → ASINCRÓNICA
     0 → SIN ALUMNOS
     """
@@ -622,7 +622,7 @@ def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get
         elif total < 10:
             asincronica.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total})
         else:
-            docs = 1 if total <= 50 else (1 + -(-max(0, total - 50) // 50))
+            docs = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
             # Check if already has asignacion
             tiene = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
             if cuatrimestre_id: tiene = tiene.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -1310,7 +1310,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
          "parcial": total_insc > 0 and sin_clasificar > 0,
          "detalle": f"{total_insc} inscripciones ({clasificados} clasificadas" + (f", {sin_clasificar} sin clasificar)" if sin_clasificar > 0 else ")"),
          "seccion": "importar"},
-        {"num": 3, "titulo": "Decidir qué abrir", "desc": "≥10 inscriptos total = abrir con docente (1 cada 50). 1-9 = asincrónica (pregrabada). 0 = no abrir.",
+        {"num": 3, "titulo": "Decidir qué abrir", "desc": "≥10 inscriptos total = abrir con docente (1 cada 100). 1-9 = asincrónica (pregrabada). 0 = no abrir.",
          "completo": decisiones_pendientes == 0 and cats_con_inscriptos > 0,
          "parcial": decisiones_tomadas > 0 and decisiones_pendientes > 0,
          "detalle": f"{decisiones_tomadas} decididas, {decisiones_pendientes} pendientes de {cats_con_inscriptos}",
@@ -1676,7 +1676,7 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         ic = total_insc_map.get(cat.id, 0)
         if ic >= 10:
             criterio_txt = f"ABRIR ({ic} inscriptos)"
-            docs_sug = 1 if ic <= 50 else (1 + -(-max(0, ic - 50) // 50))
+            docs_sug = 1 if ic <= 100 else (1 + -(-max(0, ic - 100) // 100))
         elif ic > 0:
             criterio_txt = f"ASINCRÓNICA ({ic} inscriptos)"
             docs_sug = 0
