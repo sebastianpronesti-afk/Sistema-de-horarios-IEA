@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="12.0")
+app = FastAPI(title="Sistema Horarios IEA", version="14.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -201,6 +201,10 @@ def run_migration(db):
                 id SERIAL PRIMARY KEY, catedra_id INTEGER REFERENCES catedras(id) ON DELETE CASCADE,
                 curso_id INTEGER REFERENCES cursos(id) ON DELETE CASCADE, turno VARCHAR,
                 sede_id INTEGER REFERENCES sedes(id))"""),
+            ('plan_carrera', """CREATE TABLE IF NOT EXISTS plan_carrera (
+                id SERIAL PRIMARY KEY, sede VARCHAR NOT NULL, carrera VARCHAR NOT NULL,
+                anno VARCHAR, codigo_catedra VARCHAR NOT NULL, nombre_catedra VARCHAR,
+                dia_tm VARCHAR, hora_tm VARCHAR, dia_tn VARCHAR, hora_tn VARCHAR)"""),
         ]:
             if tbl not in tables:
                 try:
@@ -1360,6 +1364,192 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     }
 
 
+# ===== v13.0: Plan Carrera - Importar molde de horarios =====
+@app.post("/api/importar/plan-carrera")
+async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    from sqlalchemy import text
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    total = 0
+    # Clear existing plan
+    try: db.execute(text("DELETE FROM plan_carrera")); db.commit()
+    except: db.rollback()
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        sede = sheet_name.strip()
+        carrera_act = ''
+        anno_act = ''
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 5: continue
+            b = str(vals[1] or '').strip()
+            c = str(vals[2] or '').strip()
+            d = str(vals[3] or '').strip()
+            e = str(vals[4] or '').strip()
+            # Detect carrera from column B or C
+            for txt in [b, c]:
+                t_up = txt.upper()
+                if ('TECNICO' in t_up or 'TECNICATURA' in t_up) and len(txt) > 15:
+                    carrera_act = txt.strip()
+            # Detect año
+            c_up = c.upper()
+            if 'AÑO' in c_up or '1ER' in c_up or '2DO' in c_up or '3ER' in c_up or '4TO' in c_up:
+                anno_act = c.strip()
+            # Detect catedra
+            try:
+                cod_num = int(float(d))
+                if cod_num > 0 and e and 'practica' not in e.lower()[:12] and carrera_act:
+                    cod = f'c.{cod_num}'
+                    dia_tm = str(vals[6] or '').strip() if len(vals) > 6 else ''
+                    hora_tm = str(vals[7] or '').strip() if len(vals) > 7 else ''
+                    dia_tn = str(vals[9] or '').strip() if len(vals) > 9 else ''
+                    hora_tn = str(vals[10] or '').strip() if len(vals) > 10 else ''
+                    try:
+                        db.execute(text("""INSERT INTO plan_carrera (sede, carrera, anno, codigo_catedra, nombre_catedra, dia_tm, hora_tm, dia_tn, hora_tn)
+                            VALUES (:sede, :carrera, :anno, :cod, :nombre, :dtm, :htm, :dtn, :htn)"""),
+                            {"sede": sede, "carrera": carrera_act, "anno": anno_act, "cod": cod, "nombre": e.strip(),
+                             "dtm": dia_tm, "htm": hora_tm, "dtn": dia_tn, "htn": hora_tn})
+                        total += 1
+                    except: pass
+            except: pass
+    db.commit()
+    wb.close()
+    return {"importados": total, "hojas": wb.sheetnames}
+
+# ===== v13.0: Sugerencias de horarios cruzando plan + inscriptos =====
+@app.get("/api/plan-carrera/sugerencias")
+def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # Get plan
+    q = "SELECT * FROM plan_carrera"
+    filters = []
+    if sede: filters.append(f"sede = '{sede}'")
+    if filters: q += " WHERE " + " AND ".join(filters)
+    q += " ORDER BY sede, carrera, anno, codigo_catedra"
+    try: rows = db.execute(text(q)).fetchall()
+    except: return {"sedes": [], "plan_importado": False}
+    if not rows: return {"sedes": [], "plan_importado": False}
+    # Get inscriptos totales
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    # Get catedra code → id mapping
+    cat_map = {}
+    for c in db.query(Catedra).all():
+        cat_map[c.codigo] = {"id": c.id, "nombre": c.nombre}
+    # Get current asignaciones
+    asig_q = db.query(Asignacion)
+    if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = asig_q.all()
+    asig_map = {}  # catedra_id → [{docente, dia, hora, sede}]
+    for a in asigs:
+        if a.catedra_id not in asig_map: asig_map[a.catedra_id] = []
+        asig_map[a.catedra_id].append({
+            "docente": f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None,
+            "dia": a.dia, "hora": a.hora_inicio, "sede": a.sede.nombre if a.sede else None,
+            "modalidad": a.modalidad,
+        })
+    # Build result grouped by sede → carrera → anno → catedras
+    sedes_result = {}
+    for r in rows:
+        sede_n = r[1]
+        carrera = r[2]
+        anno = r[3]
+        cod = r[4]
+        nombre_plan = r[5]
+        dia_tm = r[6] or ''
+        hora_tm = r[7] or ''
+        dia_tn = r[8] or ''
+        hora_tn = r[9] or ''
+        cat_info = cat_map.get(cod, None)
+        cat_id = cat_info["id"] if cat_info else None
+        insc = total_map.get(cat_id, 0) if cat_id else 0
+        # Criterio
+        if insc >= 10: criterio = "ABRIR"
+        elif insc > 0: criterio = "ASINCRÓNICA"
+        else: criterio = "SIN ALUMNOS"
+        # Current assignment
+        asig_actual = asig_map.get(cat_id, []) if cat_id else []
+        tiene_docente = any(a['docente'] for a in asig_actual)
+        docente_actual = ', '.join([a['docente'] for a in asig_actual if a['docente']]) or None
+        horario_actual_tm = next((f"{a['dia']} {a['hora']}" for a in asig_actual if a['hora'] and a['hora'] < '15:00'), None)
+        horario_actual_tn = next((f"{a['dia']} {a['hora']}" for a in asig_actual if a['hora'] and a['hora'] >= '15:00'), None)
+        if sede_n not in sedes_result: sedes_result[sede_n] = {}
+        if carrera not in sedes_result[sede_n]: sedes_result[sede_n][carrera] = {}
+        if anno not in sedes_result[sede_n][carrera]: sedes_result[sede_n][carrera][anno] = []
+        sedes_result[sede_n][carrera][anno].append({
+            "codigo": cod, "nombre": nombre_plan,
+            "inscriptos": insc, "criterio": criterio,
+            "sugerencia_tm": f"{dia_tm} {hora_tm}".strip() if dia_tm else None,
+            "sugerencia_tn": f"{dia_tn} {hora_tn}".strip() if dia_tn else None,
+            "actual_tm": horario_actual_tm, "actual_tn": horario_actual_tn,
+            "docente": docente_actual, "tiene_docente": tiene_docente,
+        })
+    return {"sedes": sedes_result, "plan_importado": True, "total_registros": len(rows)}
+
+
+# ===== v14.0: Solapamientos entre carreras =====
+@app.get("/api/solapamientos-carreras")
+def get_solapamientos_carreras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # 1) Get plan_carrera
+    try: plan = db.execute(text("SELECT sede, carrera, anno, codigo_catedra FROM plan_carrera")).fetchall()
+    except: return {"conflictos": [], "total": 0}
+    if not plan: return {"conflictos": [], "total": 0, "sin_plan": True}
+    # 2) Build carrera_anno → [codigos] per sede
+    carrera_cats = {}  # (sede, carrera, anno) → [codigo]
+    for r in plan:
+        key = (r[0], r[1], r[2])
+        if key not in carrera_cats: carrera_cats[key] = []
+        if r[3] not in carrera_cats[key]: carrera_cats[key].append(r[3])
+    # 3) Get current asignaciones with dia+hora
+    asig_q = db.query(Asignacion).filter(Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None))
+    if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = asig_q.all()
+    # Build code → [(dia, hora, sede, docente, catedra_nombre)]
+    code_schedule = {}
+    for a in asigs:
+        if not a.catedra or not a.dia or a.dia == 'Pend.' or not a.hora_inicio or a.hora_inicio == 'Pend.': continue
+        cod = a.catedra.codigo
+        if cod not in code_schedule: code_schedule[cod] = []
+        code_schedule[cod].append({
+            "dia": a.dia, "hora": a.hora_inicio,
+            "sede": a.sede.nombre if a.sede else "Remoto",
+            "docente": f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None,
+            "nombre": a.catedra.nombre,
+        })
+    # 4) For each carrera+anno, check if any 2 cátedras share same dia+hora
+    conflictos = []
+    for (sede_p, carrera, anno), codigos in carrera_cats.items():
+        # Build a slot map: (dia, hora) → [{codigo, nombre, docente}]
+        slots = {}
+        for cod in codigos:
+            for sch in code_schedule.get(cod, []):
+                key = (sch['dia'].upper().strip(), sch['hora'].strip())
+                if key not in slots: slots[key] = []
+                slots[key].append({"codigo": cod, "nombre": sch['nombre'], "docente": sch['docente'], "sede_asig": sch['sede']})
+        # Find slots with >1 DIFFERENT cátedra
+        for (dia, hora), items in slots.items():
+            codigos_unicos = list(set(it['codigo'] for it in items))
+            if len(codigos_unicos) < 2: continue
+            # This is a conflict within the same carrera+anno
+            conflictos.append({
+                "sede_plan": sede_p, "carrera": carrera, "anno": anno,
+                "dia": dia, "hora": hora,
+                "catedras_en_conflicto": [{"codigo": it['codigo'], "nombre": it['nombre'], "docente": it['docente']} for it in items],
+                "sugerencia": f"Mover una de estas cátedras a otro día/hora para que los alumnos de {anno} de {carrera} puedan cursar ambas.",
+            })
+    # Sort by sede, carrera, anno
+    conflictos.sort(key=lambda x: (x['sede_plan'], x['carrera'], x['anno'], x['dia'], x['hora']))
+    return {"conflictos": conflictos, "total": len(conflictos)}
+
+
 # ===== v10.0: Exportar COMPLETO =====
 @app.get("/api/exportar/horarios")
 def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
@@ -1763,6 +1953,70 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         row_num += 2
     for col, w in [('A',8),('B',32),('C',12),('D',10),('E',16),('F',28),('G',14),('H',30)]:
         ws_bor.column_dimensions[col].width = w
+
+    # ========== v13.0: HORARIOS POR CARRERA Y SEDE ==========
+    try:
+        plan_rows = db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra, dia_tm, hora_tm, dia_tn, hora_tn FROM plan_carrera ORDER BY sede, carrera, anno")).fetchall()
+    except: plan_rows = []
+    if plan_rows:
+        # Group by sede
+        plan_by_sede = {}
+        for r in plan_rows:
+            s = r[0]
+            if s not in plan_by_sede: plan_by_sede[s] = []
+            plan_by_sede[s].append(r)
+        # Asig lookup
+        asig_lookup_exp = {}
+        for a in asigs:
+            cid = a.catedra_id
+            if cid not in asig_lookup_exp: asig_lookup_exp[cid] = []
+            asig_lookup_exp[cid].append(a)
+        cat_code_to_id = {c.codigo: c.id for c in all_cats}
+        for sede_name_p, sede_rows in plan_by_sede.items():
+            ws_pc = wb.create_sheet(f"Plan {sede_name_p}"[:31])
+            ws_pc.append(["Carrera","Año","Código","Cátedra","Inscr.","Criterio",
+                "Sugerencia TM","Sugerencia TN","Docente actual","Horario actual TM","Horario actual TN","Estado"])
+            for cell in ws_pc[1]:
+                cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E40AF"); cell.alignment = Alignment(horizontal="center")
+            prev_carrera = ''
+            for r in sede_rows:
+                sede_p, carrera_p, anno_p, cod_p, nombre_p, dtm, htm, dtn, htn = r
+                cat_id_p = cat_code_to_id.get(cod_p)
+                insc_p = total_insc_map.get(cat_id_p, 0) if cat_id_p else 0
+                crit = "ABRIR" if insc_p >= 10 else ("ASINCRÓNICA" if insc_p > 0 else "SIN ALUMNOS")
+                # Current assignment
+                cat_asigs = asig_lookup_exp.get(cat_id_p, [])
+                doc_act = ', '.join([f"{a.docente.nombre} {a.docente.apellido}" for a in cat_asigs if a.docente]) or ''
+                h_act_tm = next((f"{a.dia} {a.hora_inicio}" for a in cat_asigs if a.hora_inicio and a.hora_inicio < '15:00'), '')
+                h_act_tn = next((f"{a.dia} {a.hora_inicio}" for a in cat_asigs if a.hora_inicio and a.hora_inicio >= '15:00'), '')
+                estado = "✅ Con docente" if doc_act else ("🎥 Asincrónica" if crit == "ASINCRÓNICA" else ("⚠️ PENDIENTE" if crit == "ABRIR" else "—"))
+                show_carrera = carrera_p if carrera_p != prev_carrera else ''
+                prev_carrera = carrera_p
+                ws_pc.append([show_carrera, anno_p, cod_p, nombre_p, insc_p or '', crit,
+                    f"{dtm} {htm}".strip() if dtm else '', f"{dtn} {htn}".strip() if dtn else '',
+                    doc_act, h_act_tm, h_act_tn, estado])
+                if crit == "ABRIR" and not doc_act:
+                    for cell in ws_pc[ws_pc.max_row]: cell.fill = YELLOW
+                elif crit == "ASINCRÓNICA":
+                    for cell in ws_pc[ws_pc.max_row]: cell.fill = PatternFill("solid", fgColor="E9D5FF")
+            for col, w in [('A',38),('B',14),('C',8),('D',34),('E',8),('F',14),('G',18),('H',18),('I',28),('J',18),('K',18),('L',16)]:
+                ws_pc.column_dimensions[col].width = w
+
+    # ========== v14.0: Solapamientos entre carreras ==========
+    solap_carr = get_solapamientos_carreras(cuatrimestre_id, db)
+    if solap_carr.get('conflictos'):
+        ws_sc = wb.create_sheet("Solapamientos Carreras")
+        ws_sc.append(["#","Sede","Carrera","Año","Día","Hora","Cátedras en conflicto","Docentes","Sugerencia"])
+        for cell in ws_sc[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor="B91C1C"); cell.alignment = Alignment(horizontal="center")
+        for i, conf in enumerate(solap_carr['conflictos'], 1):
+            cats_txt = ' vs '.join([f"{c['codigo']} {c['nombre']}" for c in conf['catedras_en_conflicto']])
+            docs_txt = ', '.join([c['docente'] or 'Sin doc.' for c in conf['catedras_en_conflicto']])
+            ws_sc.append([i, conf['sede_plan'], conf['carrera'][:40], conf['anno'],
+                conf['dia'], conf['hora'], cats_txt, docs_txt, conf['sugerencia']])
+            for cell in ws_sc[ws_sc.max_row]: cell.fill = YELLOW
+        for col, w in [('A',4),('B',16),('C',40),('D',12),('E',12),('F',10),('G',50),('H',30),('I',60)]:
+            ws_sc.column_dimensions[col].width = w
 
     output = io.BytesIO(); wb.save(output); output.seek(0)
     from datetime import datetime
