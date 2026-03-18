@@ -63,6 +63,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
+    { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
@@ -72,7 +73,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v12.0</p>
+        <p className="text-slate-500 text-sm">Sistema v14.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -1328,27 +1329,259 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   );
 }
 
-// ==================== SOLAPAMIENTOS ====================
-function SolapamientosView({ solapamientos }) {
+// ==================== v13.0: HORARIOS POR CARRERA Y SEDE ====================
+function PlanCarreraView({ cuatrimestre }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [sedeActiva, setSedeActiva] = useState('');
+  const [carreraAbierta, setCarreraAbierta] = useState({});
+  const [importando, setImportando] = useState(false);
+
+  const cargar = async () => {
+    setLoading(true);
+    try {
+      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+      const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+      const sedeP = sedeActiva ? `${qp ? '&' : '?'}sede=${encodeURIComponent(sedeActiva)}` : '';
+      setData(await apiFetch(`/api/plan-carrera/sugerencias${qp}${sedeP}`));
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useEffect(() => { cargar(); }, [cuatrimestre, sedeActiva]);
+
+  const importarPlan = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportando(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API_URL}/api/importar/plan-carrera`, { method: 'POST', body: form });
+      const r = await res.json();
+      alert(`✅ ${r.importados} registros importados de ${r.hojas?.length || 0} hojas`);
+      cargar();
+    } catch (e) { alert('Error: ' + e.message); }
+    setImportando(false);
+    e.target.value = '';
+  };
+
+  const toggleCarrera = (key) => {
+    setCarreraAbierta(prev => ({...prev, [key]: !prev[key]}));
+  };
+
+  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
+
+  const sedes = data?.sedes || {};
+  const sedeKeys = Object.keys(sedes);
+
   return (
     <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Detector de Solapamientos</h2></div>
-      {solapamientos.length === 0 ? (
-        <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-          <p className="text-4xl mb-2">✅</p><p className="text-green-700 font-medium text-lg">No hay solapamientos</p>
+      <div className="flex justify-between items-start mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">🗺️ Horarios por Carrera y Sede</h2>
+          <p className="text-slate-500 text-sm">Sugerencia automática basada en el molde de horarios importado, cruzado con inscriptos actuales.</p>
+        </div>
+        <label className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer ${importando ? 'bg-slate-300' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+          {importando ? '⏳ Importando...' : '📥 Importar molde (Horarios.xlsx)'}
+          <input type="file" accept=".xlsx" className="hidden" onChange={importarPlan} disabled={importando} />
+        </label>
+      </div>
+
+      {!data?.plan_importado ? (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-8 text-center">
+          <p className="text-4xl mb-3">📥</p>
+          <p className="text-amber-800 font-medium">No hay molde de horarios importado</p>
+          <p className="text-amber-600 text-sm mt-2">Subí el archivo Horarios.xlsx con la estructura de carreras, años y cátedras por sede. El sistema lo cruza con los inscriptos para generar sugerencias.</p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {solapamientos.map((s, i) => (
-            <div key={i} className={`p-4 rounded-xl border ${s.tipo === 'CATEDRA' ? 'bg-red-50 border-red-300' : 'bg-orange-50 border-orange-300'}`}>
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`px-3 py-1 rounded text-sm font-bold text-white ${s.tipo === 'CATEDRA' ? 'bg-red-500' : 'bg-orange-500'}`}>{s.severidad}</span>
-                <span className="font-medium">{s.tipo === 'CATEDRA' ? '🎓 Cátedra' : '👨‍🏫 Docente'}</span>
-              </div>
-              <p className="text-slate-700">{s.mensaje}</p>
+        <>
+          <div className="flex gap-2 mb-6 flex-wrap">
+            <button onClick={() => setSedeActiva('')} className={`px-4 py-2 rounded-lg text-sm font-medium ${!sedeActiva ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>Todas ({data?.total_registros || 0})</button>
+            {sedeKeys.map(s => (
+              <button key={s} onClick={() => setSedeActiva(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
+            ))}
+          </div>
+
+          {Object.entries(sedes).map(([sede_n, carreras]) => (
+            <div key={sede_n} className="mb-8">
+              <h3 className="text-lg font-bold text-slate-700 mb-3 flex items-center gap-2">
+                <span className={`w-3 h-3 rounded-full ${sede_n.includes('AVELLANEDA') || sede_n.includes('Avellaneda') ? 'bg-blue-500' : sede_n.includes('CABALLITO') || sede_n.includes('Caballito') ? 'bg-emerald-500' : sede_n.includes('VICENTE') || sede_n.includes('Vicente') ? 'bg-amber-500' : 'bg-purple-500'}`} />
+                {sede_n}
+              </h3>
+              {Object.entries(carreras).map(([carrera, annos]) => {
+                const key = `${sede_n}-${carrera}`;
+                const abierta = carreraAbierta[key] !== false;
+                const totalCats = Object.values(annos).flat().length;
+                const abrir = Object.values(annos).flat().filter(c => c.criterio === 'ABRIR').length;
+                const asinc = Object.values(annos).flat().filter(c => c.criterio === 'ASINCRÓNICA').length;
+                const conDoc = Object.values(annos).flat().filter(c => c.tiene_docente).length;
+                return (
+                  <div key={key} className="mb-3">
+                    <div onClick={() => toggleCarrera(key)} className="flex items-center gap-3 p-3 bg-blue-900 text-white rounded-t-xl cursor-pointer hover:bg-blue-800">
+                      <span className="text-lg">{abierta ? '▼' : '▶'}</span>
+                      <span className="font-bold flex-1">{carrera}</span>
+                      <span className="text-xs bg-blue-700 px-2 py-1 rounded">{totalCats} cát.</span>
+                      <span className="text-xs bg-emerald-600 px-2 py-1 rounded">{conDoc} con doc.</span>
+                      {abrir - conDoc > 0 && <span className="text-xs bg-red-500 px-2 py-1 rounded">{abrir - conDoc} faltan</span>}
+                      {asinc > 0 && <span className="text-xs bg-purple-500 px-2 py-1 rounded">{asinc} asinc.</span>}
+                    </div>
+                    {abierta && (
+                      <div className="bg-white border border-t-0 rounded-b-xl overflow-hidden">
+                        <table className="w-full text-xs">
+                          <thead><tr className="bg-slate-100 text-slate-600">
+                            <th className="p-2 text-left">Año</th>
+                            <th className="p-2 text-left">Cátedra</th>
+                            <th className="p-2 text-center w-14">Inscr.</th>
+                            <th className="p-2 text-center w-20">Criterio</th>
+                            <th className="p-2 text-center">Sugerencia TM</th>
+                            <th className="p-2 text-center">Sugerencia TN</th>
+                            <th className="p-2 text-center">Actual TM</th>
+                            <th className="p-2 text-center">Actual TN</th>
+                            <th className="p-2 text-left">Docente</th>
+                          </tr></thead>
+                          <tbody>
+                            {Object.entries(annos).map(([anno, cats]) => cats.map((cat, idx) => (
+                              <tr key={`${anno}-${cat.codigo}-${idx}`} className={`border-b ${cat.criterio === 'ASINCRÓNICA' ? 'bg-purple-50' : cat.criterio === 'SIN ALUMNOS' ? 'bg-slate-50 text-slate-400' : !cat.tiene_docente && cat.criterio === 'ABRIR' ? 'bg-yellow-50' : ''}`}>
+                                <td className="p-2 text-slate-500">{idx === 0 ? anno : ''}</td>
+                                <td className="p-2">
+                                  <span className="font-mono bg-slate-800 text-white px-1 rounded text-[9px] mr-1">{cat.codigo}</span>
+                                  {cat.nombre}
+                                </td>
+                                <td className="p-2 text-center font-bold text-cyan-600">{cat.inscriptos || ''}</td>
+                                <td className="p-2 text-center">
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${cat.criterio === 'ABRIR' ? 'bg-emerald-100 text-emerald-700' : cat.criterio === 'ASINCRÓNICA' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-400'}`}>{cat.criterio}</span>
+                                </td>
+                                <td className="p-2 text-center text-blue-600">{cat.sugerencia_tm || ''}</td>
+                                <td className="p-2 text-center text-indigo-600">{cat.sugerencia_tn || ''}</td>
+                                <td className="p-2 text-center">{cat.actual_tm ? <span className="bg-emerald-100 text-emerald-700 px-1 rounded text-[9px]">{cat.actual_tm}</span> : ''}</td>
+                                <td className="p-2 text-center">{cat.actual_tn ? <span className="bg-indigo-100 text-indigo-700 px-1 rounded text-[9px]">{cat.actual_tn}</span> : ''}</td>
+                                <td className="p-2">{cat.docente ? <span className="text-emerald-600 font-medium">{cat.docente}</span> : cat.criterio === 'ABRIR' ? <span className="text-red-400 italic">Pendiente</span> : <span className="text-purple-400">🎥</span>}</td>
+                              </tr>
+                            )))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ))}
-        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ==================== SOLAPAMIENTOS ====================
+function SolapamientosView({ solapamientos, cuatrimestre }) {
+  const [tab, setTab] = useState('horarios');
+  const [carreraConf, setCarreraConf] = useState(null);
+  const [loadingCarr, setLoadingCarr] = useState(false);
+
+  useEffect(() => {
+    const cargar = async () => {
+      setLoadingCarr(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        setCarreraConf(await apiFetch(`/api/solapamientos-carreras${qp}`));
+      } catch (e) { console.error(e); }
+      setLoadingCarr(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+
+  const carrConflictos = carreraConf?.conflictos || [];
+
+  return (
+    <div className="p-8">
+      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">⚠️ Detector de Solapamientos</h2></div>
+      <div className="flex gap-2 mb-6">
+        <button onClick={() => setTab('horarios')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'horarios' ? 'bg-orange-500 text-white' : 'bg-slate-100'}`}>
+          🕐 Horarios/Docentes ({solapamientos.length})
+        </button>
+        <button onClick={() => setTab('carreras')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'carreras' ? 'bg-red-600 text-white' : 'bg-slate-100'}`}>
+          🎓 Entre Carreras ({carrConflictos.length})
+        </button>
+      </div>
+
+      {tab === 'horarios' && (
+        solapamientos.length === 0 ? (
+          <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
+            <p className="text-4xl mb-2">✅</p><p className="text-green-700 font-medium text-lg">No hay solapamientos de horarios</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {solapamientos.map((s, i) => (
+              <div key={i} className={`p-4 rounded-xl border ${s.tipo === 'CATEDRA' ? 'bg-red-50 border-red-300' : 'bg-orange-50 border-orange-300'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`px-3 py-1 rounded text-sm font-bold text-white ${s.tipo === 'CATEDRA' ? 'bg-red-500' : 'bg-orange-500'}`}>{s.severidad}</span>
+                  <span className="font-medium">{s.tipo === 'CATEDRA' ? '🎓 Cátedra' : '👨‍🏫 Docente'}</span>
+                </div>
+                <p className="text-slate-700">{s.mensaje}</p>
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {tab === 'carreras' && (
+        loadingCarr ? <div className="text-center p-8">⏳ Analizando...</div> :
+        carreraConf?.sin_plan ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-8 text-center">
+            <p className="text-4xl mb-2">📥</p>
+            <p className="text-amber-700 font-medium">Importá primero el molde de horarios (Horarios.xlsx) para detectar solapamientos entre carreras</p>
+          </div>
+        ) : carrConflictos.length === 0 ? (
+          <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
+            <p className="text-4xl mb-2">✅</p><p className="text-green-700 font-medium text-lg">No hay solapamientos entre carreras</p>
+            <p className="text-green-600 text-sm mt-2">Ningún alumno tiene dos materias de su misma carrera y año al mismo día y hora</p>
+          </div>
+        ) : (
+          <>
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+              <p className="text-red-700 font-bold">{carrConflictos.length} solapamientos detectados entre cátedras de una misma carrera</p>
+              <p className="text-red-600 text-sm">Los alumnos de estas carreras no podrían cursar ambas materias porque se dan el mismo día y hora.</p>
+            </div>
+            <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+              <table className="w-full text-sm">
+                <thead><tr className="bg-red-800 text-white text-xs">
+                  <th className="p-3 text-left">Carrera</th>
+                  <th className="p-3 text-left">Año</th>
+                  <th className="p-3 text-left">Sede</th>
+                  <th className="p-3 text-center">Día</th>
+                  <th className="p-3 text-center">Hora</th>
+                  <th className="p-3 text-left">Cátedras en conflicto</th>
+                  <th className="p-3 text-left">Sugerencia</th>
+                </tr></thead>
+                <tbody>
+                  {carrConflictos.map((conf, i) => (
+                    <tr key={i} className="border-b bg-yellow-50 hover:bg-yellow-100">
+                      <td className="p-3 font-medium text-xs">{conf.carrera}</td>
+                      <td className="p-3 text-xs">{conf.anno}</td>
+                      <td className="p-3 text-xs">{conf.sede_plan}</td>
+                      <td className="p-3 text-center font-bold">{conf.dia}</td>
+                      <td className="p-3 text-center font-bold">{conf.hora}</td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-1">
+                          {conf.catedras_en_conflicto.map((c, j) => (
+                            <span key={j} className="px-2 py-1 bg-red-100 border border-red-300 rounded text-xs">
+                              <span className="font-mono font-bold">{c.codigo}</span> {c.nombre}
+                              {c.docente && <span className="text-slate-500 ml-1">({c.docente})</span>}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="p-3 text-xs text-slate-600 italic">{conf.sugerencia}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )
       )}
     </div>
   );
@@ -1712,6 +1945,16 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
             </button>
           </div>
         ))}
+      </div>
+
+      <h3 className="font-semibold text-slate-600 mb-3">🗺️ Molde de horarios por carrera</h3>
+      <div className="bg-white rounded-xl border p-6 mb-6 border-blue-200">
+        <p className="text-sm text-slate-500 mb-3">Subí el archivo <strong>Horarios.xlsx</strong> con la estructura de carreras, años y cátedras por sede. Se importa una sola vez y sirve como "molde" para generar sugerencias.</p>
+        <button onClick={() => subirArchivo('/api/importar/plan-carrera', 'Plan Carrera')}
+          disabled={uploading === 'Plan Carrera'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700">
+          {uploading === 'Plan Carrera' ? '⏳ Importando...' : '📤 Importar molde de horarios'}
+        </button>
       </div>
 
       {/* v4.0 MEJORA 4: Alumnos consolidados */}
@@ -2151,7 +2394,8 @@ export default function App() {
         {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
-        {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} />}
+        {activeView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} />}
+        {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
