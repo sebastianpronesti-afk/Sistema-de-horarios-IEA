@@ -683,7 +683,7 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
         <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
           <p className="text-blue-800 font-semibold mb-2">¿Cómo funciona el criterio?</p>
           <div className="text-sm text-blue-700 space-y-1">
-            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente). 1 docente hasta 50 alumnos, +1 cada 50 adicionales.</p>
+            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente). 1 docente hasta 100 alumnos, +1 cada 100 adicionales.</p>
             <p>• <strong>1 a 9 inscriptos</strong> → <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente en vivo). Se dicta pero no se "abre".</p>
             <p>• <strong>0 inscriptos</strong> → <strong>NO SE ABRE</strong> ni se dicta.</p>
             <p className="text-blue-600 mt-2 italic">"Abrir" = contratar docente con horas. "Asincrónica" = el alumno cursa sin docente presencial.</p>
