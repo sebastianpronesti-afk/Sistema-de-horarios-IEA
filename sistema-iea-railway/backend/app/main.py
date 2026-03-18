@@ -538,61 +538,71 @@ def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db
 @app.get("/api/catedras/necesitan-docente")
 def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
+    # Total inscriptos por cátedra
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    # Desglose por turno+sede para info
     q_txt = """SELECT catedra_id, COALESCE(turno,'Virtual') as turno, COALESCE(modalidad_alumno,'virtual') as mod,
         COALESCE(sede_referencia,'') as sede, COUNT(*) as cnt
         FROM inscripciones WHERE modalidad_alumno IS NOT NULL"""
     if cuatrimestre_id: q_txt += f" AND cuatrimestre_id = {cuatrimestre_id}"
     q_txt += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
-    try: rows = db.execute(text(q_txt)).fetchall()
-    except: return []
-    cat_desg = {}
-    for r in rows:
-        cat_id, turno, mod, sede, cnt = r
-        if cat_id not in cat_desg: cat_desg[cat_id] = []
-        es_cied = (mod == 'virtual')
-        if es_cied: sede_tipo = 'CIED'
-        else:
-            sn = (sede or '').lower()
-            if 'avellaneda' in sn: sede_tipo = 'Avellaneda'
-            elif 'caballito' in sn: sede_tipo = 'Caballito'
-            elif 'vicente' in sn: sede_tipo = 'Vicente López'
-            else: sede_tipo = 'CIED'
-        cat_desg[cat_id].append({'turno': turno, 'sede_tipo': sede_tipo, 'cant': cnt})
+    cat_combos = {}
+    try:
+        for r in db.execute(text(q_txt)).fetchall():
+            cid, turno, mod, sede, cnt = r
+            if cid not in cat_combos: cat_combos[cid] = {}
+            es_cied = (mod == 'virtual')
+            if es_cied: sede_tipo = 'CIED'
+            else:
+                sn = (sede or '').lower()
+                if 'avellaneda' in sn: sede_tipo = 'Avellaneda'
+                elif 'caballito' in sn: sede_tipo = 'Caballito'
+                elif 'vicente' in sn: sede_tipo = 'Vicente López'
+                else: sede_tipo = 'CIED'
+            key = f"{turno}|{sede_tipo}"
+            cat_combos[cid][key] = cat_combos[cid].get(key, 0) + cnt
+    except: pass
     result = []
-    for cat_id, items in cat_desg.items():
-        cat = db.query(Catedra).filter(Catedra.id == cat_id).first()
-        if not cat: continue
-        agrupado = {}
-        for it in items:
-            key = f"{it['turno']}|{it['sede_tipo']}"
-            agrupado[key] = agrupado.get(key, 0) + it['cant']
-        asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat_id)
+    all_cats = db.query(Catedra).all()
+    for cat in all_cats:
+        total = total_map.get(cat.id, 0)
+        if total < 10: continue
+        # Docentes necesarios vs asignados
+        docs_necesarios = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+        asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
         if cuatrimestre_id: asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
         asigs_list = asigs.all()
-        total_insc = sum(agrupado.values())
-        aperturas = []
-        for key, cnt in agrupado.items():
-            if cnt < 10: continue
+        docs_actuales = len([a for a in asigs_list if a.docente_id])
+        faltan = max(0, docs_necesarios - docs_actuales)
+        if faltan == 0: continue  # Cátedra cubierta, no la mostramos
+        # Build desglose for display
+        combos = cat_combos.get(cat.id, {})
+        aperturas_info = []
+        for key, cnt in sorted(combos.items(), key=lambda x: -x[1]):
             turno, sede_tipo = key.split('|')
-            aperturas.append({'turno': turno, 'sede': sede_tipo, 'inscriptos': cnt, 'tiene_docente': False})
-        if not aperturas: continue
-        # Verificar docentes existentes
-        docs_asig = [a for a in asigs_list if a.docente_id]
-        for ap in aperturas:
-            for a in docs_asig:
+            aperturas_info.append({'turno': turno, 'sede': sede_tipo, 'inscriptos': cnt})
+        # Sedes ya asignadas
+        sedes_asignadas = []
+        for a in asigs_list:
+            if a.docente_id:
                 m = a.modalidad or ''
-                s = a.sede.nombre if a.sede else ''
-                if ap['turno'] == 'Mañana' and 'tm' in m: ap['tiene_docente'] = True
-                elif ap['turno'] == 'Noche' and ('tn' in m or m == 'presencial'): ap['tiene_docente'] = True
-                elif ap['turno'] == 'Virtual' and 'virtual' in m: ap['tiene_docente'] = True
-        sin_doc = [a for a in aperturas if not a['tiene_docente']]
-        if not sin_doc and not any(a['tiene_docente'] for a in aperturas): continue
+                s = a.sede.nombre if a.sede else 'CIED'
+                turno_doc = 'Mañana' if 'tm' in m else ('Noche' if 'tn' in m or m == 'presencial' else 'Virtual')
+                sedes_asignadas.append({'turno': turno_doc, 'sede': s,
+                    'docente': f"{a.docente.nombre} {a.docente.apellido}" if a.docente else ''})
         result.append({
             "catedra_id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
-            "inscriptos_total": total_insc, "docentes_asignados": len(docs_asig),
-            "docentes_nombres": [f"{a.docente.nombre} {a.docente.apellido}" for a in docs_asig if a.docente],
-            "aperturas_necesarias": aperturas,  # ALL aperturas, both covered and uncovered
-            "tiene_sin_cubrir": len(sin_doc) > 0,
+            "inscriptos_total": total, "docs_necesarios": docs_necesarios,
+            "docentes_asignados": docs_actuales, "faltan": faltan,
+            "docentes_nombres": [f"{a.docente.nombre} {a.docente.apellido}" for a in asigs_list if a.docente],
+            "aperturas_info": aperturas_info,
+            "sedes_asignadas": sedes_asignadas,
         })
     result.sort(key=lambda x: sort_key_codigo(x['codigo']))
     return result
@@ -1566,20 +1576,18 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
 
     # ========== HOJA: Necesitan Docente (con sede+turno) ==========
     ws_nd = wb.create_sheet("Necesitan Docente")
-    ws_nd.append(["#","Código","Cátedra","Turno","Sede","Inscriptos","Cubierto","Docentes actuales"])
+    ws_nd.append(["#","Código","Cátedra","Inscriptos","Doc. necesarios","Doc. actuales","Faltan","Sedes asignadas","Desglose inscriptos"])
     for cell in ws_nd[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="DC2626"); cell.alignment = Alignment(horizontal="center")
     nd_data = get_catedras_necesitan_docente(cuatrimestre_id, db)
-    idx = 1
-    for nd in nd_data:
-        for ap in nd.get('aperturas_necesarias', []):
-            cubierto = "✅ Sí" if ap.get('tiene_docente') else "❌ No"
-            ws_nd.append([idx, nd['codigo'], nd['nombre'], ap['turno'], ap['sede'], ap['inscriptos'],
-                cubierto, ', '.join(nd['docentes_nombres']) or "Sin docente"])
-            if not ap.get('tiene_docente'):
-                for cell in ws_nd[ws_nd.max_row]: cell.fill = YELLOW
-            idx += 1
-    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',16),('F',12),('G',10),('H',36)]:
+    for i, nd in enumerate(nd_data, 1):
+        sedes_asig = ', '.join([f"{sa['turno']} {sa['sede']} ({sa['docente']})" for sa in nd.get('sedes_asignadas', [])]) or 'Sin docente'
+        desglose = ', '.join([f"{ap['turno']} {ap['sede']}: {ap['inscriptos']}" for ap in nd.get('aperturas_info', [])])
+        ws_nd.append([i, nd['codigo'], nd['nombre'], nd['inscriptos_total'],
+            nd['docs_necesarios'], nd['docentes_asignados'], nd['faltan'], sedes_asig, desglose])
+        if nd['faltan'] > 0:
+            for cell in ws_nd[ws_nd.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',12),('F',10),('G',8),('H',40),('I',50)]:
         ws_nd.column_dimensions[col].width = w
 
     # ========== v7.0: 3 nuevas solapas de criterio de apertura ==========
