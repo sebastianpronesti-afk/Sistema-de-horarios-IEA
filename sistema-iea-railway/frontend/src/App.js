@@ -756,8 +756,6 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
 
   if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
 
-  const totalAperturas = datos.reduce((s, d) => s + (d.aperturas_necesarias || []).length, 0);
-
   return (
     <div className="p-8">
       <div className="mb-6">
@@ -772,64 +770,63 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
       ) : (
         <>
           <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-            <p className="text-red-700 font-medium">{datos.length} materias necesitan atención — {totalAperturas} aperturas necesarias</p>
+            <p className="text-red-700 font-medium">{datos.length} cátedras necesitan más docentes</p>
+            <p className="text-red-600 text-sm">Total docentes faltantes: {datos.reduce((s, d) => s + (d.faltan || 0), 0)}</p>
           </div>
           <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
             <table className="w-full">
               <thead><tr className="bg-slate-50 border-b">
                 <th className="text-left p-3 text-sm font-semibold">Cátedra</th>
-                <th className="text-center p-3 text-sm font-semibold">Total inscr.</th>
+                <th className="text-center p-3 text-sm font-semibold w-16">Inscr.</th>
+                <th className="text-center p-3 text-sm font-semibold w-16">Neces.</th>
+                <th className="text-center p-3 text-sm font-semibold w-16">Actual</th>
+                <th className="text-center p-3 text-sm font-semibold w-16">Faltan</th>
                 <th className="text-left p-3 text-sm font-semibold">✅ Sedes ya asignadas</th>
-                <th className="text-left p-3 text-sm font-semibold">⚠️ Aperturas necesarias</th>
-                <th className="text-left p-3 text-sm font-semibold">Docentes actuales</th>
+                <th className="text-left p-3 text-sm font-semibold">⚠️ Desglose inscriptos</th>
               </tr></thead>
               <tbody>
-                {datos.map(d => {
-                  const cubiertos = (d.aperturas_necesarias || []).filter(a => a.tiene_docente);
-                  const sinCubrir = (d.aperturas_necesarias || []).filter(a => !a.tiene_docente);
-                  return (
+                {datos.map(d => (
                   <tr key={d.catedra_id} className="border-b hover:bg-slate-50">
                     <td className="p-3">
                       <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{d.codigo}</span>
                       <span className="font-medium">{d.nombre}</span>
                     </td>
                     <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos_total}</span></td>
+                    <td className="p-3 text-center"><span className="text-lg font-bold">{d.docs_necesarios}</span></td>
+                    <td className="p-3 text-center"><span className={`text-lg font-bold ${d.docentes_asignados > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{d.docentes_asignados}</span></td>
+                    <td className="p-3 text-center"><span className="px-3 py-1 bg-red-100 text-red-700 rounded-full font-bold">{d.faltan}</span></td>
                     <td className="p-3">
-                      {cubiertos.length > 0 ? (
+                      {(d.sedes_asignadas || []).length > 0 ? (
                         <div className="flex flex-wrap gap-1">
-                          {cubiertos.map((ap, i) => (
+                          {d.sedes_asignadas.map((sa, i) => (
                             <div key={i} className="px-2 py-1 bg-emerald-50 border border-emerald-300 rounded text-xs">
-                              <span className="font-bold text-emerald-700">✅ {ap.turno}</span>
+                              <span className="font-bold text-emerald-700">✅ {sa.turno}</span>
                               <span className={`ml-1 px-1 rounded text-white text-[10px] ${
-                                ap.sede === 'Avellaneda' ? 'bg-blue-500' : ap.sede === 'Caballito' ? 'bg-emerald-500' :
-                                ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
-                              }`}>{ap.sede}</span>
-                              <span className="ml-1 text-emerald-500 text-[10px]">({ap.inscriptos})</span>
+                                sa.sede.includes('Avellaneda') ? 'bg-blue-500' : sa.sede.includes('Caballito') ? 'bg-emerald-500' :
+                                sa.sede.includes('Vicente') ? 'bg-amber-500' : 'bg-purple-500'
+                              }`}>{sa.sede}</span>
+                              <span className="ml-1 text-emerald-600 text-[10px]">{sa.docente}</span>
                             </div>
                           ))}
                         </div>
-                      ) : <span className="text-slate-300 text-sm">—</span>}
+                      ) : <span className="text-red-400 text-sm italic">Sin docente</span>}
                     </td>
                     <td className="p-3">
-                      {sinCubrir.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {sinCubrir.map((ap, i) => (
-                            <div key={i} className="px-2 py-1 bg-yellow-100 border border-yellow-400 rounded text-xs">
-                              <span className="font-bold text-yellow-800">⚠️ {ap.turno}</span>
-                              <span className={`ml-1 px-1 rounded text-white text-[10px] ${
-                                ap.sede === 'Avellaneda' ? 'bg-blue-500' : ap.sede === 'Caballito' ? 'bg-emerald-500' :
-                                ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
-                              }`}>{ap.sede}</span>
-                              <span className="ml-1 text-yellow-700">({ap.inscriptos})</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : <span className="text-emerald-500 text-sm">✅ Todo cubierto</span>}
+                      <div className="flex flex-wrap gap-1">
+                        {(d.aperturas_info || []).map((ap, i) => (
+                          <div key={i} className="px-2 py-1 bg-slate-50 border rounded text-xs">
+                            <span className="font-medium">{ap.turno}</span>
+                            <span className={`ml-1 px-1 rounded text-white text-[10px] ${
+                              ap.sede === 'Avellaneda' ? 'bg-blue-500' : ap.sede === 'Caballito' ? 'bg-emerald-500' :
+                              ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
+                            }`}>{ap.sede}</span>
+                            <span className="ml-1 text-slate-500">({ap.inscriptos})</span>
+                          </div>
+                        ))}
+                      </div>
                     </td>
-                    <td className="p-3 text-sm">{d.docentes_nombres?.length > 0 ? d.docentes_nombres.join(', ') : <span className="text-red-500 italic">Sin docente</span>}</td>
                   </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
           </div>
