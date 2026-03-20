@@ -1616,6 +1616,86 @@ async def importar_docentes_cuit(file: UploadFile = File(...), db: Session = Dep
     wb.close()
     return {"nuevos": nuevos, "actualizados": existentes}
 
+# ===== v16.0: Auto-asignar cátedras de referencia desde asignaciones actuales =====
+@app.post("/api/docentes/auto-referencia")
+def auto_referencia_docentes(cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    docentes = db.query(Docente).all()
+    actualizados = 0
+    for d in docentes:
+        asigs = [a for a in (d.asignaciones or []) if a.cuatrimestre_id == cuatrimestre_id and a.catedra]
+        if not asigs: continue
+        codes = sorted(set(a.catedra.codigo for a in asigs))
+        # Merge with existing refs
+        existing_refs = set((getattr(d, 'catedras_referencia', '') or '').split(','))
+        existing_refs = {r.strip() for r in existing_refs if r.strip()}
+        all_refs = sorted(existing_refs | set(codes))
+        new_val = ', '.join(all_refs)
+        try:
+            db.execute(text("UPDATE docentes SET catedras_referencia = :val WHERE id = :id"),
+                {"val": new_val, "id": d.id})
+            actualizados += 1
+        except: pass
+    db.commit()
+    return {"actualizados": actualizados}
+
+# ===== v16.0: Importar cátedras de referencia desde Excel de designaciones =====
+@app.post("/api/importar/catedras-referencia")
+async def importar_catedras_referencia(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    # Build docente_name → set of codes
+    doc_cats = {}
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 6: continue
+            try: cn = int(float(str(vals[0] or '')))
+            except: continue
+            if cn <= 0: continue
+            cod = f'c.{cn}'
+            doc_raw = str(vals[5] or '').strip()
+            if not doc_raw or doc_raw.lower().startswith('ver '): continue
+            dc = doc_raw.upper().strip()
+            dc = DOCENTE_TYPO_MAP.get(dc, dc)
+            if dc not in doc_cats: doc_cats[dc] = set()
+            doc_cats[dc].add(cod)
+    wb.close()
+    # Match to docentes in DB
+    from sqlalchemy import text
+    all_docs = db.query(Docente).all()
+    doc_by_apellido = {}
+    for d in all_docs:
+        ap = (d.apellido or '').upper().strip()
+        if ap: doc_by_apellido[ap] = d
+        full = f"{(d.apellido or '')} {(d.nombre or '')}".upper().strip()
+        if full: doc_by_apellido[full] = d
+        full2 = f"{(d.nombre or '')} {(d.apellido or '')}".upper().strip()
+        if full2: doc_by_apellido[full2] = d
+    actualizados = 0; no_match = []
+    for doc_name, codes in doc_cats.items():
+        # Find docente
+        docente = doc_by_apellido.get(doc_name)
+        if not docente:
+            for key, d in doc_by_apellido.items():
+                if doc_name in key or key in doc_name:
+                    docente = d; break
+        if not docente:
+            no_match.append(doc_name); continue
+        # Merge with existing
+        existing = set((getattr(docente, 'catedras_referencia', '') or '').split(','))
+        existing = {r.strip() for r in existing if r.strip()}
+        merged = sorted(existing | codes)
+        try:
+            db.execute(text("UPDATE docentes SET catedras_referencia = :val WHERE id = :id"),
+                {"val": ', '.join(merged), "id": docente.id})
+            actualizados += 1
+        except: pass
+    db.commit()
+    return {"actualizados": actualizados, "no_encontrados": no_match}
+
 # ===== v15.0: Typo correction map for docente names =====
 DOCENTE_TYPO_MAP = {
     'CAPUCCHETI': 'CAPUCHETTI', 'DATRI': "D'ATRI", "D´ATRI": "D'ATRI",
@@ -1944,13 +2024,13 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
             candidatos = []
             for did, dinfo in doc_info.items():
                 # Check if docente has this cátedra as reference
-                if cod in dinfo["ref_codes"] or not dinfo["ref_codes"]:
+                if cod in dinfo["ref_codes"]:
+                    # Has free slots → valid candidate
                     if dinfo["free_slots"]:
-                        score = 10 if cod in dinfo["ref_codes"] else 1
-                        # Bonus if docente's sede matches
-                        if any(s[:4].upper() == sede_n[:4].upper() for s in dinfo["sedes"]): score += 5
+                        score = 10
                         candidatos.append({"id": did, "nombre": dinfo["nombre"], "score": score,
                             "free": len(dinfo["free_slots"]), "slots": list(dinfo["free_slots"])[:3]})
+                # If no ref_codes at all, NOT a candidate (we only suggest docentes who can teach this)
             candidatos.sort(key=lambda x: -x["score"])
             if candidatos:
                 estado = "sugerido"  # blue
