@@ -1549,6 +1549,118 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
     wb.close()
     return {"importados": total, "hojas": wb.sheetnames}
 
+# ===== v15.0: Importar horarios masivo (día/hora/sede/docente) =====
+@app.post("/api/importar/horarios-masivo")
+async def importar_horarios_masivo(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    # Pre-load catedras by code
+    all_cats = {c.codigo: c for c in db.query(Catedra).all()}
+    # Pre-load docentes - build lookup by apellido (uppercased, trimmed)
+    all_docs = db.query(Docente).all()
+    doc_by_apellido = {}
+    for d in all_docs:
+        ap = (d.apellido or '').upper().strip()
+        if ap: doc_by_apellido[ap] = d
+        # Also full name
+        full = f"{(d.apellido or '')} {(d.nombre or '')}".upper().strip()
+        if full: doc_by_apellido[full] = d
+        # Also "NOMBRE APELLIDO"
+        full2 = f"{(d.nombre or '')} {(d.apellido or '')}".upper().strip()
+        if full2: doc_by_apellido[full2] = d
+    # Pre-load sedes
+    all_sedes = {s.nombre: s for s in db.query(Sede).all()}
+    total = 0; skipped = 0; no_cat = []; no_doc = set(); creados = 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 5: continue
+            a_raw = str(vals[0] or '').strip()
+            try: cod_num = int(float(a_raw))
+            except: continue
+            if cod_num <= 0: continue
+            codigo = f'c.{cod_num}'
+            materia = str(vals[1] or '').strip()
+            dia_raw = str(vals[2] or '').strip()
+            hora_raw = str(vals[3] or '').strip()
+            sede_raw = str(vals[4] or '').strip()
+            doc_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
+            # Skip rows without dia or hora
+            if not dia_raw or not hora_raw: continue
+            # Normalize dia
+            dia_map = {'LUNES':'Lunes','MARTES':'Martes','MIERCOLES':'Miércoles','MIÉRCOLES':'Miércoles',
+                'JUEVES':'Jueves','VIERNES':'Viernes','SABADO':'Sábado','SÁBADO':'Sábado'}
+            dia = dia_map.get(dia_raw.upper().strip(), dia_raw.strip().title())
+            # Normalize hora (handle "09.30 HS" → "09:30")
+            hora = hora_raw.replace('.', ':').replace(' HS', '').replace(' hs', '').replace('HS', '').strip()
+            if hora and ':' in hora:
+                parts = hora.split(':')
+                hora = f"{int(parts[0]):02d}:{parts[1].strip()[:2]}"
+            # Find catedra
+            cat = all_cats.get(codigo)
+            if not cat:
+                no_cat.append(f"{codigo} {materia}")
+                continue
+            # Normalize sede
+            sede_nombre = normalizar_sede(sede_raw)
+            sede_obj = None
+            for sn, so in all_sedes.items():
+                if sn.lower().replace(' ', '') == sede_nombre.lower().replace(' ', ''):
+                    sede_obj = so; break
+            if not sede_obj:
+                for sn, so in all_sedes.items():
+                    if sede_nombre.lower()[:4] in sn.lower():
+                        sede_obj = so; break
+            # Find docente
+            docente_obj = None
+            if doc_raw and not doc_raw.lower().startswith('ver '):
+                # Clean doc name
+                doc_clean = doc_raw.upper().strip()
+                # Remove "ver" prefix notes
+                if doc_clean.startswith('VER '): doc_clean = doc_clean[4:].strip()
+                docente_obj = doc_by_apellido.get(doc_clean)
+                if not docente_obj:
+                    # Try partial match
+                    for key, d in doc_by_apellido.items():
+                        if doc_clean in key or key in doc_clean:
+                            docente_obj = d; break
+                if not docente_obj:
+                    no_doc.add(doc_raw)
+                    skipped += 1
+                    continue
+            # Determine modalidad from sede
+            modalidad = 'remoto' if sede_nombre in ['Online - Interior', 'ONLINE'] else 'presencial_virtual'
+            # Check if assignment already exists
+            existing = db.query(Asignacion).filter(
+                Asignacion.catedra_id == cat.id,
+                Asignacion.dia == dia,
+                Asignacion.hora_inicio == hora,
+                Asignacion.cuatrimestre_id == cuatrimestre_id
+            ).first()
+            if existing:
+                # Update
+                if docente_obj: existing.docente_id = docente_obj.id
+                if sede_obj: existing.sede_id = sede_obj.id
+            else:
+                asig = Asignacion(
+                    catedra_id=cat.id, docente_id=docente_obj.id if docente_obj else None,
+                    cuatrimestre_id=cuatrimestre_id, dia=dia, hora_inicio=hora,
+                    sede_id=sede_obj.id if sede_obj else None, modalidad=modalidad)
+                db.add(asig)
+                creados += 1
+            total += 1
+    db.commit()
+    wb.close()
+    return {
+        "asignaciones_procesadas": total,
+        "asignaciones_creadas": creados,
+        "salteadas_sin_docente": skipped,
+        "catedras_no_encontradas": list(set(no_cat))[:20],
+        "docentes_no_encontrados": sorted(list(no_doc)),
+    }
+
 # ===== v13.0: Sugerencias de horarios cruzando plan + inscriptos =====
 @app.get("/api/plan-carrera/sugerencias")
 def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
