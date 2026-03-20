@@ -1706,21 +1706,26 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
     nuevos_docs = 0
     doc_created_map = {}
     for doc_name in doc_to_create:
-        # Create with whatever name info we have
         parts = doc_name.strip().split(' ', 1)
         if len(parts) == 2:
-            # Could be "NOMBRE APELLIDO" or "APELLIDO NOMBRE"
             apellido = parts[0].strip().title()
             nombre = parts[1].strip().title()
         else:
             apellido = parts[0].strip().title()
             nombre = ''
-        new_doc = Docente(nombre=nombre, apellido=apellido, dni='')
+        # Use placeholder DNI to avoid unique constraint
+        placeholder_dni = f"PEND-{doc_name.upper().replace(' ','')[:15]}"
+        new_doc = Docente(nombre=nombre, apellido=apellido, dni=placeholder_dni)
         db.add(new_doc); db.flush()
         doc_created_map[doc_name.upper()] = new_doc
         nuevos_docs += 1
     # 2) Delete existing asignaciones for this cuatrimestre
-    deleted = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
+    try:
+        deleted = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
+        db.flush()
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Error borrando asignaciones: {str(e)}"}
     # 3) Create new asignaciones
     creados = 0
     for r in results:
@@ -1734,7 +1739,11 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
             sede_id=r['sede_id'], modalidad=r['modalidad'])
         db.add(asig)
         creados += 1
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Error guardando: {str(e)[:200]}"}
     return {
         "asignaciones_borradas": deleted,
         "asignaciones_creadas": creados,
