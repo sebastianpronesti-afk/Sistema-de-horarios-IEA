@@ -2133,7 +2133,9 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
                 try {
                   const form = new FormData(); form.append('file', horariosPreview.file);
                   const res = await fetch(`${API_URL}/api/importar/horarios-aplicar?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
+                  if (!res.ok) { const txt = await res.text(); throw new Error(txt); }
                   const data = await res.json();
+                  if (data.error) { alert('⚠️ ' + data.error); setUploading(null); return; }
                   setResultado({ ok: true, data, label: 'Importar Horarios' });
                   setHorariosPreview(null); recargar();
                 } catch (e) { alert('Error: ' + e.message); }
