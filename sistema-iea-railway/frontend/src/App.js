@@ -62,9 +62,11 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
+    { id: 'docentes_dia', icon: '📋', label: 'Docentes x Día' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
-    { id: 'solapamientos', icon: '⚠️', label: 'Solapamientos', badge: solapamientosCount },
+    { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
+    { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras' },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
@@ -73,7 +75,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v14.0</p>
+        <p className="text-slate-500 text-sm">Sistema v15.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -1010,7 +1012,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             {docentesFiltrados.map(d => {
               const tipoCfg = TIPO_DOCENTE_CONFIG[d.tipo_modalidad] || TIPO_DOCENTE_CONFIG.SIN_ASIGNACIONES;
               return (
-                <tr key={d.id} className="border-b hover:bg-slate-50">
+                <tr key={d.id} className={`border-b hover:bg-slate-50 ${(d.horas_asignadas > 0 || d.asignaciones?.length > 0) ? 'bg-emerald-50/50' : ''}`}>
                   <td className="p-4">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">{(d.nombre||'?')[0]}{(d.apellido||'?')[0]}</div>
@@ -1027,22 +1029,22 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                     <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
                   </td>
                   <td className="p-2 text-center">
-                    <DocFieldInput docente={d} campo="horas_asignadas" />
+                    <DocFieldInput docId={d.id} campo="horas_asignadas" valorInicial={d.horas_asignadas||0} />
                   </td>
                   <td className="p-2 text-center">
-                    <DocFieldInput docente={d} campo="materias_av" />
+                    <DocFieldInput docId={d.id} campo="materias_av" valorInicial={d.materias_av||0} />
                   </td>
                   <td className="p-2 text-center">
-                    <DocFieldInput docente={d} campo="materias_cab" />
+                    <DocFieldInput docId={d.id} campo="materias_cab" valorInicial={d.materias_cab||0} />
                   </td>
                   <td className="p-2 text-center">
-                    <DocFieldInput docente={d} campo="materias_vl" />
+                    <DocFieldInput docId={d.id} campo="materias_vl" valorInicial={d.materias_vl||0} />
                   </td>
                   <td className="p-2 text-center">
-                    <DocFieldInput docente={d} campo="sociedad_cfpea" tipo="checkbox" />
+                    <DocFieldInput docId={d.id} campo="sociedad_cfpea" valorInicial={d.sociedad_cfpea||false} tipo="checkbox" />
                   </td>
                   <td className="p-2 text-center">
-                    <DocFieldInput docente={d} campo="sociedad_isftea" tipo="checkbox" />
+                    <DocFieldInput docId={d.id} campo="sociedad_isftea" valorInicial={d.sociedad_isftea||false} tipo="checkbox" />
                   </td>
                   <td className="p-1">
                     <NotasInput item={d} endpoint="docentes" />
@@ -1139,6 +1141,79 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
 }
 
 // ==================== CALENDARIO VIEW ====================
+// ==================== v15.0: DOCENTES POR DÍA Y TURNO ====================
+function DocentesDiaView({ catedras }) {
+  const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).filter(a => a.dia && a.dia !== 'Pend.' && a.hora_inicio && a.hora_inicio !== 'Pend.').map(a => ({
+    ...a, cat_codigo: c.codigo, cat_nombre: c.nombre
+  }))), [catedras]);
+
+  const DIAS_ORD = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+  
+  const agrupado = useMemo(() => {
+    const result = {};
+    for (const dia of DIAS_ORD) {
+      const del_dia = allAsig.filter(a => a.dia === dia);
+      const tm = del_dia.filter(a => a.hora_inicio < '15:00').sort((a,b) => a.hora_inicio.localeCompare(b.hora_inicio));
+      const tn = del_dia.filter(a => a.hora_inicio >= '15:00').sort((a,b) => a.hora_inicio.localeCompare(b.hora_inicio));
+      result[dia] = { tm, tn };
+    }
+    return result;
+  }, [allAsig]);
+
+  const renderTabla = (asigs, turnoLabel) => {
+    if (asigs.length === 0) return <p className="text-slate-300 text-sm p-3 text-center">Sin asignaciones</p>;
+    return (
+      <table className="w-full text-xs">
+        <thead><tr className="bg-slate-100">
+          <th className="p-2 text-left w-16">Hora</th>
+          <th className="p-2 text-left">Cátedra</th>
+          <th className="p-2 text-left">Docente</th>
+          <th className="p-2 text-left">Sede</th>
+        </tr></thead>
+        <tbody>
+          {asigs.map((a, i) => (
+            <tr key={i} className={`border-b ${!a.docente ? 'bg-yellow-50' : ''}`}>
+              <td className="p-2 font-bold">{a.hora_inicio}</td>
+              <td className="p-2"><span className="font-mono bg-slate-800 text-white px-1 rounded text-[9px] mr-1">{a.cat_codigo}</span>{a.cat_nombre}</td>
+              <td className="p-2">{a.docente ? <span className="text-emerald-600 font-medium">{a.docente.nombre} {a.docente.apellido}</span> : <span className="text-red-400 italic">Pendiente</span>}</td>
+              <td className="p-2">{a.sede_nombre || 'Remoto'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  };
+
+  return (
+    <div className="p-8">
+      <h2 className="text-2xl font-bold text-slate-800 mb-2">📋 Docentes por Día y Turno</h2>
+      <p className="text-slate-500 text-sm mb-6">Listado de todas las cátedras y docentes ordenados por día, empezando por TM y luego TN.</p>
+      <div className="space-y-6">
+        {DIAS_ORD.map(dia => {
+          const { tm, tn } = agrupado[dia] || { tm: [], tn: [] };
+          if (tm.length === 0 && tn.length === 0) return null;
+          return (
+            <div key={dia}>
+              <h3 className="text-lg font-bold text-slate-700 mb-2">{dia.toUpperCase()}</h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-white rounded-xl border overflow-hidden">
+                  <div className="bg-yellow-500 text-white text-center py-2 font-bold text-sm">☀️ TURNO MAÑANA ({tm.length})</div>
+                  {renderTabla(tm, 'TM')}
+                </div>
+                <div className="bg-white rounded-xl border overflow-hidden">
+                  <div className="bg-indigo-600 text-white text-center py-2 font-bold text-sm">🌙 TURNO NOCHE ({tn.length})</div>
+                  {renderTabla(tn, 'TN')}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ==================== CALENDARIO ====================
 function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
   const [filtroSede, setFiltroSede] = useState('');
   const [filtroDocente, setFiltroDocente] = useState('');
@@ -1374,6 +1449,8 @@ function PlanCarreraView({ cuatrimestre }) {
 
   const sedes = data?.sedes || {};
   const sedeKeys = Object.keys(sedes);
+  // Default to first sede if none selected
+  useEffect(() => { if (sedeKeys.length > 0 && !sedeActiva) setSedeActiva(sedeKeys[0]); }, [sedeKeys.length]);
 
   return (
     <div className="p-8">
@@ -1397,7 +1474,6 @@ function PlanCarreraView({ cuatrimestre }) {
       ) : (
         <>
           <div className="flex gap-2 mb-6 flex-wrap">
-            <button onClick={() => setSedeActiva('')} className={`px-4 py-2 rounded-lg text-sm font-medium ${!sedeActiva ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>Todas ({data?.total_registros || 0})</button>
             {sedeKeys.map(s => (
               <button key={s} onClick={() => setSedeActiva(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
             ))}
@@ -1475,8 +1551,8 @@ function PlanCarreraView({ cuatrimestre }) {
 }
 
 // ==================== SOLAPAMIENTOS ====================
-function SolapamientosView({ solapamientos, cuatrimestre }) {
-  const [tab, setTab] = useState('horarios');
+function SolapamientosView({ solapamientos, cuatrimestre, tab: initialTab = 'horarios' }) {
+  const [tab, setTab] = useState(initialTab);
   const [carreraConf, setCarreraConf] = useState(null);
   const [loadingCarr, setLoadingCarr] = useState(false);
 
@@ -1980,6 +2056,17 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         </button>
       </div>
 
+      <div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
+        <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
+        <p className="text-sm text-slate-500 mb-1">BCE: alumnos del secundario acelerado. Se asignan como <strong>Virtual</strong> a la sede del curso.</p>
+        <p className="text-sm text-slate-500 mb-3">BEA: alumnos del bachillerato. Todos se asignan a <strong>Caballito Virtual</strong>.</p>
+        <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`)}
+          disabled={uploading === 'BCE/BEA'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-orange-500 text-white hover:bg-orange-600">
+          {uploading === 'BCE/BEA' ? '⏳...' : '📤 Subir Excel BCE/BEA'}
+        </button>
+      </div>
+
       {/* v4.0 MEJORA 12: Replicar cuatrimestre */}
       <h3 className="font-semibold text-slate-600 mb-3">🔄 Replicar cuatrimestre anterior</h3>
       <div className="bg-white rounded-xl border p-6 mb-6 border-violet-200">
@@ -2098,7 +2185,6 @@ function NotasInput({ item, endpoint }) {
   const [val, setVal] = useState(item.notas || '');
   const [saved, setSaved] = useState(true);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { setVal(item.notas || ''); setSaved(true); }, [item.notas]);
   const guardar = async () => {
     setSaving(true);
     try {
@@ -2120,16 +2206,13 @@ function NotasInput({ item, endpoint }) {
 // ==================== v12.0: DECISION INPUT MULTI-SELECT ====================
 function DecisionInput({ catedra }) {
   const opciones = ['TM Avellaneda','TN Avellaneda','TM Caballito','TN Caballito','TM Vicente López','TN Vicente López','CIED Virtual','Asincrónica','No abrir'];
+  const initRef = useRef(false);
   const [selected, setSelected] = useState(() => {
     const d = catedra.decision_apertura || '';
     return d ? d.split(',').map(s => s.trim()).filter(Boolean) : [];
   });
   const [open, setOpen] = useState(false);
-  
-  useEffect(() => {
-    const d = catedra.decision_apertura || '';
-    setSelected(d ? d.split(',').map(s => s.trim()).filter(Boolean) : []);
-  }, [catedra.decision_apertura]);
+  // Do NOT re-sync from parent — only initialize once
   
   const toggle = async (op) => {
     let newSel;
@@ -2393,9 +2476,11 @@ export default function App() {
         {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
         {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {activeView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} />}
-        {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} />}
+        {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
+        {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
