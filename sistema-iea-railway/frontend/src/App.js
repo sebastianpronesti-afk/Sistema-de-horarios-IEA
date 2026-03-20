@@ -68,6 +68,8 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
     { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
+    { id: 'control_insc', icon: '✅', label: 'Control Inscripciones' },
+    { id: 'control_insc', icon: '🔍', label: 'Control Inscripciones' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
     { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
@@ -1212,6 +1214,135 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
 }
 
 // ==================== CALENDARIO VIEW ====================
+// ==================== v16.0: CONTROL DE INSCRIPCIONES ====================
+function ControlInscripcionesView({ cuatrimestre }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [filtro, setFiltro] = useState('todos');
+  const [buscar, setBuscar] = useState('');
+
+  const analizar = async () => {
+    const input = document.createElement('input'); input.type = 'file'; input.accept = '.xlsx';
+    input.onchange = async (ev) => {
+      const file = ev.target.files?.[0]; if (!file) return;
+      setLoading(true);
+      try {
+        const form = new FormData(); form.append('file', file);
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '1';
+        const res = await fetch(`${API_URL}/api/control-inscripciones?cuatrimestre_id=${cuatId}`, { method: 'POST', body: form });
+        setData(await res.json());
+      } catch (e) { alert('Error: ' + e.message); }
+      setLoading(false);
+    }; input.click();
+  };
+
+  const ESTADO_CFG = {
+    'CORRECTO': { bg: 'bg-emerald-50', badge: 'bg-emerald-500', label: '✅ Correcto', icon: '✅' },
+    'MATERIAS_EXTRA': { bg: 'bg-blue-50', badge: 'bg-blue-500', label: '➕ Materias extra', icon: '➕' },
+    'FALTAN_MATERIAS': { bg: 'bg-amber-50', badge: 'bg-amber-500', label: '⚠️ Faltan materias', icon: '⚠️' },
+    'FALTAN_Y_SOBRAN': { bg: 'bg-red-50', badge: 'bg-red-500', label: '❌ Faltan y sobran', icon: '❌' },
+    'SIN_INSCRIPCIONES': { bg: 'bg-red-50', badge: 'bg-red-700', label: '🚫 Sin inscripciones', icon: '🚫' },
+    'SIN_PLAN': { bg: 'bg-slate-50', badge: 'bg-slate-400', label: '— Sin plan', icon: '—' },
+  };
+
+  const filtered = (data?.results || []).filter(r => {
+    if (filtro === 'ok') return r.estado === 'CORRECTO';
+    if (filtro === 'faltan') return r.estado === 'FALTAN_MATERIAS' || r.estado === 'FALTAN_Y_SOBRAN';
+    if (filtro === 'sobran') return r.estado === 'MATERIAS_EXTRA' || r.estado === 'FALTAN_Y_SOBRAN';
+    if (filtro === 'sin_insc') return r.estado === 'SIN_INSCRIPCIONES';
+    if (filtro === 'sin_plan') return r.estado === 'SIN_PLAN';
+    if (filtro === 'problemas') return r.estado !== 'CORRECTO' && r.estado !== 'SIN_PLAN';
+    return true;
+  }).filter(r => !buscar || r.nombre.toLowerCase().includes(buscar.toLowerCase()) || r.dni.includes(buscar));
+
+  const st = data?.stats || {};
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">✅ Control de Inscripciones a Materias</h2>
+        <p className="text-slate-500 text-sm mt-1">Subí el Excel de control de alumnos. El sistema cruza: carrera + fecha de inicio → año de cursada → plan de carrera → cátedras que debe cursar → vs. cátedras realmente inscriptas.</p>
+      </div>
+
+      {!data ? (
+        <div className="text-center py-16">
+          <p className="text-6xl mb-4">📋</p>
+          <p className="text-slate-600 text-lg mb-4">Subí el archivo "Control de alumnos inscriptos a materias" para analizar</p>
+          <button onClick={analizar} disabled={loading} className="px-8 py-3 bg-blue-600 text-white rounded-xl font-bold text-lg hover:bg-blue-700 disabled:opacity-50">
+            {loading ? '⏳ Analizando...' : '📤 Subir Excel de control'}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-6 gap-3 mb-6">
+            <div className="bg-slate-800 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.total||0}</p><p className="text-[10px] opacity-70">Total</p></div>
+            <div className="bg-emerald-500 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.ok||0}</p><p className="text-[10px] opacity-80">✅ Correctos</p></div>
+            <div className="bg-amber-500 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.faltan||0}</p><p className="text-[10px] opacity-80">⚠️ Faltan</p></div>
+            <div className="bg-blue-500 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.sobran||0}</p><p className="text-[10px] opacity-80">➕ Extra</p></div>
+            <div className="bg-red-600 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.sin_insc||0}</p><p className="text-[10px] opacity-80">🚫 Sin inscr.</p></div>
+            <div className="bg-slate-400 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.sin_plan||0}</p><p className="text-[10px] opacity-80">— Sin plan</p></div>
+          </div>
+
+          <div className="flex gap-2 mb-4 flex-wrap items-center">
+            {[['todos','Todos'],['problemas','⚠️ Con problemas'],['ok','✅ Correctos'],['faltan','Faltan materias'],['sobran','Materias extra'],['sin_insc','🚫 Sin inscripciones'],['sin_plan','Sin plan']].map(([k,l]) => (
+              <button key={k} onClick={() => setFiltro(k)} className={`px-3 py-1.5 rounded-lg text-xs ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
+            ))}
+            <div className="flex-1" />
+            <input type="text" placeholder="🔍 Buscar por nombre o DNI..." value={buscar} onChange={e => setBuscar(e.target.value)}
+              className="px-3 py-1.5 border rounded-lg text-sm w-48" />
+            <button onClick={analizar} className="px-3 py-1.5 bg-slate-200 rounded-lg text-xs hover:bg-slate-300">📤 Nuevo análisis</button>
+          </div>
+
+          <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+            <table className="w-full text-[11px]">
+              <thead><tr className="bg-slate-800 text-white">
+                <th className="p-2 text-left">Alumno</th>
+                <th className="p-2 text-left">DNI</th>
+                <th className="p-2 text-left">Carrera</th>
+                <th className="p-2 text-center">Año</th>
+                <th className="p-2 text-center">Estado</th>
+                <th className="p-2 text-left">Debe cursar</th>
+                <th className="p-2 text-left">Inscripto a</th>
+                <th className="p-2 text-left">Faltantes</th>
+                <th className="p-2 text-left">Sobrantes</th>
+              </tr></thead>
+              <tbody>
+                {filtered.slice(0, 200).map((r, i) => {
+                  const cfg = ESTADO_CFG[r.estado] || ESTADO_CFG['SIN_PLAN'];
+                  return (
+                    <tr key={i} className={`border-b ${cfg.bg} hover:bg-slate-100`}>
+                      <td className="p-2 font-medium">{r.nombre}</td>
+                      <td className="p-2 font-mono text-[10px]">{r.dni}</td>
+                      <td className="p-2 text-[10px]">{r.curso}{r.is_doble && <span className="ml-1 bg-violet-100 text-violet-700 px-1 rounded text-[8px]">DOBLE</span>}</td>
+                      <td className="p-2 text-center font-bold">{r.anno}</td>
+                      <td className="p-2 text-center"><span className={`px-1.5 py-0.5 rounded text-white text-[9px] font-bold ${cfg.badge}`}>{cfg.label}</span></td>
+                      <td className="p-2 text-[9px]">
+                        {r.debe_cursar?.slice(0,4).map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
+                        {r.debe_cursar?.length > 4 && <div className="text-slate-400">+{r.debe_cursar.length-4} más</div>}
+                      </td>
+                      <td className="p-2 text-[9px]">
+                        {r.inscripto_a?.slice(0,4).map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
+                        {r.inscripto_a?.length > 4 && <div className="text-slate-400">+{r.inscripto_a.length-4} más</div>}
+                      </td>
+                      <td className="p-2 text-[9px]">
+                        {r.faltantes?.map((c,j) => <div key={j} className="text-red-600 font-medium">{c}</div>)}
+                      </td>
+                      <td className="p-2 text-[9px]">
+                        {r.sobrantes?.map((c,j) => <div key={j} className="text-blue-600">{c}</div>)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-sm text-slate-500 mt-3 text-center">Mostrando {Math.min(filtered.length, 200)} de {filtered.length} alumnos{data.total_results > 500 ? ` (de ${data.total_results} totales)` : ''}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ==================== v16.0: SUGERENCIAS DE ARMADO DE HORARIOS ====================
 function SugerenciasArmadoView({ cuatrimestre }) {
   const [data, setData] = useState(null);
@@ -2879,6 +3010,8 @@ export default function App() {
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
+        {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
       </main>
