@@ -1460,6 +1460,8 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
         carrera_act = ''
         current_anno = ''
         pending_cats = []  # cats before first año label
+        expect_reset = False  # set after Practica Formativa
+        edi_counter = {}  # (sede, carrera, anno) → count
         def flush_pending(anno_to_use):
             nonlocal pending_cats
             for pc in pending_cats:
@@ -1479,7 +1481,16 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
                     carrera_act = txt.strip()
                     current_anno = ''
             c_up = c.upper()
+            e_up = e.upper()
             if 'INSCRIPCION' in c_up or 'INSCRIPCIÓN' in c_up:
+                current_anno = ''
+                continue
+            # "Practica Formativa" without code: set flag to reset AFTER next Profesionalizante (if any)
+            if 'PRACTICA FORMATIVA' in e_up:
+                expect_reset = True
+                continue
+            # "CARRERA / AÑO / CODIGO" header row = start of new carrera block
+            if d.upper().strip() == 'CODIGO' and e_up.strip() == 'MATERIA':
                 current_anno = ''
                 continue
             if ('1ER' in c_up or '2DO' in c_up or '3ER' in c_up or '4TO' in c_up) and 'AÑO' in c_up:
@@ -1496,11 +1507,27 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
                 cod_num = int(float(d))
                 if cod_num > 0 and e and carrera_act:
                     cod = f'c.{cod_num}'
+                    e_up_check = e.upper()
+                    is_prof = 'PROFESIONALIZANTE' in e_up_check
+                    # If we saw "Practica Formativa" and this is NOT a Profesionalizante → reset year first
+                    if expect_reset and not is_prof and current_anno:
+                        current_anno = ''
+                        expect_reset = False
                     if current_anno:
                         all_records.append((sede, carrera_act, current_anno, cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
+                        # Práctica Profesionalizante = last item of a year block → reset
+                        if is_prof:
+                            current_anno = ''
+                            expect_reset = False
                     else:
                         pending_cats.append((cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
-            except: pass
+            except:
+                # EDI detection: no code, but "EDI" in column E
+                if e.strip().upper() == 'EDI' and carrera_act and current_anno:
+                    edi_key = (sede, carrera_act)  # per carrera, NOT per anno
+                    edi_count = edi_counter.get(edi_key, 0) + 1
+                    edi_counter[edi_key] = edi_count
+                    all_records.append((sede, carrera_act, current_anno, f'EDI-{edi_count}', f'EDI {edi_count} (Espacio de Definición Institucional)', '', '', '', ''))
         flush_pending(current_anno or 'AÑO')
     # PHASE 2: Deduplicate — one code per carrera per sede
     seen = set()
