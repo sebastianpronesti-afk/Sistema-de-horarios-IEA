@@ -1,3041 +1,2942 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, or_
+from openpyxl import load_workbook
+from typing import List, Optional
+import io
+import re
 
-const API_URL = '';
+from app.database import engine, get_db, Base
+from app.models.models import (
+    Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
+    Alumno, Curso, CatedraCurso, Asignacion, Inscripcion
+)
 
-// ===== v4.0 MEJORA 10: Colores corregidos por sede =====
-const SEDE_COLORS = {
-  'Online - Interior': 'bg-purple-500', 'Online - Exterior': 'bg-violet-500',
-  'Online - Cursos': 'bg-fuchsia-500', 'Online': 'bg-purple-400',
-  'Avellaneda': 'bg-blue-500',
-  'Caballito': 'bg-emerald-500',
-  'Vicente Lopez': 'bg-amber-500', 'Vicente López': 'bg-amber-500',
-  'Liniers': 'bg-pink-500', 'Monte Grande': 'bg-cyan-500',
-  'La Plata': 'bg-indigo-500', 'Pilar': 'bg-rose-500',
-  'BCE': 'bg-lime-500', 'BEA': 'bg-teal-500', 'Remoto': 'bg-gray-500',
-};
+Base.metadata.create_all(bind=engine)
 
-const MODALIDAD_CONFIG = {
-  'virtual_tm': { label: 'Virtual TM', icon: '🖥️☀️', color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
-  'virtual_tn': { label: 'Virtual TN', icon: '🖥️🌙', color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-200' },
-  'presencial': { label: 'Presencial', icon: '🏫', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-200' },
-  'asincronica': { label: 'Asincrónica', icon: '🎥', color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
-};
+app = FastAPI(title="Sistema Horarios IEA", version="16.0")
 
-const TIPO_DOCENTE_CONFIG = {
-  'PRESENCIAL_VIRTUAL': { label: 'Presencial + Virtual', icon: '🏫🖥️', color: 'text-emerald-600', bg: 'bg-emerald-100' },
-  'SEDE_VIRTUAL': { label: 'Sede Virtual', icon: '🖥️📍', color: 'text-blue-600', bg: 'bg-blue-100' },
-  'REMOTO': { label: 'Remoto', icon: '🏠', color: 'text-gray-600', bg: 'bg-gray-100' },
-  'SIN_ASIGNACIONES': { label: 'Sin asignar', icon: '⏳', color: 'text-orange-600', bg: 'bg-orange-100' },
-};
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00'];
-const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
+# ==================== HELPERS ====================
 
-function sortByCodigo(a, b) {
-  const na = parseInt((a.codigo || '').replace(/[^0-9]/g, '')) || 9999;
-  const nb = parseInt((b.codigo || '').replace(/[^0-9]/g, '')) || 9999;
-  return na - nb;
+def sort_key_codigo(codigo):
+    m = re.match(r'c\.(\d+)', codigo or '', re.IGNORECASE)
+    return int(m.group(1)) if m else 9999
+
+SEDES_NORMALIZADAS = {
+    'avellaneda': 'Avellaneda',
+    'caballito': 'Caballito',
+    'vicente lopez': 'Vicente López',
+    'vicente lópez': 'Vicente López',
+    'online interior': 'Online - Interior',
+    'online - interior': 'Online - Interior',
+    'online- interior': 'Online - Interior',
+    'online': 'Online - Interior',
+    'liniers': 'Liniers',
 }
 
-async function apiFetch(endpoint, options = {}) {
-  const res = await fetch(`${API_URL}${endpoint}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Error de servidor' }));
-    throw new Error(err.detail || 'Error');
-  }
-  return res.json();
-}
+def normalizar_sede(texto):
+    if not texto:
+        return None
+    t = texto.strip().lower()
+    return SEDES_NORMALIZADAS.get(t, texto.strip())
 
-// ==================== SIDEBAR ====================
-function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount, solapCarrerasCount }) {
-  const menuItems = [
-    { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
-    { id: 'catedras', icon: '📚', label: 'Cátedras' },
-    { id: 'cursos', icon: '🎓', label: 'Cursos' },
-    { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
-    { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
-    { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
-    { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
-    { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
-    { id: 'docentes_dia', icon: '📋', label: 'Horarios x Día' },
-    { id: 'calendario', icon: '📅', label: 'Calendario' },
-    { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
-    { id: 'sugerencias', icon: '🤖', label: 'Sug. Horarios x Carrera' },
-    { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
-    { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
-    { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
-    { id: 'control_insc', icon: '✅', label: 'Control Inscripciones' },
-    { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
-    { id: 'exportar', icon: '📤', label: 'Exportar' },
-    { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
-  ];
-  return (
-    <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
-      <div className="mb-6 px-2">
-        <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v16.0</p>
-      </div>
-      {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
-      <div className="mb-6 px-2">
-        <label className="text-xs text-slate-400 block mb-1">Ver cuatrimestre</label>
-        <select className="w-full bg-slate-800 text-white rounded px-3 py-2 text-sm border border-slate-700"
-          value={cuatrimestre} onChange={e => setCuatrimestre(e.target.value)}>
-          <option value="todos">Todos los cuatrimestres</option>
-          {(cuatrimestres || []).map(c => (
-            <option key={c.id} value={c.id}>{c.nombre}</option>
-          ))}
-        </select>
-      </div>
-      <nav className="flex-1 space-y-1">
-        {menuItems.map(item => (
-          <button key={item.id} onClick={() => setActiveView(item.id)}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all ${
-              activeView === item.id ? 'bg-amber-500 text-slate-900 font-medium'
-              : item.highlight ? 'text-amber-400 hover:bg-slate-800' : 'text-slate-400 hover:bg-slate-800'}`}>
-            <span className="text-lg">{item.icon}</span>
-            <span className="flex-1">{item.label}</span>
-            {item.badge > 0 && <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-500 text-white">{item.badge}</span>}
-          </button>
-        ))}
-      </nav>
-      <div className="mt-4 p-3 bg-slate-800/50 rounded-lg">
-        <p className="text-xs text-slate-400 mb-2">Sedes operativas</p>
-        {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
-          <div key={s.id} className="flex items-center gap-2 mb-1">
-            <div className={`w-2 h-2 rounded-full ${SEDE_COLORS[s.nombre] || 'bg-gray-500'}`}></div>
-            <span className="text-[10px] text-slate-300">{s.nombre}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+def clasificar_alumno_curso(curso_texto):
+    """
+    Clasifica un alumno según su CURSO:
+    - es_cied: True si dice CIED o es Online/Interior
+    - sede_referencia: sede normalizada extraída del paréntesis
+    - modalidad_alumno: 'virtual' si CIED/Online, 'presencial' si no
+    """
+    if not curso_texto:
+        return 'virtual', None, True
+    curso = curso_texto.strip()
+    es_cied = 'CIED' in curso.upper()
+    # Extraer sede del paréntesis
+    m_sede = re.search(r'\(([^)]+)\)', curso)
+    sede_raw = m_sede.group(1).strip() if m_sede else None
+    sede = normalizar_sede(sede_raw) if sede_raw else None
+    # Online-Interior siempre es virtual (igual que CIED)
+    es_online = sede in ['Online - Interior'] if sede else False
+    if es_cied or es_online:
+        modalidad = 'virtual'
+    else:
+        modalidad = 'presencial'
+    return modalidad, sede, es_cied
 
-function LoginScreen({ onLogin }) {
-  const [clave, setClave] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const intentarLogin = async () => {
-    setError(''); setLoading(true);
-    try {
-      await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
-      localStorage.setItem('iea_auth', 'true');
-      onLogin();
-    } catch (e) { setError('Contraseña incorrecta'); }
-    setLoading(false);
-  };
-  return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-      <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión v6.0</p>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm text-slate-600 font-medium">Contraseña de acceso:</label>
-            <input type="password" className="w-full border-2 rounded-lg px-4 py-3 mt-1 text-lg focus:border-amber-500 focus:outline-none"
-              value={clave} onChange={e => setClave(e.target.value)} placeholder="Ingresá la contraseña"
-              onKeyDown={e => e.key === 'Enter' && intentarLogin()} autoFocus />
-          </div>
-          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-          <button onClick={intentarLogin} disabled={loading || !clave}
-            className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold text-lg disabled:opacity-50 hover:bg-amber-400">
-            {loading ? '⏳ Verificando...' : 'Ingresar'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+def extraer_turno_materia(materia_texto):
+    """Extrae el turno de la columna MATERIA: Mañana, Noche, Virtual"""
+    if not materia_texto:
+        return None
+    m = re.search(r'-\s*(Mañana|Noche|Virtual|Tarde)', materia_texto, re.IGNORECASE)
+    return m.group(1).capitalize() if m else None
 
-// ==================== MODAL EDITAR ASIGNACIÓN (v4.0 MEJORA 3) ====================
-function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar, catCodigo, catNombre }) {
-  const [form, setForm] = useState({
-    docente_id: asignacion.docente?.id?.toString() || '',
-    modalidad: asignacion.modalidad || 'virtual_tm',
-    sede_id: asignacion.sede_id?.toString() || '',
-    dia: asignacion.dia || '',
-    hora_inicio: asignacion.hora_inicio || '',
-    recibe_alumnos_presenciales: asignacion.recibe_alumnos_presenciales || false,
-  });
-  const [error, setError] = useState('');
 
-  const guardar = async () => {
-    setError('');
-    try {
-      await apiFetch(`/api/asignaciones/${asignacion.id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          docente_id: form.docente_id ? parseInt(form.docente_id) : null,
-          modalidad: form.modalidad,
-          sede_id: form.sede_id ? parseInt(form.sede_id) : null,
-          dia: form.dia || null,
-          hora_inicio: form.hora_inicio || null,
-          recibe_alumnos_presenciales: form.recibe_alumnos_presenciales,
-        }),
-      });
-      recargar(); onClose();
-    } catch (e) { setError(e.message); }
-  };
+# ==================== MIGRACIÓN ====================
 
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 max-w-lg w-full mx-4">
-        <h3 className="text-lg font-bold mb-2">✏️ Editar Asignación</h3>
-        <p className="text-slate-600 mb-4">{catCodigo} - {catNombre}</p>
-        <div className="space-y-3">
-          <div><label className="text-sm text-slate-600 font-medium">Docente:</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
-              <option value="">Sin asignar</option>
-              {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
-            </select></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm text-slate-600">Modalidad:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.modalidad} onChange={e => setForm({...form, modalidad: e.target.value})}>
-                {Object.entries(MODALIDAD_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
-              </select></div>
-            <div><label className="text-sm text-slate-600">Sede:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
-                <option value="">🏠 Remoto</option>
-                {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-              </select></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm text-slate-600">Día:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dia} onChange={e => setForm({...form, dia: e.target.value})}>
-                <option value="">Sin definir</option>
-                {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
-              </select></div>
-            <div><label className="text-sm text-slate-600">Hora:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio} onChange={e => setForm({...form, hora_inicio: e.target.value})}>
-                <option value="">Sin definir</option>
-                {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
-              </select></div>
-          </div>
-          {form.sede_id && (
-            <label className="flex items-center gap-2 p-3 bg-emerald-50 rounded-lg cursor-pointer">
-              <input type="checkbox" checked={form.recibe_alumnos_presenciales} onChange={e => setForm({...form, recibe_alumnos_presenciales: e.target.checked})} />
-              <span className="text-sm">👥 Recibe alumnos presenciales</span>
-            </label>
-          )}
-          {error && <div className="p-3 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">⛔ {error}</div>}
-        </div>
-        <div className="flex gap-2 mt-4">
-          <button onClick={guardar} className="flex-1 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium">Guardar</button>
-          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+def run_migration(db):
+    from sqlalchemy import text, inspect
+    resultado = []
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        resultado.append(f"Tablas: {tables}")
+        Base.metadata.create_all(bind=engine)
+        resultado.append("✅ create_all")
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        # --- Migrar catedras ---
+        if 'catedras' in tables:
+            cols = [c['name'] for c in inspector.get_columns('catedras')]
+            if 'link_meet' not in cols:
+                db.execute(text("ALTER TABLE catedras ADD COLUMN link_meet VARCHAR"))
+                db.commit()
+                resultado.append("✅ catedras.link_meet")
+            for col_c in ['notas', 'decision_apertura']:
+                if col_c not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE catedras ADD COLUMN {col_c} VARCHAR"))
+                        db.commit()
+                    except Exception: db.rollback()
+        # --- Migrar asignaciones ---
+        if 'asignaciones' in tables:
+            cols = [c['name'] for c in inspector.get_columns('asignaciones')]
+            if 'hora' in cols and 'hora_inicio' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE asignaciones RENAME COLUMN hora TO hora_inicio"))
+                    db.commit()
+                except Exception as e:
+                    db.rollback()
+            cols = [c['name'] for c in inspector.get_columns('asignaciones')]
+            for col, tipo in [
+                ('hora_inicio', 'VARCHAR'), ('hora_fin', 'VARCHAR'),
+                ('modalidad', "VARCHAR DEFAULT 'virtual_tm'"),
+                ('sede_id', 'INTEGER REFERENCES sedes(id)'),
+                ('recibe_alumnos_presenciales', 'BOOLEAN DEFAULT FALSE'),
+                ('modificada', 'BOOLEAN DEFAULT FALSE'),
+            ]:
+                if col not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE asignaciones ADD COLUMN {col} {tipo}"))
+                        db.commit()
+                        resultado.append(f"✅ asignaciones.{col}")
+                    except Exception as e:
+                        db.rollback()
+        # --- Migrar inscripciones (v5.0) ---
+        if 'inscripciones' in tables:
+            cols = [c['name'] for c in inspector.get_columns('inscripciones')]
+            for col, tipo in [
+                ('turno', 'VARCHAR'),
+                ('modalidad_alumno', 'VARCHAR'),
+                ('sede_referencia', 'VARCHAR'),
+                ('curso_nombre', 'VARCHAR'),
+            ]:
+                if col not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE inscripciones ADD COLUMN {col} {tipo}"))
+                        db.commit()
+                        resultado.append(f"✅ inscripciones.{col}")
+                    except Exception as e:
+                        db.rollback()
+        # --- Migrar docentes (v5.0: horas) ---
+        if 'docentes' in tables:
+            cols = [c['name'] for c in inspector.get_columns('docentes')]
+            if 'horas_asignadas' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE docentes ADD COLUMN horas_asignadas INTEGER DEFAULT 0"))
+                    db.commit()
+                    resultado.append("✅ docentes.horas_asignadas")
+                except Exception as e:
+                    db.rollback()
+            for col_s in ['sociedad_cfpea', 'sociedad_isftea']:
+                if col_s not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_s} BOOLEAN DEFAULT FALSE"))
+                        db.commit()
+                        resultado.append(f"✅ docentes.{col_s}")
+                    except Exception as e:
+                        db.rollback()
+            for col_s in ['materias_av', 'materias_cab', 'materias_vl']:
+                if col_s not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_s} INTEGER DEFAULT 0"))
+                        db.commit()
+                    except Exception: db.rollback()
+            if 'notas' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE docentes ADD COLUMN notas VARCHAR"))
+                    db.commit()
+                except Exception: db.rollback()
+            # v16.0: especialidad y catedras de referencia
+            for col_new in ['especialidad', 'catedras_referencia']:
+                if col_new not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_new} VARCHAR"))
+                        db.commit()
+                        resultado.append(f"✅ Columna {col_new} en docentes")
+                    except Exception: db.rollback()
+        # --- Crear tabla docente_disponibilidad (v5.0) ---
+        if 'docente_disponibilidad' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS docente_disponibilidad (
+                        id SERIAL PRIMARY KEY,
+                        docente_id INTEGER REFERENCES docentes(id) ON DELETE CASCADE,
+                        dia VARCHAR NOT NULL,
+                        hora VARCHAR NOT NULL,
+                        disponible BOOLEAN DEFAULT TRUE
+                    )
+                """))
+                db.commit()
+                resultado.append("✅ Tabla docente_disponibilidad creada")
+            except Exception as e:
+                db.rollback()
+        # --- Crear tablas auxiliares ---
+        for tbl, ddl in [
+            ('docente_sede', """CREATE TABLE IF NOT EXISTS docente_sede (
+                id SERIAL PRIMARY KEY, docente_id INTEGER REFERENCES docentes(id) ON DELETE CASCADE,
+                sede_id INTEGER REFERENCES sedes(id) ON DELETE CASCADE)"""),
+            ('catedra_curso', """CREATE TABLE IF NOT EXISTS catedra_curso (
+                id SERIAL PRIMARY KEY, catedra_id INTEGER REFERENCES catedras(id) ON DELETE CASCADE,
+                curso_id INTEGER REFERENCES cursos(id) ON DELETE CASCADE, turno VARCHAR,
+                sede_id INTEGER REFERENCES sedes(id))"""),
+            ('plan_carrera', """CREATE TABLE IF NOT EXISTS plan_carrera (
+                id SERIAL PRIMARY KEY, sede VARCHAR NOT NULL, carrera VARCHAR NOT NULL,
+                anno VARCHAR, codigo_catedra VARCHAR NOT NULL, nombre_catedra VARCHAR,
+                dia_tm VARCHAR, hora_tm VARCHAR, dia_tn VARCHAR, hora_tn VARCHAR)"""),
+        ]:
+            if tbl not in tables:
+                try:
+                    db.execute(text(ddl))
+                    db.commit()
+                    resultado.append(f"✅ Tabla {tbl}")
+                except Exception as e:
+                    db.rollback()
+        # --- Limpiar sedes duplicadas ---
+        try:
+            sede_sin = db.query(Sede).filter(Sede.nombre == "Vicente Lopez").first()
+            sede_con = db.query(Sede).filter(Sede.nombre == "Vicente López").first()
+            if sede_sin and sede_con:
+                for tbl in ['cursos', 'asignaciones']:
+                    db.execute(text(f"UPDATE {tbl} SET sede_id = {sede_con.id} WHERE sede_id = {sede_sin.id}"))
+                db.execute(text(f"DELETE FROM docente_sede WHERE sede_id = {sede_sin.id} AND docente_id IN (SELECT docente_id FROM docente_sede WHERE sede_id = {sede_con.id})"))
+                db.execute(text(f"UPDATE docente_sede SET sede_id = {sede_con.id} WHERE sede_id = {sede_sin.id}"))
+                if 'catedra_curso' in tables:
+                    db.execute(text(f"UPDATE catedra_curso SET sede_id = {sede_con.id} WHERE sede_id = {sede_sin.id}"))
+                db.execute(text(f"DELETE FROM sedes WHERE id = {sede_sin.id}"))
+                db.commit()
+            elif sede_sin and not sede_con:
+                sede_sin.nombre = "Vicente López"
+                db.commit()
+        except Exception as e:
+            db.rollback()
+    except Exception as e:
+        resultado.append(f"❌ {e}")
+    return resultado
 
-// ==================== MODAL ASIGNAR CÁTEDRA ====================
-function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
-  const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
-  const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
-  const [error, setError] = useState('');
-  const crear = async () => {
-    setError('');
-    if (!form.cuatrimestre_id) { setError('Seleccioná un cuatrimestre'); return; }
-    try {
-      await apiFetch('/api/asignaciones', {
-        method: 'POST',
-        body: JSON.stringify({
-          catedra_id: catedra.id,
-          cuatrimestre_id: parseInt(form.cuatrimestre_id),
-          docente_id: form.docente_id ? parseInt(form.docente_id) : null,
-          modalidad: form.modalidad,
-          sede_id: form.sede_id ? parseInt(form.sede_id) : null,
-          dia: form.dia || null,
-          hora_inicio: form.hora_inicio || null,
-          recibe_alumnos_presenciales: form.recibe_alumnos_presenciales,
-        }),
-      });
-      recargar(); onClose();
-    } catch (e) { setError(e.message); }
-  };
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 max-w-lg w-full mx-4">
-        <h3 className="text-lg font-bold mb-2">Agregar Asignación</h3>
-        <p className="text-slate-600 mb-4">{catedra.codigo} - {catedra.nombre}</p>
-        <div className="space-y-3">
-          <div><label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
-            <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50" value={form.cuatrimestre_id} onChange={e => setForm({...form, cuatrimestre_id: e.target.value})}>
-              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </select></div>
-          <div><label className="text-sm text-slate-600">Docente (opcional):</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
-              <option value="">Sin asignar (pendiente)</option>
-              {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
-            </select></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm text-slate-600">Modalidad:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.modalidad} onChange={e => setForm({...form, modalidad: e.target.value})}>
-                {Object.entries(MODALIDAD_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
-              </select></div>
-            <div><label className="text-sm text-slate-600">Sede física:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
-                <option value="">🏠 Remoto</option>
-                {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-              </select></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-sm text-slate-600">Día (opcional):</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dia} onChange={e => setForm({...form, dia: e.target.value})}>
-                <option value="">Pendiente de confirmar</option>
-                {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
-              </select></div>
-            <div><label className="text-sm text-slate-600">Hora (opcional):</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio} onChange={e => setForm({...form, hora_inicio: e.target.value})}>
-                <option value="">Pendiente de confirmar</option>
-                {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
-              </select></div>
-          </div>
-          {form.sede_id && (
-            <label className="flex items-center gap-2 p-3 bg-emerald-50 rounded-lg cursor-pointer">
-              <input type="checkbox" checked={form.recibe_alumnos_presenciales} onChange={e => setForm({...form, recibe_alumnos_presenciales: e.target.checked})} />
-              <span className="text-sm">👥 Recibe alumnos presenciales</span>
-            </label>
-          )}
-          {error && <div className="p-3 bg-red-50 border border-red-300 rounded-lg text-red-700 text-sm">⛔ {error}</div>}
-        </div>
-        <div className="flex gap-2 mt-4">
-          <button onClick={crear} className="flex-1 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium">Crear</button>
-          <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
-// ==================== v11.0: DASHBOARD SEMÁFORO CON FLUJO GUIADO ====================
-function DashboardView({ cuatrimestre, setActiveView }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    const cargar = async () => {
-      setLoading(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        setData(await apiFetch(`/api/dashboard${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`));
-      } catch (e) { console.error(e); }
-      setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
-  if (loading || !data) return <div className="p-8 text-center text-xl">⏳ Cargando dashboard...</div>;
+@app.on_event("startup")
+async def startup():
+    db = next(get_db())
+    migr = run_migration(db)
+    for m in migr:
+        print(f"  [MIG] {m}")
+    try:
+        from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+        for nombre, color in SEDES:
+            if not db.query(Sede).filter(Sede.nombre == nombre).first():
+                db.add(Sede(nombre=nombre, color=color))
+        db.commit()
+        if not db.query(Cuatrimestre).first():
+            for anio in range(2026, 2031):
+                db.add(Cuatrimestre(nombre=f"1er Cuatrimestre {anio}", anio=anio, numero=1, activo=(anio == 2026)))
+                db.add(Cuatrimestre(nombre=f"2do Cuatrimestre {anio}", anio=anio, numero=2, activo=False))
+            db.commit()
+        else:
+            for anio in range(2026, 2031):
+                for num in [1, 2]:
+                    nombre_c = f"{'1er' if num == 1 else '2do'} Cuatrimestre {anio}"
+                    if not db.query(Cuatrimestre).filter(Cuatrimestre.anio == anio, Cuatrimestre.numero == num).first():
+                        db.add(Cuatrimestre(nombre=nombre_c, anio=anio, numero=num, activo=False))
+            db.commit()
+        if db.query(Catedra).count() == 0:
+            for codigo, nombre in CATEDRAS:
+                db.add(Catedra(codigo=codigo, nombre=nombre))
+            db.commit()
+        if db.query(Curso).count() == 0:
+            for sede_nombre, nombre in CURSOS:
+                sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first()
+                db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None))
+            db.commit()
+        if db.query(Docente).count() == 0:
+            for dni, nombre, apellido in DOCENTES:
+                db.add(Docente(dni=dni, nombre=nombre, apellido=apellido))
+            db.commit()
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"  ⚠️ Seed: {e}")
+    db.close()
+    print("🚀 IEA Horarios v11.0 iniciado")
 
-  const cob = data.cobertura_pct;
-  const sColor = cob >= 80 ? '#059669' : cob >= 50 ? '#D97706' : '#DC2626';
-  const sBg = cob >= 80 ? 'bg-emerald-50 border-emerald-300' : cob >= 50 ? 'bg-amber-50 border-amber-300' : 'bg-red-50 border-red-300';
-  const pasos = data.pasos || [];
-  const pasoActual = pasos.find(p => !p.completo) || pasos[pasos.length - 1];
+CLAVE_ACCESO = "IEA2026"
 
-  return (
-    <div className="p-8 max-w-5xl mx-auto">
-      <h2 className="text-2xl font-bold text-slate-800 mb-2">🏠 Dashboard — Estado del Cuatrimestre</h2>
-      <p className="text-slate-500 mb-6">Seguí los pasos en orden para armar los horarios del cuatrimestre.</p>
+@app.get("/")
+def root():
+    return {"status": "ok", "sistema": "IEA Horarios v6.0"}
 
-      {/* Semáforo + resumen */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        <div className={`${sBg} border-2 rounded-2xl p-6 text-center`}>
-          <p className="text-5xl font-extrabold" style={{color: sColor}}>{cob}%</p>
-          <p className="text-sm font-bold mt-1" style={{color: sColor}}>Cobertura docentes</p>
-        </div>
-        <div className="bg-white border rounded-2xl p-6 text-center">
-          <p className="text-3xl font-extrabold text-cyan-600">{data.total_inscripciones}</p>
-          <p className="text-sm text-slate-500">Inscripciones</p>
-          <div className="mt-2 text-xs text-slate-500">
-            <span className="font-bold text-slate-700">{data.total_docentes}</span> docentes ·
-            <span className="font-bold text-blue-600 ml-1">{data.docentes_con_asignacion}</span> con cátedra ·
-            <span className="font-bold text-purple-600 ml-1">{data.total_asignaciones || 0}</span> asignaciones
-          </div>
-        </div>
-        <div className="bg-white border rounded-2xl p-6 text-center">
-          <div className="flex justify-center gap-4">
-            {data.sin_docente > 0 && <div><p className="text-2xl font-bold text-red-500">{data.sin_docente}</p><p className="text-[10px] text-red-400">sin docente</p></div>}
-            {data.solapamientos > 0 && <div><p className="text-2xl font-bold text-orange-500">{data.solapamientos}</p><p className="text-[10px] text-orange-400">solapamientos</p></div>}
-            {data.sin_docente === 0 && data.solapamientos === 0 && <div><p className="text-3xl">✅</p><p className="text-sm text-emerald-600">Todo OK</p></div>}
-          </div>
-        </div>
-      </div>
+@app.get("/api/reparar")
+def reparar_bd(db: Session = Depends(get_db)):
+    resultado = run_migration(db)
+    try:
+        from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+        for nombre, color in SEDES:
+            if not db.query(Sede).filter(Sede.nombre == nombre).first():
+                db.add(Sede(nombre=nombre, color=color))
+        db.commit()
+        for anio in range(2026, 2031):
+            for num in [1, 2]:
+                nombre_c = f"{'1er' if num == 1 else '2do'} Cuatrimestre {anio}"
+                if not db.query(Cuatrimestre).filter(Cuatrimestre.anio == anio, Cuatrimestre.numero == num).first():
+                    db.add(Cuatrimestre(nombre=nombre_c, anio=anio, numero=num, activo=False))
+        db.commit()
+    except Exception as e:
+        resultado.append(f"⚠️ {e}")
+    return {"resultado": resultado}
 
-      {/* Flujo paso a paso */}
-      <div className="space-y-3">
-        {pasos.map(paso => {
-          const esActual = paso.num === pasoActual?.num;
-          const estado = paso.completo ? 'completo' : paso.parcial ? 'parcial' : (esActual ? 'actual' : 'pendiente');
-          return (
-            <div key={paso.num}
-              onClick={() => setActiveView(paso.seccion)}
-              className={`rounded-xl border-2 p-5 cursor-pointer transition-all hover:shadow-lg ${
-                estado === 'completo' ? 'bg-emerald-50 border-emerald-300' :
-                estado === 'parcial' ? 'bg-amber-50 border-amber-300' :
-                esActual ? 'bg-blue-50 border-blue-400 shadow-md ring-2 ring-blue-200' :
-                'bg-white border-slate-200 opacity-60'
-              }`}>
-              <div className="flex items-center gap-4">
-                {/* Número/estado */}
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-extrabold flex-shrink-0 ${
-                  estado === 'completo' ? 'bg-emerald-500 text-white' :
-                  estado === 'parcial' ? 'bg-amber-500 text-white' :
-                  esActual ? 'bg-blue-500 text-white animate-pulse' :
-                  'bg-slate-200 text-slate-400'
-                }`}>
-                  {estado === 'completo' ? '✓' : paso.num}
-                </div>
-                {/* Contenido */}
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className={`font-bold text-lg ${estado === 'completo' ? 'text-emerald-700' : esActual ? 'text-blue-700' : 'text-slate-700'}`}>
-                      {paso.titulo}
-                    </h3>
-                    {estado === 'parcial' && <span className="px-2 py-0.5 bg-amber-200 text-amber-800 rounded text-xs font-bold">EN PROGRESO</span>}
-                    {esActual && estado !== 'parcial' && <span className="px-2 py-0.5 bg-blue-200 text-blue-800 rounded text-xs font-bold">← SIGUIENTE PASO</span>}
-                  </div>
-                  <p className="text-sm text-slate-500">{paso.desc}</p>
-                  <p className={`text-sm font-medium mt-1 ${estado === 'completo' ? 'text-emerald-600' : estado === 'parcial' ? 'text-amber-700' : 'text-slate-400'}`}>
-                    {paso.detalle}
-                  </p>
-                </div>
-                {/* Flecha */}
-                <div className="text-slate-300 text-2xl flex-shrink-0">→</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+@app.get("/api/diagnostico")
+def diagnostico_bd(db: Session = Depends(get_db)):
+    from sqlalchemy import text, inspect
+    info = {}
+    try:
+        inspector = inspect(engine)
+        for t in inspector.get_table_names():
+            cols = [c['name'] for c in inspector.get_columns(t)]
+            count = db.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+            info[t] = {"columnas": cols, "registros": count}
+    except Exception as e:
+        info["error"] = str(e)
+    return info
 
-      {/* Resumen rápido abajo */}
-      <div className="grid grid-cols-4 gap-3 mt-8">
-        {[
-          {val: data.abrir, label: 'A abrir', color: 'text-emerald-600', bg: 'bg-emerald-50'},
-          {val: data.asincronicas, label: 'Asincrónicas', color: 'text-purple-600', bg: 'bg-purple-50'},
-          {val: data.sin_alumnos, label: 'Sin alumnos', color: 'text-slate-400', bg: 'bg-slate-50'},
-          {val: data.docs_sugeridos, label: 'Docentes sugeridos', color: 'text-blue-600', bg: 'bg-blue-50'},
-        ].map((s, i) => (
-          <div key={i} className={`${s.bg} rounded-xl p-3 text-center`}>
-            <p className={`text-2xl font-extrabold ${s.color}`}>{s.val}</p>
-            <p className="text-xs text-slate-500">{s.label}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+@app.post("/api/login")
+def login(data: dict):
+    if data.get("clave", "") == CLAVE_ACCESO:
+        return {"ok": True}
+    raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
-// ==================== CÁTEDRAS VIEW (con mejoras 5, 7, 9) ====================
-function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
-  const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
-  const [modalCatedra, setModalCatedra] = useState(null);
-  const [modalEditar, setModalEditar] = useState(null);
-  const [editCatInfo, setEditCatInfo] = useState(null);
-  const [paginaActual, setPaginaActual] = useState(1);
-  const porPagina = 20;
+@app.get("/api/sedes")
+def get_sedes(db: Session = Depends(get_db)):
+    return [{"id": s.id, "nombre": s.nombre, "color": s.color} for s in db.query(Sede).all()]
 
-  const catedrasFiltradas = useMemo(() => {
-    return catedras.filter(c => {
-      if (filtros.buscar && !c.nombre.toLowerCase().includes(filtros.buscar.toLowerCase()) &&
-          !c.codigo.toLowerCase().includes(filtros.buscar.toLowerCase())) return false;
-      if (filtros.soloSinAsignar && c.asignaciones?.length > 0) return false;
-      return true;
-    }); // Ya vienen ordenadas del backend por código numérico
-  }, [catedras, filtros]);
+@app.get("/api/cuatrimestres")
+def get_cuatrimestres(db: Session = Depends(get_db)):
+    return [{"id": c.id, "nombre": c.nombre, "anio": c.anio, "numero": c.numero, "activo": c.activo}
+            for c in db.query(Cuatrimestre).order_by(Cuatrimestre.anio, Cuatrimestre.numero).all()]
 
-  const totalPaginas = Math.ceil(catedrasFiltradas.length / porPagina);
-  const catedrasPag = catedrasFiltradas.slice((paginaActual - 1) * porPagina, paginaActual * porPagina);
 
-  const stats = useMemo(() => {
-    const totalTM = catedras.reduce((s, c) => s + (c.tm_total || 0), 0);
-    const totalTN = catedras.reduce((s, c) => s + (c.tn_total || 0), 0);
-    const totalVirt = catedras.reduce((s, c) => s + (c.virt_cied || 0), 0);
-    const totalSinClasif = catedras.reduce((s, c) => s + (c.sin_clasificar || 0), 0);
-    const totalInsc = catedras.reduce((s, c) => s + (c.inscriptos || 0), 0);
-    // v7.0: contar asignaciones por modalidad
-    const allAsig = catedras.flatMap(c => c.asignaciones || []);
-    const tmVirtual = allAsig.filter(a => a.modalidad === 'virtual_tm').length;
-    const tnVirtual = allAsig.filter(a => a.modalidad === 'virtual_tn').length;
-    const presencial = allAsig.filter(a => a.modalidad === 'presencial').length;
-    const asinc = allAsig.filter(a => a.modalidad === 'asincronica').length;
-    return {
-      total: catedras.length,
-      abiertas: catedras.filter(c => (c.asignaciones || []).length > 0).length,
-      totalTM, totalTN, totalVirt, totalSinClasif, totalInsc,
-      tmVirtual, tnVirtual, presencial, asinc,
-    };
-  }, [catedras]);
+# ==================== CÁTEDRAS ====================
 
-  const eliminarAsig = async (id) => {
-    if (!window.confirm('¿Eliminar esta asignación?')) return;
-    try { await apiFetch(`/api/asignaciones/${id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
-  };
-
-  const abrirEditar = (asig, cat) => {
-    setModalEditar(asig);
-    setEditCatInfo({ codigo: cat.codigo, nombre: cat.nombre });
-  };
-
-  return (
-    <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cátedras</h2></div>
-      {/* v4.0 MEJORA 9: Stats separadas */}
-      <div className="grid grid-cols-7 gap-3 mb-4">
-        {[
-          { label: 'Total Cátedras', val: stats.total, color: '' },
-          { label: '📋 Abiertas', val: stats.abiertas, color: 'text-blue-600' },
-          { label: '☀️ Insc. TM', val: stats.totalTM, color: 'text-yellow-600' },
-          { label: '🌙 Insc. TN', val: stats.totalTN, color: 'text-indigo-600' },
-          { label: '🖥️ CIED Virt', val: stats.totalVirt, color: 'text-purple-600' },
-          { label: '⚠️ Sin clasif.', val: stats.totalSinClasif, color: 'text-red-500' },
-          { label: '👥 Total Inscr.', val: stats.totalInsc, color: 'text-cyan-600' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white rounded-xl border p-3 text-center">
-            <p className="text-slate-500 text-xs">{s.label}</p>
-            <p className={`text-2xl font-bold ${s.color}`}>{s.val}</p>
-          </div>
-        ))}
-      </div>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        {[
-          { label: '🖥️☀️ TM Virtual', val: stats.tmVirtual, color: 'text-blue-600' },
-          { label: '🖥️🌙 TN Virtual', val: stats.tnVirtual, color: 'text-indigo-600' },
-          { label: '🏫 Presencial', val: stats.presencial, color: 'text-emerald-600' },
-          { label: '🎥 Asincrónicas', val: stats.asinc, color: 'text-purple-600' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white rounded-xl border p-2 text-center">
-            <p className="text-slate-500 text-[10px]">{s.label}</p>
-            <p className={`text-xl font-bold ${s.color}`}>{s.val}</p>
-          </div>
-        ))}
-      </div>
-      {stats.totalSinClasif > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
-          <p className="text-red-700 text-sm">⚠️ Hay <strong>{stats.totalSinClasif}</strong> inscripciones sin clasificar (importadas con la versión anterior). Reimportá los archivos de alumnos para que se clasifiquen correctamente por sede y turno.</p>
-        </div>
-      )}
-      <div className="flex gap-3 mb-4 bg-white p-4 rounded-xl border items-center">
-        <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
-          value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={filtros.soloSinAsignar}
-            onChange={e => { setFiltros({...filtros, soloSinAsignar: e.target.checked}); setPaginaActual(1); }} />
-          Solo sin asignación
-        </label>
-        <span className="text-sm text-slate-500">{catedrasFiltradas.length} cátedras | Pág {paginaActual}/{totalPaginas||1}</span>
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="bg-slate-800 text-white text-[10px]">
-              <th className="p-2 text-left font-semibold" rowSpan="2" style={{width:'180px'}}>Cátedra</th>
-              <th className="p-1 text-center bg-yellow-700" colSpan="5">TURNO MAÑANA</th>
-              <th className="p-1 text-center bg-indigo-700" colSpan="5">TURNO NOCHE</th>
-              <th className="p-1 text-center bg-purple-700" rowSpan="2">Virt</th>
-              <th className="p-1 text-center bg-slate-600" colSpan="4">TOTAL SEDE</th>
-              <th className="p-1 text-center bg-cyan-700" rowSpan="2">Total</th>
-              <th className="p-1 text-center bg-red-700" rowSpan="2">?</th>
-              <th className="p-1 text-center bg-slate-600" rowSpan="2">Doc</th>
-              <th className="p-1 text-center bg-emerald-700" rowSpan="2" style={{width:'90px'}}>Decisión</th>
-              <th className="p-1 text-center font-semibold" rowSpan="2" style={{width:'120px'}}>Asignaciones</th>
-              <th className="p-1 text-center" rowSpan="2">Acc.</th>
-            </tr>
-            <tr className="bg-slate-700 text-white text-[9px]">
-              <th className="p-0.5 bg-yellow-800">Av</th>
-              <th className="p-0.5 bg-yellow-800">Cab</th>
-              <th className="p-0.5 bg-yellow-800">VL</th>
-              <th className="p-0.5 bg-yellow-800">CIED</th>
-              <th className="p-0.5 bg-yellow-800 font-bold">TM</th>
-              <th className="p-0.5 bg-indigo-800">Av</th>
-              <th className="p-0.5 bg-indigo-800">Cab</th>
-              <th className="p-0.5 bg-indigo-800">VL</th>
-              <th className="p-0.5 bg-indigo-800">CIED</th>
-              <th className="p-0.5 bg-indigo-800 font-bold">TN</th>
-              <th className="p-0.5 bg-slate-600">Av</th>
-              <th className="p-0.5 bg-slate-600">Cab</th>
-              <th className="p-0.5 bg-slate-600">VL</th>
-              <th className="p-0.5 bg-slate-600">CIED</th>
-            </tr>
-          </thead>
-          <tbody>
-            {catedrasPag.map(cat => {
-              const necesitaApertura = (cat.inscriptos || 0) > 9 && (!cat.asignaciones || cat.asignaciones.length === 0);
-              return (
-              <tr key={cat.id} className={`border-b hover:bg-slate-50 text-xs ${necesitaApertura ? 'bg-yellow-50' : ''}`}>
-                <td className="p-1.5" style={{minWidth:'160px'}}>
-                  <span className="px-1.5 py-0.5 bg-slate-800 text-white rounded text-[10px] font-mono mr-1">{cat.codigo}</span>
-                  <span className="text-xs font-medium">{cat.nombre}</span>
-                  {necesitaApertura && <span className="ml-1 px-1 py-0.5 bg-yellow-300 text-yellow-900 rounded text-[9px] font-bold">ABRIR</span>}
-                </td>
-                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-blue-700">{cat.tm_av || ''}</span></td>
-                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-emerald-700">{cat.tm_cab || ''}</span></td>
-                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-amber-700">{cat.tm_vl || ''}</span></td>
-                <td className="p-0.5 text-center bg-yellow-50/40"><span className="font-bold text-purple-600">{cat.tm_cied || ''}</span></td>
-                <td className="p-0.5 text-center bg-yellow-100/60"><span className="font-extrabold text-sm">{cat.tm_total || ''}</span></td>
-                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-blue-700">{cat.tn_av || ''}</span></td>
-                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-emerald-700">{cat.tn_cab || ''}</span></td>
-                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-amber-700">{cat.tn_vl || ''}</span></td>
-                <td className="p-0.5 text-center bg-indigo-50/40"><span className="font-bold text-purple-600">{cat.tn_cied || ''}</span></td>
-                <td className="p-0.5 text-center bg-indigo-100/60"><span className="font-extrabold text-sm">{cat.tn_total || ''}</span></td>
-                <td className="p-0.5 text-center bg-purple-50/40"><span className="font-bold text-purple-600">{cat.virt_cied || ''}</span></td>
-                <td className="p-0.5 text-center"><span className="font-bold text-blue-700">{cat.sede_av || ''}</span></td>
-                <td className="p-0.5 text-center"><span className="font-bold text-emerald-700">{cat.sede_cab || ''}</span></td>
-                <td className="p-0.5 text-center"><span className="font-bold text-amber-700">{cat.sede_vl || ''}</span></td>
-                <td className="p-0.5 text-center"><span className="font-bold text-purple-600">{cat.sede_cied || ''}</span></td>
-                <td className="p-0.5 text-center"><span className="text-sm font-extrabold text-cyan-600">{cat.inscriptos || ''}</span></td>
-                <td className="p-0.5 text-center text-[10px] text-red-400">{cat.sin_clasificar || ''}</td>
-                <td className="p-0.5 text-center">
-                  {cat.docentes_sugeridos > 0 ? (
-                    <span className={`text-xs font-bold ${(cat.asignaciones?.filter(a => a.docente)?.length || 0) < cat.docentes_sugeridos ? 'text-red-500' : 'text-emerald-500'}`}>
-                      {cat.asignaciones?.filter(a => a.docente)?.length || 0}/{cat.docentes_sugeridos}
-                    </span>
-                  ) : <span className="text-slate-300 text-[10px]">-</span>}
-                </td>
-                <td className="p-0.5" style={{minWidth:'85px'}}>
-                  <DecisionInput catedra={cat} />
-                </td>
-                <td className="p-1" style={{maxWidth:'120px'}}>
-                  {cat.asignaciones?.length > 0 ? (
-                    <div className="flex flex-wrap gap-0.5">
-                      {cat.asignaciones.map(a => {
-                        const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                        return (
-                          <div key={a.id} className="px-1 py-0.5 rounded text-[9px] border bg-white" title={`${mod.label || ''} ${a.docente ? a.docente.nombre : 'Sin doc.'} ${a.dia||''} ${a.hora_inicio||''} ${a.sede_nombre||''}`}>
-                            <span>{mod.icon || '⏳'}</span>
-                            <span className="ml-0.5">{a.docente ? a.docente.nombre.split(' ')[0] : '⚠️'}</span>
-                            <button onClick={() => abrirEditar(a, cat)} className="text-blue-500 ml-0.5">✏️</button>
-                            <button onClick={() => eliminarAsig(a.id)} className="text-red-400 ml-0.5">×</button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : <span className="text-slate-300 text-[10px]">—</span>}
-                </td>
-                <td className="p-1 text-center">
-                  <button onClick={() => setModalCatedra(cat)} className="px-2 py-1 bg-amber-500 text-slate-900 rounded text-[10px] font-medium">+</button>
-                </td>
-              </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="flex justify-center gap-2 mt-4">
-        <button onClick={() => setPaginaActual(Math.max(1, paginaActual - 1))} disabled={paginaActual === 1} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">← Anterior</button>
-        <span className="px-3 py-1 text-sm text-slate-600">Página {paginaActual} de {totalPaginas || 1}</span>
-        <button onClick={() => setPaginaActual(Math.min(totalPaginas, paginaActual + 1))} disabled={paginaActual >= totalPaginas} className="px-3 py-1 bg-slate-200 rounded disabled:opacity-50">Siguiente →</button>
-      </div>
-      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
-      {modalEditar && editCatInfo && <ModalEditarAsignacion asignacion={modalEditar} docentes={docentes} sedes={sedes} onClose={() => { setModalEditar(null); setEditCatInfo(null); }} recargar={recargar} catCodigo={editCatInfo.codigo} catNombre={editCatInfo.nombre} />}
-    </div>
-  );
-}
-
-// ==================== v12.0: DECISIONES - Módulo central ====================
-function DecisionesView({ catedras, cuatrimestre, recargar }) {
-  const [criterio, setCriterio] = useState(null);
-  const [sugerencias, setSugerencias] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [filtro, setFiltro] = useState('todas');
-  const [marcando, setMarcando] = useState(false);
-  useEffect(() => {
-    const cargar = async () => {
-      setLoading(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-        setCriterio(await apiFetch(`/api/catedras/criterio-apertura${qp}`));
-        try {
-          const sug = await apiFetch(`/api/sugerencias-armado${qp}`);
-          // Flatten all suggestions into a code→suggestion map
-          const sugMap = {};
-          for (const sede of Object.values(sug.sedes || {})) {
-            for (const carrera of Object.values(sede)) {
-              for (const cats of Object.values(carrera)) {
-                for (const cat of cats) {
-                  if (!sugMap[cat.codigo] || cat.sugerencia_docente) sugMap[cat.codigo] = cat;
-                }
-              }
+@app.get("/api/catedras")
+def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    catedras = db.query(Catedra).all()
+    catedras_sorted = sorted(catedras, key=lambda c: sort_key_codigo(c.codigo))
+    # Pre-cargar desglose: turno × (sede presencial o CIED)
+    # IMPORTANTE: solo contar inscripciones que YA fueron clasificadas (tienen turno y modalidad_alumno)
+    desglose_query = """
+        SELECT catedra_id,
+            turno,
+            modalidad_alumno,
+            sede_referencia,
+            COUNT(*) as cnt
+        FROM inscripciones
+        WHERE modalidad_alumno IS NOT NULL
+    """
+    if cuatrimestre_id:
+        desglose_query += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    desglose_query += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
+    # Contar sin clasificar aparte
+    sin_clasif_query = "SELECT catedra_id, COUNT(*) FROM inscripciones WHERE modalidad_alumno IS NULL"
+    if cuatrimestre_id:
+        sin_clasif_query += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    sin_clasif_query += " GROUP BY catedra_id"
+    try:
+        desglose_rows = db.execute(text(desglose_query)).fetchall()
+    except Exception:
+        desglose_rows = []
+    sin_clasif_map = {}
+    try:
+        for r in db.execute(text(sin_clasif_query)).fetchall():
+            sin_clasif_map[r[0]] = r[1]
+    except Exception:
+        pass
+    # Organizar: por cátedra → {turno → {sede → count}}
+    desglose_map = {}
+    for row in desglose_rows:
+        cat_id, turno, mod_alumno, sede, cnt = row[0], row[1], row[2], row[3], row[4]
+        if cat_id not in desglose_map:
+            desglose_map[cat_id] = {
+                'total': 0,
+                'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0,
+                'virt_cied': 0, 'sin_clasificar': 0,
             }
-          }
-          setSugerencias(sugMap);
-        } catch (e) { console.error(e); }
-      } catch (e) { console.error(e); }
-      setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
-  const autoMarcarAsinc = async () => {
-    setMarcando(true);
-    try {
-      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-      const r = await apiFetch(`/api/catedras/auto-decision-asincronicas${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`, { method: 'POST' });
-      alert(`✅ ${r.marcadas} cátedras marcadas (${r.asincronicas} asincrónicas + ${r.sin_alumnos} sin alumnos)`);
-      recargar();
-    } catch (e) { alert(e.message); }
-    setMarcando(false);
-  };
-  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
-  const catsConInfo = catedras.map(c => {
-    const enAbrir = criterio?.abrir?.find(a => a.codigo === c.codigo);
-    const enAsinc = criterio?.asincronica?.find(a => a.codigo === c.codigo);
-    let sug = 'SIN ALUMNOS'; let docs = 0;
-    if (enAbrir) { sug = 'ABRIR'; docs = enAbrir.docentes_sugeridos; }
-    else if (enAsinc) sug = 'ASINCRÓNICA';
-    // Get docente info from sugerencias
-    const sugInfo = sugerencias?.[c.codigo];
-    const tieneDocente = !!sugInfo?.docente_actual;
-    const tieneSugerencia = !!sugInfo?.sugerencia_docente;
-    return { ...c, sugerencia: sug, docs_sug_calc: docs, tieneDocente, tieneSugerencia, sugInfo };
-  }).filter(c => {
-    if (filtro === 'abrir') return c.sugerencia === 'ABRIR';
-    if (filtro === 'asinc') return c.sugerencia === 'ASINCRÓNICA';
-    if (filtro === 'sin') return c.sugerencia === 'SIN ALUMNOS';
-    if (filtro === 'pendientes') return c.sugerencia === 'ABRIR' && !c.tieneDocente;
-    if (filtro === 'decididas') return c.tieneDocente;
-    return true;
-  });
-  const totalDecididas = catedras.filter(c => {
-    const si = sugerencias?.[c.codigo];
-    return !!si?.docente_actual;
-  }).length;
-  const totalPendAbrir = catedras.filter(c => {
-    const enAbrir = criterio?.abrir?.find(a => a.codigo === c.codigo);
-    const si = sugerencias?.[c.codigo];
-    return enAbrir && !si?.docente_actual;
-  }).length;
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🎯 Toma de Decisiones</h2>
-        <p className="text-slate-500 text-sm mt-1">Decidí qué cátedras abrir, cuáles van asincrónicas, y asigná docentes.</p>
-        <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <p className="text-blue-800 font-semibold mb-2">Criterio de apertura</p>
-          <div className="text-sm text-blue-700 space-y-1">
-            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente)</p>
-            <p>• <strong>1 a 9 inscriptos</strong> → <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
-            <p>• <strong>0 inscriptos</strong> → <strong>NO SE ABRE</strong></p>
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-5 gap-3 mb-4">
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-emerald-600">{totalDecididas}</p><p className="text-xs">✅ Con docente</p></div>
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-amber-600">{totalPendAbrir}</p><p className="text-xs">⚠️ Pendientes</p></div>
-        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥10)</p></div>
-        <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-purple-600">{criterio?.stats?.total_asincronica||0}</p><p className="text-xs">Asincrónicas</p></div>
-        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold text-slate-400">{criterio?.stats?.total_sin_alumnos||0}</p><p className="text-xs">Sin alumnos</p></div>
-      </div>
-      <div className="flex gap-2 mb-4 flex-wrap items-center">
-        {[['todas','Todas'],['abrir','A abrir'],['decididas','✅ Con docente asignado'],['pendientes','⚠️ Pendientes y sugerencias'],['asinc','🎥 Asincrónicas'],['sin','Sin alumnos']].map(([k,l]) => (
-          <button key={k} onClick={() => setFiltro(k)} className={`px-3 py-1.5 rounded-lg text-sm ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
-        ))}
-        <div className="flex-1" />
-        <button onClick={autoMarcarAsinc} disabled={marcando} className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">
-          {marcando ? '⏳...' : '🎥 Auto-marcar asincrónicas'}
-        </button>
-      </div>
-      {filtro === 'pendientes' && totalPendAbrir > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4">
-          <p className="text-amber-800 text-sm font-medium">⚠️ {totalPendAbrir} cátedras abiertas sin docente asignado. Las que tienen sugerencia aparecen en <span className="text-blue-600 font-bold">azul</span>, las que no en <span className="text-red-500 font-bold">rojo</span>.</p>
-        </div>
-      )}
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
-          <thead><tr className="bg-slate-800 text-white text-xs">
-            <th className="p-2 text-left">Cátedra</th>
-            <th className="p-2 text-center w-20">Inscr.</th>
-            <th className="p-2 text-center w-24">Criterio</th>
-            <th className="p-2 text-center w-14">Doc.</th>
-            <th className="p-2 text-left" style={{width:'180px'}}>Docente / Sugerencia</th>
-            <th className="p-2 text-center" style={{width:'160px'}}>Decisión (multi-sede)</th>
-            <th className="p-2 text-left" style={{width:'120px'}}>Notas</th>
-          </tr></thead>
-          <tbody>
-            {catsConInfo.map(cat => {
-              const rowBg = cat.tieneDocente ? 'bg-emerald-50' : cat.tieneSugerencia ? 'bg-blue-50' : (cat.sugerencia === 'ABRIR' ? 'bg-red-50' : '');
-              return (
-              <tr key={cat.id} className={`border-b hover:bg-slate-100 ${rowBg}`}>
-                <td className="p-2"><span className="font-mono text-[10px] bg-slate-800 text-white px-1 rounded mr-1">{cat.codigo}</span><span className="text-xs">{cat.nombre}</span></td>
-                <td className="p-2 text-center"><span className="text-lg font-bold text-cyan-600">{cat.inscriptos || 0}</span></td>
-                <td className="p-2 text-center"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.sugerencia==='ABRIR'?'bg-emerald-100 text-emerald-700':cat.sugerencia==='ASINCRÓNICA'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-400'}`}>{cat.sugerencia}</span></td>
-                <td className="p-2 text-center font-bold">{cat.docs_sug_calc || ''}</td>
-                <td className="p-2 text-xs">
-                  {cat.tieneDocente ? (
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span><span className="text-emerald-700 font-bold">{cat.sugInfo?.docente_actual}</span></span>
-                  ) : cat.tieneSugerencia ? (
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"></span><span className="text-blue-600 italic font-medium">{cat.sugInfo?.sugerencia_docente}</span><span className="text-[9px] text-blue-400">(sugerido)</span></span>
-                  ) : cat.sugerencia === 'ABRIR' ? (
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block"></span><span className="text-red-400">Sin docente disponible</span></span>
-                  ) : ''}
-                </td>
-                <td className="p-2"><DecisionInput catedra={cat} /></td>
-                <td className="p-2"><NotasInput item={cat} endpoint="catedras" /></td>
-              </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{catsConInfo.length} cátedras — {totalDecididas} con docente asignado — {totalPendAbrir} pendientes</p>
-    </div>
-  );
-}
+        d = desglose_map[cat_id]
+        d['total'] += cnt
+        es_cied = (mod_alumno == 'virtual')
+        sede_norm = (sede or '').strip()
+        sede_key = None
+        if not es_cied:
+            if 'avellaneda' in sede_norm.lower(): sede_key = 'av'
+            elif 'caballito' in sede_norm.lower(): sede_key = 'cab'
+            elif 'vicente' in sede_norm.lower(): sede_key = 'vl'
+        if turno == 'Mañana':
+            if es_cied or not sede_key:
+                d['tm_cied'] += cnt
+            else:
+                d[f'tm_{sede_key}'] += cnt
+        elif turno == 'Noche':
+            if es_cied or not sede_key:
+                d['tn_cied'] += cnt
+            else:
+                d[f'tn_{sede_key}'] += cnt
+        else:
+            d['virt_cied'] += cnt
+    # Agregar sin clasificar
+    for cat_id, cnt in sin_clasif_map.items():
+        if cat_id not in desglose_map:
+            desglose_map[cat_id] = {
+                'total': 0, 'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0,
+                'virt_cied': 0, 'sin_clasificar': 0,
+            }
+        desglose_map[cat_id]['sin_clasificar'] = cnt
+        desglose_map[cat_id]['total'] += cnt
+    result = []
+    for cat in catedras_sorted:
+        try:
+            asigs = []
+            try:
+                all_asigs = cat.asignaciones or []
+                if cuatrimestre_id:
+                    all_asigs = [a for a in all_asigs if a.cuatrimestre_id == cuatrimestre_id]
+                for a in all_asigs:
+                    asigs.append({
+                        "id": a.id, "modalidad": a.modalidad, "dia": a.dia,
+                        "hora_inicio": a.hora_inicio, "hora_fin": a.hora_fin,
+                        "sede_id": a.sede_id,
+                        "sede_nombre": a.sede.nombre if a.sede else None,
+                        "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
+                        "docente": {"id": a.docente.id, "nombre": f"{a.docente.nombre} {a.docente.apellido}"} if a.docente else None,
+                    })
+            except Exception:
+                pass
+            desg = desglose_map.get(cat.id, {
+                'total': 0, 'tm_av': 0, 'tm_cab': 0, 'tm_vl': 0, 'tm_cied': 0,
+                'tn_av': 0, 'tn_cab': 0, 'tn_vl': 0, 'tn_cied': 0, 'virt_cied': 0, 'sin_clasificar': 0,
+            })
+            inscriptos = desg['total']
+            tm_total = desg['tm_av'] + desg['tm_cab'] + desg['tm_vl'] + desg['tm_cied']
+            tn_total = desg['tn_av'] + desg['tn_cab'] + desg['tn_vl'] + desg['tn_cied']
+            clasificados = tm_total + tn_total + desg['virt_cied']
+            # v7.0: Sede totals
+            sede_av = desg['tm_av'] + desg['tn_av']
+            sede_cab = desg['tm_cab'] + desg['tn_cab']
+            sede_vl = desg['tm_vl'] + desg['tn_vl']
+            sede_cied = desg['tm_cied'] + desg['tn_cied'] + desg['virt_cied']
+            docentes_sugeridos = (1 if inscriptos <= 100 else (1 + -(-max(0, inscriptos - 100) // 100))) if inscriptos >= 10 else 0
+            cursos_vinc = []
+            try:
+                for cc in (cat.cursos or []):
+                    cursos_vinc.append({"id": cc.id, "curso_id": cc.curso_id, "curso_nombre": cc.curso.nombre if cc.curso else None, "turno": cc.turno, "sede_nombre": cc.sede.nombre if cc.sede else None})
+            except Exception:
+                pass
+            result.append({
+                "id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+                "link_meet": getattr(cat, 'link_meet', None),
+                "notas": getattr(cat, 'notas', None),
+                "decision_apertura": getattr(cat, 'decision_apertura', None),
+                "inscriptos": inscriptos,
+                "tm_av": desg['tm_av'], "tm_cab": desg['tm_cab'], "tm_vl": desg['tm_vl'], "tm_cied": desg['tm_cied'], "tm_total": tm_total,
+                "tn_av": desg['tn_av'], "tn_cab": desg['tn_cab'], "tn_vl": desg['tn_vl'], "tn_cied": desg['tn_cied'], "tn_total": tn_total,
+                "virt_cied": desg['virt_cied'],
+                "sede_av": sede_av, "sede_cab": sede_cab, "sede_vl": sede_vl, "sede_cied": sede_cied,
+                "sin_clasificar": desg['sin_clasificar'],
+                "docentes_sugeridos": docentes_sugeridos,
+                "cursos_vinculados": cursos_vinc,
+                "asignaciones": asigs,
+            })
+        except Exception:
+            result.append({"id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+                "link_meet": None, "inscriptos": 0,
+                "tm_av": 0, "tm_cab": 0, "tm_vl": 0, "tm_cied": 0, "tm_total": 0,
+                "tn_av": 0, "tn_cab": 0, "tn_vl": 0, "tn_cied": 0, "tn_total": 0,
+                "virt_cied": 0, "sede_av": 0, "sede_cab": 0, "sede_vl": 0, "sede_cied": 0,
+                "sin_clasificar": 0, "docentes_sugeridos": 0,
+                "cursos_vinculados": [], "asignaciones": []})
+    return result
 
-// ==================== v4.0 MEJORA 8: NECESITAN DOCENTE ====================
-function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
-  const [datos, setDatos] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const cargar = async () => {
-      setLoading(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-        const r = await apiFetch(`/api/catedras/necesitan-docente${qParam}`);
-        setDatos(r);
-      } catch (e) { console.error(e); }
-      setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
-
-  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
-
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
-        <p className="text-slate-500 text-sm">Cátedras con 10 o más inscriptos en una misma sede y turno, sin docente asignado.</p>
-      </div>
-      {datos.length === 0 ? (
-        <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-          <p className="text-4xl mb-2">✅</p>
-          <p className="text-green-700 font-medium">Todas las combinaciones sede/turno con +5 inscriptos tienen docente</p>
-        </div>
-      ) : (
-        <>
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-            <p className="text-red-700 font-medium">{datos.length} cátedras necesitan más docentes</p>
-            <p className="text-red-600 text-sm">Total docentes faltantes: {datos.reduce((s, d) => s + (d.faltan || 0), 0)}</p>
-          </div>
-          <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-            <table className="w-full">
-              <thead><tr className="bg-slate-50 border-b">
-                <th className="text-left p-3 text-sm font-semibold">Cátedra</th>
-                <th className="text-center p-3 text-sm font-semibold w-16">Inscr.</th>
-                <th className="text-center p-3 text-sm font-semibold w-16">Neces.</th>
-                <th className="text-center p-3 text-sm font-semibold w-16">Actual</th>
-                <th className="text-center p-3 text-sm font-semibold w-16">Faltan</th>
-                <th className="text-left p-3 text-sm font-semibold">✅ Sedes ya asignadas</th>
-                <th className="text-left p-3 text-sm font-semibold">⚠️ Desglose inscriptos</th>
-              </tr></thead>
-              <tbody>
-                {datos.map(d => (
-                  <tr key={d.catedra_id} className="border-b hover:bg-slate-50">
-                    <td className="p-3">
-                      <span className="px-2 py-1 bg-slate-800 text-white rounded text-xs font-mono mr-2">{d.codigo}</span>
-                      <span className="font-medium">{d.nombre}</span>
-                    </td>
-                    <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscriptos_total}</span></td>
-                    <td className="p-3 text-center"><span className="text-lg font-bold">{d.docs_necesarios}</span></td>
-                    <td className="p-3 text-center"><span className={`text-lg font-bold ${d.docentes_asignados > 0 ? 'text-emerald-600' : 'text-red-500'}`}>{d.docentes_asignados}</span></td>
-                    <td className="p-3 text-center"><span className="px-3 py-1 bg-red-100 text-red-700 rounded-full font-bold">{d.faltan}</span></td>
-                    <td className="p-3">
-                      {(d.sedes_asignadas || []).length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {d.sedes_asignadas.map((sa, i) => (
-                            <div key={i} className="px-2 py-1 bg-emerald-50 border border-emerald-300 rounded text-xs">
-                              <span className="font-bold text-emerald-700">✅ {sa.turno}</span>
-                              <span className={`ml-1 px-1 rounded text-white text-[10px] ${
-                                sa.sede.includes('Avellaneda') ? 'bg-blue-500' : sa.sede.includes('Caballito') ? 'bg-emerald-500' :
-                                sa.sede.includes('Vicente') ? 'bg-amber-500' : 'bg-purple-500'
-                              }`}>{sa.sede}</span>
-                              <span className="ml-1 text-emerald-600 text-[10px]">{sa.docente}</span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : <span className="text-red-400 text-sm italic">Sin docente</span>}
-                    </td>
-                    <td className="p-3">
-                      <div className="flex flex-wrap gap-1">
-                        {(d.aperturas_info || []).map((ap, i) => (
-                          <div key={i} className="px-2 py-1 bg-slate-50 border rounded text-xs">
-                            <span className="font-medium">{ap.turno}</span>
-                            <span className={`ml-1 px-1 rounded text-white text-[10px] ${
-                              ap.sede === 'Avellaneda' ? 'bg-blue-500' : ap.sede === 'Caballito' ? 'bg-emerald-500' :
-                              ap.sede === 'Vicente López' ? 'bg-amber-500' : 'bg-purple-500'
-                            }`}>{ap.sede}</span>
-                            <span className="ml-1 text-slate-500">({ap.inscriptos})</span>
-                          </div>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ==================== v8.0: MATERIAS ASINCRÓNICAS (1-9 alumnos) ====================
-function AsincronicasView({ cuatrimestre }) {
-  const [datos, setDatos] = useState(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    const cargar = async () => {
-      setLoading(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-        const r = await apiFetch(`/api/catedras/criterio-apertura${qParam}`);
-        setDatos(r);
-      } catch (e) { console.error(e); }
-      setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
-  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
-  if (!datos) return null;
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🎥 Materias Asincrónicas</h2>
-        <p className="text-slate-500 text-sm">Cátedras con 1 a 9 inscriptos totales. Se dictan con material pregrabado (sin docente en vivo).</p>
-      </div>
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-emerald-600">Abrir con docente</p><p className="text-3xl font-bold text-emerald-700">{datos.stats.total_abrir}</p><p className="text-xs text-emerald-500">≥10 inscriptos</p>
-        </div>
-        <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-purple-600">Asincrónicas</p><p className="text-3xl font-bold text-purple-700">{datos.stats.total_asincronica}</p><p className="text-xs text-purple-500">1-9 inscriptos</p>
-        </div>
-        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-slate-600">Sin alumnos</p><p className="text-3xl font-bold text-slate-400">{datos.stats.total_sin_alumnos}</p><p className="text-xs text-slate-400">0 inscriptos</p>
-        </div>
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden mb-6">
-        <div className="p-3 bg-purple-50 border-b"><h3 className="font-semibold text-purple-800">🎥 Asincrónicas ({datos.asincronica.length})</h3></div>
-        <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b text-sm">
-            <th className="p-3 text-left">Cátedra</th><th className="p-3 text-center w-24">Inscriptos</th><th className="p-3 text-left">Estado</th>
-          </tr></thead>
-          <tbody>
-            {datos.asincronica.map((d, i) => (
-              <tr key={i} className="border-b hover:bg-purple-50/30">
-                <td className="p-3"><span className="font-mono text-xs bg-purple-800 text-white px-1 rounded mr-2">{d.codigo}</span>{d.nombre}</td>
-                <td className="p-3 text-center"><span className="text-lg font-bold text-purple-600">{d.total}</span></td>
-                <td className="p-3"><span className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">🎥 Asincrónica — Material pregrabado</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {datos.sin_alumnos.length > 0 && (
-        <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-          <div className="p-3 bg-slate-50 border-b"><h3 className="font-semibold text-slate-600">Sin alumnos ({datos.sin_alumnos.length})</h3></div>
-          <div className="p-4 flex flex-wrap gap-2">
-            {datos.sin_alumnos.map((d, i) => (
-              <span key={i} className="px-2 py-1 bg-slate-100 rounded text-xs text-slate-500">
-                <span className="font-mono">{d.codigo}</span> {d.nombre}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ==================== DOCENTES VIEW ====================
-function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
-  const [modalSedes, setModalSedes] = useState(null);
-  const [modalEditar, setModalEditar] = useState(null);
-  const [modalNuevo, setModalNuevo] = useState(false);
-  const [buscar, setBuscar] = useState('');
-
-  // v15: editStore persiste datos editables en un ref que NUNCA se pierde
-  const editStore = useRef({});
-  const editInitialized = useRef(false);
-  if (!editInitialized.current && docentes.length > 0) {
-    docentes.forEach(d => {
-      if (!editStore.current[d.id]) {
-        editStore.current[d.id] = {
-          horas_asignadas: d.horas_asignadas || 0,
-          materias_av: d.materias_av || 0,
-          materias_cab: d.materias_cab || 0,
-          materias_vl: d.materias_vl || 0,
-          sociedad_cfpea: d.sociedad_cfpea || false,
-          sociedad_isftea: d.sociedad_isftea || false,
-          notas: d.notas || '',
-          especialidad: d.especialidad || '',
-          catedras_referencia: d.catedras_referencia || '',
-        };
-      }
-    });
-    editInitialized.current = true;
-  }
-  // Also add new docentes that weren't there at init
-  docentes.forEach(d => {
-    if (!editStore.current[d.id]) {
-      editStore.current[d.id] = {
-        horas_asignadas: d.horas_asignadas || 0,
-        materias_av: d.materias_av || 0,
-        materias_cab: d.materias_cab || 0,
-        materias_vl: d.materias_vl || 0,
-        sociedad_cfpea: d.sociedad_cfpea || false,
-        sociedad_isftea: d.sociedad_isftea || false,
-        notas: d.notas || '',
-        especialidad: d.especialidad || '',
-        catedras_referencia: d.catedras_referencia || '',
-      };
+@app.get("/api/catedras/stats")
+def get_catedras_stats(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    total = db.query(Catedra).count()
+    q = db.query(Asignacion)
+    if cuatrimestre_id:
+        q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = q.all()
+    q_insc = db.query(Inscripcion)
+    if cuatrimestre_id:
+        q_insc = q_insc.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    total_inscripciones = q_insc.count()
+    alumnos_unicos = db.query(func.count(func.distinct(Inscripcion.alumno_id)))
+    if cuatrimestre_id:
+        alumnos_unicos = alumnos_unicos.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    alumnos_unicos = alumnos_unicos.scalar() or 0
+    materias_con_inscriptos = db.query(func.count(func.distinct(Inscripcion.catedra_id)))
+    if cuatrimestre_id:
+        materias_con_inscriptos = materias_con_inscriptos.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    materias_con_inscriptos = materias_con_inscriptos.scalar() or 0
+    # Desglose virtual/presencial
+    try:
+        virt_q = "SELECT COUNT(*) FROM inscripciones WHERE modalidad_alumno = 'virtual'"
+        pres_q = "SELECT COUNT(*) FROM inscripciones WHERE modalidad_alumno = 'presencial'"
+        if cuatrimestre_id:
+            virt_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+            pres_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+        virtuales = db.execute(text(virt_q)).scalar() or 0
+        presenciales = db.execute(text(pres_q)).scalar() or 0
+    except Exception:
+        virtuales = 0
+        presenciales = 0
+    return {
+        "total_catedras": total,
+        "catedras_abiertas": len(set(a.catedra_id for a in asigs)),
+        "total_asignaciones": len(asigs),
+        "con_docente": len([a for a in asigs if a.docente_id and a.modalidad != 'asincronica']),
+        "sin_docente": len([a for a in asigs if not a.docente_id and a.modalidad != 'asincronica']),
+        "total_inscripciones": total_inscripciones,
+        "alumnos_unicos": alumnos_unicos,
+        "materias_con_inscriptos": materias_con_inscriptos,
+        "inscriptos_virtuales": virtuales,
+        "inscriptos_presenciales": presenciales,
     }
-  });
 
-  const stats = useMemo(() => {
-    const s = { PRESENCIAL_VIRTUAL: 0, SEDE_VIRTUAL: 0, REMOTO: 0, SIN_ASIGNACIONES: 0 };
-    let horas_cfpea = 0, horas_isftea = 0, horas_total = 0;
-    let mat_av_total = 0, mat_cab_total = 0, mat_vl_total = 0;
-    const por_sede = {};
-    docentes.forEach(d => {
-      if (s[d.tipo_modalidad] !== undefined) s[d.tipo_modalidad]++;
-      const h = d.horas_asignadas || 0;
-      horas_total += h;
-      if (d.sociedad_cfpea) horas_cfpea += h;
-      if (d.sociedad_isftea) horas_isftea += h;
-      mat_av_total += d.materias_av || 0;
-      mat_cab_total += d.materias_cab || 0;
-      mat_vl_total += d.materias_vl || 0;
-      (d.sedes || []).forEach(sd => {
-        por_sede[sd.nombre] = (por_sede[sd.nombre] || 0) + 1;
-      });
-    });
-    return { ...s, horas_cfpea, horas_isftea, horas_total, mat_av_total, mat_cab_total, mat_vl_total, por_sede };
-  }, [docentes]);
+@app.put("/api/catedras/{catedra_id}")
+def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db)):
+    cat = db.query(Catedra).filter(Catedra.id == catedra_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="No encontrada")
+    if "nombre" in data: cat.nombre = data["nombre"]
+    if "link_meet" in data: cat.link_meet = data["link_meet"]
+    from sqlalchemy import text as sql_text
+    if "notas" in data:
+        try: db.execute(sql_text(f"UPDATE catedras SET notas = :val WHERE id = :id"), {"val": data["notas"], "id": catedra_id})
+        except: pass
+    if "decision_apertura" in data:
+        try: db.execute(sql_text(f"UPDATE catedras SET decision_apertura = :val WHERE id = :id"), {"val": data["decision_apertura"], "id": catedra_id})
+        except: pass
+    db.commit()
+    return {"ok": True}
 
-  const docentesFiltrados = useMemo(() => {
-    if (!buscar) return docentes;
-    const b = buscar.toLowerCase();
-    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b) || d.dni.includes(b));
-  }, [docentes, buscar]);
+@app.get("/api/catedras/necesitan-docente")
+def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # Total inscriptos por cátedra
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    # Desglose por turno+sede para info
+    q_txt = """SELECT catedra_id, COALESCE(turno,'Virtual') as turno, COALESCE(modalidad_alumno,'virtual') as mod,
+        COALESCE(sede_referencia,'') as sede, COUNT(*) as cnt
+        FROM inscripciones WHERE modalidad_alumno IS NOT NULL"""
+    if cuatrimestre_id: q_txt += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    q_txt += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
+    cat_combos = {}
+    try:
+        for r in db.execute(text(q_txt)).fetchall():
+            cid, turno, mod, sede, cnt = r
+            if cid not in cat_combos: cat_combos[cid] = {}
+            es_cied = (mod == 'virtual')
+            if es_cied: sede_tipo = 'CIED'
+            else:
+                sn = (sede or '').lower()
+                if 'avellaneda' in sn: sede_tipo = 'Avellaneda'
+                elif 'caballito' in sn: sede_tipo = 'Caballito'
+                elif 'vicente' in sn: sede_tipo = 'Vicente López'
+                else: sede_tipo = 'CIED'
+            key = f"{turno}|{sede_tipo}"
+            cat_combos[cid][key] = cat_combos[cid].get(key, 0) + cnt
+    except: pass
+    result = []
+    all_cats = db.query(Catedra).all()
+    for cat in all_cats:
+        total = total_map.get(cat.id, 0)
+        if total < 10: continue
+        # Docentes necesarios vs asignados
+        docs_necesarios = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+        asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
+        if cuatrimestre_id: asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+        asigs_list = asigs.all()
+        docs_actuales = len([a for a in asigs_list if a.docente_id])
+        faltan = max(0, docs_necesarios - docs_actuales)
+        if faltan == 0: continue  # Cátedra cubierta, no la mostramos
+        # Build desglose for display
+        combos = cat_combos.get(cat.id, {})
+        aperturas_info = []
+        for key, cnt in sorted(combos.items(), key=lambda x: -x[1]):
+            turno, sede_tipo = key.split('|')
+            aperturas_info.append({'turno': turno, 'sede': sede_tipo, 'inscriptos': cnt})
+        # Sedes ya asignadas
+        sedes_asignadas = []
+        for a in asigs_list:
+            if a.docente_id:
+                m = a.modalidad or ''
+                s = a.sede.nombre if a.sede else 'CIED'
+                turno_doc = 'Mañana' if 'tm' in m else ('Noche' if 'tn' in m or m == 'presencial' else 'Virtual')
+                sedes_asignadas.append({'turno': turno_doc, 'sede': s,
+                    'docente': f"{a.docente.nombre} {a.docente.apellido}" if a.docente else ''})
+        result.append({
+            "catedra_id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+            "inscriptos_total": total, "docs_necesarios": docs_necesarios,
+            "docentes_asignados": docs_actuales, "faltan": faltan,
+            "docentes_nombres": [f"{a.docente.nombre} {a.docente.apellido}" for a in asigs_list if a.docente],
+            "aperturas_info": aperturas_info,
+            "sedes_asignadas": sedes_asignadas,
+        })
+    result.sort(key=lambda x: sort_key_codigo(x['codigo']))
+    return result
 
-  const guardarSedes = async (docenteId, sedeIds) => {
-    try { await apiFetch(`/api/docentes/${docenteId}/sedes`, { method: 'PUT', body: JSON.stringify({ sede_ids: sedeIds }) }); recargar(); setModalSedes(null); } catch (e) { alert(e.message); }
-  };
-  const guardarDocente = async (docenteId, data) => {
-    try { await apiFetch(`/api/docentes/${docenteId}`, { method: 'PUT', body: JSON.stringify(data) }); recargar(); setModalEditar(null); } catch (e) { alert(e.message); }
-  };
-  const crearDocente = async (data) => {
-    try { await apiFetch('/api/docentes', { method: 'POST', body: JSON.stringify(data) }); recargar(); setModalNuevo(false); } catch (e) { alert(e.message); }
-  };
-  const eliminarDocente = async (d) => {
-    if (!window.confirm(`¿Eliminar a ${d.nombre} ${d.apellido}?`)) return;
-    try { await apiFetch(`/api/docentes/${d.id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
-  };
+# ===== v8.0: Criterio de apertura simplificado =====
+@app.get("/api/catedras/criterio-apertura")
+def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    """
+    >=10 total → ABRIR. 1 doc hasta 100, luego +1 cada 100 adicionales.
+    1-9 total → ASINCRÓNICA
+    0 → SIN ALUMNOS
+    """
+    from sqlalchemy import text
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    all_cats = sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo))
+    abrir = []; asincronica = []; sin_alumnos = []
+    for cat in all_cats:
+        total = total_map.get(cat.id, 0)
+        if total == 0:
+            sin_alumnos.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": 0})
+        elif total < 10:
+            asincronica.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total})
+        else:
+            docs = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+            # Check if already has asignacion
+            tiene = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
+            if cuatrimestre_id: tiene = tiene.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+            tiene_asig = tiene.count() > 0
+            docs_actuales = tiene.filter(Asignacion.docente_id.isnot(None)).count() if tiene_asig else 0
+            abrir.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total,
+                "docentes_sugeridos": docs, "docentes_actuales": docs_actuales,
+                "faltan": max(0, docs - docs_actuales), "tiene_asignacion": tiene_asig})
+    return {"abrir": abrir, "asincronica": asincronica, "sin_alumnos": sin_alumnos,
+        "stats": {"total_abrir": len(abrir), "total_asincronica": len(asincronica),
+            "total_sin_alumnos": len(sin_alumnos),
+            "total_docentes_sugeridos": sum(a["docentes_sugeridos"] for a in abrir)}}
 
-  return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <div><h2 className="text-2xl font-bold text-slate-800">Docentes</h2></div>
-        <button onClick={() => setModalNuevo(true)} className="px-4 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium hover:bg-amber-400">+ Agregar Docente</button>
-      </div>
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        {Object.entries(TIPO_DOCENTE_CONFIG).map(([key, cfg]) => (
-          <div key={key} className={`p-4 rounded-xl border ${cfg.bg}`}>
-            <p className={`font-medium ${cfg.color}`}>{cfg.icon} {cfg.label}</p>
-            <p className={`text-3xl font-bold ${cfg.color}`}>{stats[key] || 0}</p>
-          </div>
-        ))}
-      </div>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        <div className="bg-slate-800 rounded-xl p-3 text-white"><p className="text-xs opacity-70">Total docentes</p><p className="text-2xl font-bold">{docentes.length}</p></div>
-        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Total horas</p><p className="text-2xl font-bold">{stats.horas_total}h</p></div>
-        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas CFPEA SRL</p><p className="text-2xl font-bold text-blue-600">{stats.horas_cfpea}h</p></div>
-        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas ISFTEA SRL</p><p className="text-2xl font-bold text-emerald-600">{stats.horas_isftea}h</p></div>
-      </div>
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="bg-blue-50 rounded-xl border border-blue-200 p-3"><p className="text-xs text-blue-600">Materias Avellaneda</p><p className="text-2xl font-bold text-blue-700">{stats.mat_av_total}</p></div>
-        <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-3"><p className="text-xs text-emerald-600">Materias Caballito</p><p className="text-2xl font-bold text-emerald-700">{stats.mat_cab_total}</p></div>
-        <div className="bg-amber-50 rounded-xl border border-amber-200 p-3"><p className="text-xs text-amber-600">Materias V. López</p><p className="text-2xl font-bold text-amber-700">{stats.mat_vl_total}</p></div>
-      </div>
-      {Object.keys(stats.por_sede).length > 0 && (
-        <div className="flex gap-2 mb-4 flex-wrap">
-          <span className="text-xs text-slate-500 py-1">Docentes por sede:</span>
-          {Object.entries(stats.por_sede).map(([sede, cnt]) => (
-            <span key={sede} className={`px-2 py-1 rounded text-white text-xs ${SEDE_COLORS[sede] || 'bg-gray-500'}`}>{sede}: {cnt}</span>
-          ))}
-        </div>
-      )}
-      <div className="bg-white rounded-xl border p-3 mb-4">
-        <input type="text" placeholder="Buscar por nombre, apellido o DNI..." className="w-full px-3 py-2 border rounded-lg text-sm"
-          value={buscar} onChange={e => setBuscar(e.target.value)} />
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm">
-        <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-4 text-sm font-semibold">Docente</th>
-            <th className="text-center p-4 text-sm font-semibold">Tipo</th>
-            <th className="text-center p-4 text-sm font-semibold">Sedes</th>
-            <th className="text-center p-2 text-xs font-semibold" colSpan="7">Horas · Materias por sede · CFPEA · ISFTEA · Notas · Especialidad · Cát. ref.</th>
-            <th className="text-center p-2 text-xs font-semibold">Disponib.</th>
-            <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
-            <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
-          </tr></thead>
-          <tbody>
-            {docentesFiltrados.map(d => {
-              const tipoCfg = TIPO_DOCENTE_CONFIG[d.tipo_modalidad] || TIPO_DOCENTE_CONFIG.SIN_ASIGNACIONES;
-              return (
-                <tr key={d.id} className={`border-b hover:bg-slate-50 ${(d.horas_asignadas > 0 || d.asignaciones?.length > 0) ? 'bg-emerald-50/50' : ''}`}>
-                  <td className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">{(d.nombre||'?')[0]}{(d.apellido||'?')[0]}</div>
-                      <div><p className="font-medium">{d.nombre} {d.apellido}</p><p className="text-xs text-slate-500">DNI: {d.dni}</p>
-                        {d.email && <p className="text-xs text-slate-400">{d.email}</p>}</div>
-                    </div>
-                  </td>
-                  <td className="p-4 text-center"><span className={`px-3 py-1 rounded-full text-xs font-medium ${tipoCfg.bg} ${tipoCfg.color}`}>{tipoCfg.icon} {tipoCfg.label}</span></td>
-                  <td className="p-4 text-center">
-                    <div className="flex flex-wrap justify-center gap-1">
-                      {d.sedes?.length > 0 ? d.sedes.map(s => <span key={s.id} className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}>{s.nombre}</span>)
-                        : <span className="text-slate-400 text-xs">Sin sedes</span>}
-                    </div>
-                    <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
-                  </td>
-                  <td className="p-1" colSpan="7">
-                    <DocenteEditRow docId={d.id} editStore={editStore} />
-                  </td>
-                  <td className="p-2 text-center text-xs">
-                    <span className={`px-2 py-1 rounded ${d.disponibilidad_resumen === 'Sin asignar' ? 'bg-slate-100 text-slate-400' : 'bg-emerald-100 text-emerald-700'}`}>
-                      {d.disponibilidad_resumen || 'Sin asignar'}
-                    </span>
-                    {d.disponibilidad_franjas?.length > 0 && (
-                      <div className="mt-1 text-[9px] text-slate-400">{d.disponibilidad_franjas.slice(0,3).join(', ')}{d.disponibilidad_franjas.length > 3 ? '...' : ''}</div>
-                    )}
-                  </td>
-                  <td className="p-4">
-                    {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
-                      const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                      return (<div key={a.id} className="flex items-center gap-2 text-sm mb-1">
-                        <span className={mod.color}>{mod.icon}</span>
-                        <span className="font-mono bg-slate-100 px-1 rounded text-xs">{a.catedra_codigo}</span>
-                        <span className="text-slate-500 text-xs">{a.dia||'Pend.'} {a.hora_inicio||''}</span>
-                      </div>);
-                    }) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
-                  </td>
-                  <td className="p-4 text-center">
-                    <div className="flex gap-1 justify-center">
-                      <button onClick={() => setModalEditar(d)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">✏️</button>
-                      <button onClick={() => eliminarDocente(d)} className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200">🗑️</button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{docentesFiltrados.length} docentes</p>
-      {modalSedes && <ModalEditarSedes docente={modalSedes} sedes={sedes} onSave={guardarSedes} onClose={() => setModalSedes(null)} />}
-      {modalEditar && <ModalEditarDocente docente={modalEditar} onSave={guardarDocente} onClose={() => setModalEditar(null)} />}
-      {modalNuevo && <ModalNuevoDocente onSave={crearDocente} onClose={() => setModalNuevo(false)} />}
-    </div>
-  );
-}
+# ===== v12.0: Auto-marcar asincrónicas como "No abrir" =====
+@app.post("/api/catedras/auto-decision-asincronicas")
+def auto_decision_asincronicas(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    criterio = get_criterio_apertura(cuatrimestre_id, db)
+    count = 0
+    for item in criterio['asincronica']:
+        cat = db.query(Catedra).filter(Catedra.codigo == item['codigo']).first()
+        if cat:
+            try:
+                db.execute(text("UPDATE catedras SET decision_apertura = :val WHERE id = :id"),
+                    {"val": "Asincrónica", "id": cat.id})
+                count += 1
+            except: pass
+    for item in criterio['sin_alumnos']:
+        cat = db.query(Catedra).filter(Catedra.codigo == item['codigo']).first()
+        if cat:
+            try:
+                db.execute(text("UPDATE catedras SET decision_apertura = :val WHERE id = :id"),
+                    {"val": "No abrir", "id": cat.id})
+                count += 1
+            except: pass
+    db.commit()
+    return {"marcadas": count, "asincronicas": len(criterio['asincronica']), "sin_alumnos": len(criterio['sin_alumnos'])}
 
-function ModalEditarDocente({ docente, onSave, onClose }) {
-  const [form, setForm] = useState({ nombre: docente.nombre, apellido: docente.apellido, dni: docente.dni, email: docente.email || '' });
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-      <h3 className="text-lg font-bold mb-4">Editar Docente</h3>
-      <div className="space-y-3">
-        {['dni','nombre','apellido','email'].map(f => (
-          <div key={f}><label className="text-sm text-slate-600 capitalize">{f}</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form[f]} onChange={e => setForm({...form, [f]: e.target.value})} /></div>
-        ))}
-      </div>
-      <div className="flex gap-2 mt-4">
-        <button onClick={() => onSave(docente.id, form)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
-        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-      </div>
-    </div></div>
-  );
-}
 
-function ModalNuevoDocente({ onSave, onClose }) {
-  const [form, setForm] = useState({ dni: '', nombre: '', apellido: '', email: '' });
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-      <h3 className="text-lg font-bold mb-4">Agregar Docente</h3>
-      <div className="space-y-3">
-        {[{f:'dni',p:'Ej: 20345678'},{f:'nombre',p:''},{f:'apellido',p:''},{f:'email',p:''}].map(({f,p}) => (
-          <div key={f}><label className="text-sm text-slate-600 capitalize">{f} {['dni','nombre','apellido'].includes(f) ? '*' : ''}</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form[f]} onChange={e => setForm({...form, [f]: e.target.value})} placeholder={p} /></div>
-        ))}
-      </div>
-      <div className="flex gap-2 mt-4">
-        <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }}
-          className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Crear</button>
-        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-      </div>
-    </div></div>
-  );
-}
+@app.get("/api/inscriptos/por-curso")
+def get_inscriptos_por_curso(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    q = """SELECT curso_nombre, 
+        COUNT(*) as total_inscripciones,
+        COUNT(DISTINCT alumno_id) as alumnos_unicos
+        FROM inscripciones WHERE curso_nombre IS NOT NULL AND curso_nombre != ''"""
+    if cuatrimestre_id:
+        q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    q += " GROUP BY curso_nombre ORDER BY total_inscripciones DESC"
+    try:
+        rows = db.execute(text(q)).fetchall()
+        result = []
+        for r in rows:
+            curso_raw = r[0]; total_insc = r[1]; alumnos = r[2]
+            nombre_limpio = re.split(r'\s*[-–]\s*(?:CIED|Cursada)', curso_raw, maxsplit=1)[0].strip()
+            nombre_limpio = re.split(r'\s*\(', nombre_limpio, maxsplit=1)[0].strip()
+            es_cied = 'CIED' in curso_raw.upper()
+            m_sede = re.search(r'\(([^)]+)\)', curso_raw)
+            sede_raw = m_sede.group(1).strip() if m_sede else ''
+            sede = normalizar_sede(sede_raw) if sede_raw else 'Sin sede'
+            es_online = sede in ['Online - Interior']
+            modalidad = 'CIED' if (es_cied or es_online) else 'Presencial'
+            es_bce = 'BCE' in curso_raw.upper() or 'SECUNDARIO' in curso_raw.upper()
+            es_bea = 'BEA' in curso_raw.upper()
+            tipo_curso = 'BCE' if es_bce else ('BEA' if es_bea else 'Superior')
+            result.append({
+                "curso_completo": curso_raw, "curso_nombre": nombre_limpio,
+                "sede": sede, "modalidad": modalidad, "tipo_curso": tipo_curso,
+                "inscripciones": total_insc, "alumnos_unicos": alumnos,
+            })
+        return result
+    except Exception as e:
+        return []
 
-function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
-  const [sel, setSel] = useState(docente.sedes?.map(s => s.id) || []);
-  const toggle = id => setSel(sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id]);
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-      <h3 className="text-lg font-bold mb-4">Sedes: {docente.nombre} {docente.apellido}</h3>
-      <div className="space-y-2 mb-4">
-        {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
-          <label key={s.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${sel.includes(s.id) ? 'border-amber-500 bg-amber-50' : 'hover:bg-slate-50'}`}>
-            <input type="checkbox" checked={sel.includes(s.id)} onChange={() => toggle(s.id)} />
-            <span className={`w-3 h-3 rounded-full ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}></span><span>{s.nombre}</span>
-          </label>
-        ))}
-      </div>
-      <div className="flex gap-2">
-        <button onClick={() => onSave(docente.id, sel)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
-        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-      </div>
-    </div></div>
-  );
-}
 
-// ==================== CALENDARIO VIEW ====================
-// ==================== v16.0: CONTROL DE INSCRIPCIONES ====================
-function ControlInscripcionesView({ cuatrimestre }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [filtro, setFiltro] = useState('todos');
-  const [buscar, setBuscar] = useState('');
+# ==================== ASIGNACIONES ====================
 
-  const analizar = async () => {
-    const input = document.createElement('input'); input.type = 'file'; input.accept = '.xlsx';
-    input.onchange = async (ev) => {
-      const file = ev.target.files?.[0]; if (!file) return;
-      setLoading(true);
-      try {
-        const form = new FormData(); form.append('file', file);
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '0';
-        const res = await fetch(`${API_URL}/api/control-inscripciones?cuatrimestre_id=${cuatId}`, { method: 'POST', body: form });
-        const result = await res.json();
-        if (result._debug) console.log('Control debug:', result._debug);
-        setData(result);
-      } catch (e) { alert('Error: ' + e.message); }
-      setLoading(false);
-    }; input.click();
-  };
-
-  const ESTADO_CFG = {
-    'CORRECTO': { bg: 'bg-emerald-50', badge: 'bg-emerald-500', label: '✅ Correcto', icon: '✅' },
-    'MATERIAS_EXTRA': { bg: 'bg-blue-50', badge: 'bg-blue-500', label: '➕ Materias extra', icon: '➕' },
-    'FALTAN_MATERIAS': { bg: 'bg-amber-50', badge: 'bg-amber-500', label: '⚠️ Faltan materias', icon: '⚠️' },
-    'FALTAN_Y_SOBRAN': { bg: 'bg-red-50', badge: 'bg-red-500', label: '❌ Faltan y sobran', icon: '❌' },
-    'SIN_INSCRIPCIONES': { bg: 'bg-red-50', badge: 'bg-red-700', label: '🚫 Sin inscripciones', icon: '🚫' },
-    'SIN_PLAN': { bg: 'bg-slate-50', badge: 'bg-slate-400', label: '— Sin plan', icon: '—' },
-  };
-
-  const filtered = (data?.results || []).filter(r => {
-    if (filtro === 'ok') return r.estado === 'CORRECTO';
-    if (filtro === 'faltan') return r.estado === 'FALTAN_MATERIAS' || r.estado === 'FALTAN_Y_SOBRAN';
-    if (filtro === 'sobran') return r.estado === 'MATERIAS_EXTRA' || r.estado === 'FALTAN_Y_SOBRAN';
-    if (filtro === 'sin_insc') return r.estado === 'SIN_INSCRIPCIONES';
-    if (filtro === 'sin_plan') return r.estado === 'SIN_PLAN';
-    if (filtro === 'problemas') return r.estado !== 'CORRECTO' && r.estado !== 'SIN_PLAN';
-    return true;
-  }).filter(r => !buscar || r.nombre.toLowerCase().includes(buscar.toLowerCase()) || r.dni.includes(buscar));
-
-  const st = data?.stats || {};
-
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">✅ Control de Inscripciones a Materias</h2>
-        <p className="text-slate-500 text-sm mt-1">Subí el Excel de control de alumnos. El sistema cruza: carrera + fecha de inicio → año de cursada → plan de carrera → cátedras que debe cursar → vs. cátedras realmente inscriptas.</p>
-      </div>
-
-      {!data ? (
-        <div className="text-center py-16">
-          <p className="text-6xl mb-4">📋</p>
-          <p className="text-slate-600 text-lg mb-4">Subí el archivo "Control de alumnos inscriptos a materias" para analizar</p>
-          <button onClick={analizar} disabled={loading} className="px-8 py-3 bg-blue-600 text-white rounded-xl font-bold text-lg hover:bg-blue-700 disabled:opacity-50">
-            {loading ? '⏳ Analizando...' : '📤 Subir Excel de control'}
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-6 gap-3 mb-6">
-            <div className="bg-slate-800 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.total||0}</p><p className="text-[10px] opacity-70">Total</p></div>
-            <div className="bg-emerald-500 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.ok||0}</p><p className="text-[10px] opacity-80">✅ Correctos</p></div>
-            <div className="bg-amber-500 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.faltan||0}</p><p className="text-[10px] opacity-80">⚠️ Faltan</p></div>
-            <div className="bg-blue-500 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.sobran||0}</p><p className="text-[10px] opacity-80">➕ Extra</p></div>
-            <div className="bg-red-600 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.sin_insc||0}</p><p className="text-[10px] opacity-80">🚫 Sin inscr.</p></div>
-            <div className="bg-slate-400 text-white rounded-xl p-3 text-center"><p className="text-2xl font-bold">{st.sin_plan||0}</p><p className="text-[10px] opacity-80">— Sin plan</p></div>
-          </div>
-
-          <div className="flex gap-2 mb-4 flex-wrap items-center">
-            {[['todos','Todos'],['problemas','⚠️ Con problemas'],['ok','✅ Correctos'],['faltan','Faltan materias'],['sobran','Materias extra'],['sin_insc','🚫 Sin inscripciones'],['sin_plan','Sin plan']].map(([k,l]) => (
-              <button key={k} onClick={() => setFiltro(k)} className={`px-3 py-1.5 rounded-lg text-xs ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
-            ))}
-            <div className="flex-1" />
-            <input type="text" placeholder="🔍 Buscar por nombre o DNI..." value={buscar} onChange={e => setBuscar(e.target.value)}
-              className="px-3 py-1.5 border rounded-lg text-sm w-48" />
-            <button onClick={analizar} className="px-3 py-1.5 bg-slate-200 rounded-lg text-xs hover:bg-slate-300">📤 Nuevo análisis</button>
-            <button onClick={() => {
-              if (!data?.results?.length) return alert('No hay datos para exportar');
-              const rows = [['Alumno','DNI','Sede','Carrera','Año','Estado','Debe cursar','Inscripto a','Faltantes','Sobrantes']];
-              for (const r of (data.results || [])) {
-                rows.push([r.nombre, r.dni, r.sede||'', r.curso||'', r.anno, r.estado,
-                  (r.debe_cursar||[]).join('; '), (r.inscripto_a||[]).join('; '),
-                  (r.faltantes||[]).join('; '), (r.sobrantes||[]).join('; ')]);
-              }
-              const csv = rows.map(r => r.map(c => '"' + String(c||'').replace(/"/g,'""') + '"').join(',')).join('\n');
-              const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8'});
-              const url = URL.createObjectURL(blob); const a = document.createElement('a');
-              a.href = url; a.download = 'control_inscripciones.csv'; a.click(); URL.revokeObjectURL(url);
-            }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs hover:bg-emerald-700">📥 Exportar CSV</button>
-          </div>
-
-          <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-            <table className="w-full text-[11px]">
-              <thead><tr className="bg-slate-800 text-white">
-                <th className="p-2 text-left">Alumno</th>
-                <th className="p-2 text-left">DNI</th>
-                <th className="p-2 text-left">Carrera</th>
-                <th className="p-2 text-center">Año</th>
-                <th className="p-2 text-center">Estado</th>
-                <th className="p-2 text-left">Debe cursar</th>
-                <th className="p-2 text-left">Inscripto a</th>
-                <th className="p-2 text-left">Faltantes</th>
-                <th className="p-2 text-left">Sobrantes</th>
-              </tr></thead>
-              <tbody>
-                {filtered.map((r, i) => {
-                  const cfg = ESTADO_CFG[r.estado] || ESTADO_CFG['SIN_PLAN'];
-                  return (
-                    <tr key={i} className={`border-b ${cfg.bg} hover:bg-slate-100`}>
-                      <td className="p-2 font-medium">{r.nombre}</td>
-                      <td className="p-2 font-mono text-[10px]">{r.dni}</td>
-                      <td className="p-2 text-[10px]">{r.curso}{r.is_doble && <span className="ml-1 bg-violet-100 text-violet-700 px-1 rounded text-[8px]">DOBLE</span>}</td>
-                      <td className="p-2 text-center font-bold">{r.anno}</td>
-                      <td className="p-2 text-center"><span className={`px-1.5 py-0.5 rounded text-white text-[9px] font-bold ${cfg.badge}`}>{cfg.label}</span></td>
-                      <td className="p-2 text-[9px]">
-                        {r.debe_cursar?.map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
-                      </td>
-                      <td className="p-2 text-[9px]">
-                        {r.inscripto_a?.map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
-                      </td>
-                      <td className="p-2 text-[9px]">
-                        {r.faltantes?.map((c,j) => <div key={j} className="text-red-600 font-medium">{c}</div>)}
-                      </td>
-                      <td className="p-2 text-[9px]">
-                        {r.sobrantes?.map((c,j) => <div key={j} className="text-blue-600">{c}</div>)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-sm text-slate-500 mt-3 text-center">{filtered.length} alumnos{data.total_results !== filtered.length ? ` (de ${data.total_results} totales)` : ''}</p>
-          {data._debug && st.total === 0 && (
-            <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm">
-              <p className="font-bold text-amber-800">⚠️ No se procesaron alumnos. Verificá:</p>
-              <p className="text-amber-700 mt-1">Plan de carreras cargado: {data._debug.plan_carreras} carreras</p>
-              <p className="text-amber-700">Inscripciones en el sistema: {data._debug.inscripciones_db} (DNIs únicos: {data._debug.dnis_con_inscripciones})</p>
-              <p className="text-amber-700">Cuatrimestre ID: {data._debug.cuatrimestre_id || 'Todos'}</p>
-              {data._debug.inscripciones_db === 0 && <p className="text-red-600 mt-2 font-bold">→ No hay inscripciones cargadas. Importá primero los archivos de alumnos inscriptos.</p>}
-              {data._debug.plan_carreras === 0 && <p className="text-red-600 mt-2 font-bold">→ No hay plan de carreras. Importá primero el molde Horarios.xlsx.</p>}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ==================== v16.0: SUGERENCIAS DE ARMADO DE HORARIOS ====================
-function SugerenciasArmadoView({ cuatrimestre }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [sedeActiva, setSedeActiva] = useState('');
-  const [carreraAbierta, setCarreraAbierta] = useState({});
-
-  useEffect(() => {
-    const cargar = async () => {
-      setLoading(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-        setData(await apiFetch(`/api/sugerencias-armado${qp}`));
-      } catch (e) { console.error(e); }
-      setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
-
-  useEffect(() => {
-    if (data?.sedes) {
-      const keys = Object.keys(data.sedes);
-      if (keys.length > 0 && !sedeActiva) setSedeActiva(keys[0]);
-    }
-  }, [data]);
-
-  if (loading) return <div className="p-8 text-center">⏳ Analizando cátedras, docentes y disponibilidad...</div>;
-
-  const sedes = data?.sedes || {};
-  const sedeKeys = Object.keys(sedes);
-  const st = data?.stats || {};
-
-  const ESTADO_CONFIG = {
-    asignado: { bg: 'bg-emerald-50', border: 'border-emerald-200', badge: 'bg-emerald-500', label: '✅ Con docente' },
-    sugerido: { bg: 'bg-blue-50', border: 'border-blue-200', badge: 'bg-blue-500', label: '🤖 Sugerido' },
-    sin_sugerencia: { bg: 'bg-red-50', border: 'border-red-200', badge: 'bg-red-500', label: '❌ Sin sugerencia' },
-    asincronica: { bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-500', label: '🎥 Asincrónica' },
-    sin_alumnos: { bg: 'bg-slate-50', border: '', badge: 'bg-slate-300', label: '—' },
-  };
-
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🤖 Sugerencia de Horarios por Carrera</h2>
-        <p className="text-slate-500 text-sm">Pre-armado automático cruzando cátedras abiertas, disponibilidad docente y cátedras de referencia.</p>
-      </div>
-
-      <div className="grid grid-cols-5 gap-3 mb-6">
-        <div className="bg-slate-800 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.total||0}</p><p className="text-xs opacity-70">Total cátedras</p></div>
-        <div className="bg-emerald-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.con_docente||0}</p><p className="text-xs opacity-80">✅ Con docente</p></div>
-        <div className="bg-blue-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.sugerido||0}</p><p className="text-xs opacity-80">🤖 Sugerido</p></div>
-        <div className="bg-red-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.sin_sugerencia||0}</p><p className="text-xs opacity-80">❌ Sin sugerencia</p></div>
-        <div className="bg-purple-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.asincronica||0}</p><p className="text-xs opacity-80">🎥 Asincrónicas</p></div>
-      </div>
-
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {sedeKeys.map(s => (
-          <button key={s} onClick={() => setSedeActiva(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
-        ))}
-      </div>
-
-      {sedeActiva && sedes[sedeActiva] ? Object.entries(sedes[sedeActiva]).map(([carrera, annos]) => {
-        const key = `${sedeActiva}-${carrera}`;
-        const abierta = carreraAbierta[key] !== false;
-        const allCats = Object.values(annos).flat();
-        const conDoc = allCats.filter(c => c.estado === 'asignado').length;
-        const sugeridos = allCats.filter(c => c.estado === 'sugerido').length;
-        const sinSug = allCats.filter(c => c.estado === 'sin_sugerencia').length;
-        return (
-          <div key={key} className="mb-3">
-            <div onClick={() => setCarreraAbierta(prev => ({...prev, [key]: !prev[key]}))} className="flex items-center gap-3 p-3 bg-slate-800 text-white rounded-t-xl cursor-pointer hover:bg-slate-700">
-              <span className="text-lg">{abierta ? '▼' : '▶'}</span>
-              <span className="font-bold flex-1">{carrera}</span>
-              <span className="text-xs bg-slate-600 px-2 py-1 rounded">{allCats.length} cát.</span>
-              {conDoc > 0 && <span className="text-xs bg-emerald-500 px-2 py-1 rounded">{conDoc} ✅</span>}
-              {sugeridos > 0 && <span className="text-xs bg-blue-500 px-2 py-1 rounded">{sugeridos} 🤖</span>}
-              {sinSug > 0 && <span className="text-xs bg-red-500 px-2 py-1 rounded">{sinSug} ❌</span>}
-            </div>
-            {abierta && (
-              <div className="bg-white border border-t-0 rounded-b-xl overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead><tr className="bg-slate-100 text-slate-600">
-                    <th className="p-2 text-left">Año</th>
-                    <th className="p-2 text-left">Cátedra</th>
-                    <th className="p-2 text-center w-14">Inscr.</th>
-                    <th className="p-2 text-center w-20">Criterio</th>
-                    <th className="p-2 text-center">Estado</th>
-                    <th className="p-2 text-left">Docente actual</th>
-                    <th className="p-2 text-left">Sugerencia docente</th>
-                    <th className="p-2 text-left">Horarios</th>
-                  </tr></thead>
-                  <tbody>
-                    {Object.entries(annos).map(([anno, cats]) => cats.map((cat, idx) => {
-                      const cfg = ESTADO_CONFIG[cat.estado] || ESTADO_CONFIG.sin_alumnos;
-                      return (
-                        <tr key={`${anno}-${cat.codigo}-${idx}`} className={`border-b ${cfg.bg}`}>
-                          <td className="p-2 text-slate-500">{idx === 0 ? anno : ''}</td>
-                          <td className="p-2">
-                            <span className="font-mono bg-slate-800 text-white px-1 rounded text-[9px] mr-1">{cat.codigo}</span>
-                            {cat.nombre?.substring(0, 30)}
-                          </td>
-                          <td className="p-2 text-center font-bold text-cyan-600">{cat.inscriptos || ''}</td>
-                          <td className="p-2 text-center">
-                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${cat.criterio === 'ABRIR' ? 'bg-emerald-100 text-emerald-700' : cat.criterio === 'ASINCRÓNICA' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-400'}`}>{cat.criterio}</span>
-                          </td>
-                          <td className="p-2 text-center">
-                            <span className={`px-1.5 py-0.5 rounded text-white text-[9px] font-bold ${cfg.badge}`}>{cfg.label}</span>
-                          </td>
-                          <td className="p-2">
-                            {cat.docente_actual ? <span className="text-emerald-700 font-medium">{cat.docente_actual}</span> : ''}
-                          </td>
-                          <td className="p-2">
-                            {cat.sugerencia_docente ? <span className="text-blue-600 font-medium italic">{cat.sugerencia_docente}</span> : cat.estado === 'sin_sugerencia' ? <span className="text-red-400">Sin docente disponible</span> : ''}
-                          </td>
-                          <td className="p-2 text-[10px] text-slate-500">
-                            {cat.horarios?.map((h, i) => <span key={i} className="bg-slate-100 px-1 rounded mr-1">{h}</span>)}
-                          </td>
-                        </tr>
-                      );
-                    }))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        );
-      }) : <p className="text-slate-400 text-center p-8">Seleccioná una sede</p>}
-    </div>
-  );
-}
-
-// ==================== v15.0: DOCENTES POR DÍA Y TURNO ====================
-function DocentesDiaView({ catedras }) {
-  const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).filter(a => a.dia && a.dia !== 'Pend.' && a.hora_inicio && a.hora_inicio !== 'Pend.').map(a => ({
-    ...a, cat_codigo: c.codigo, cat_nombre: c.nombre
-  }))), [catedras]);
-
-  const DIAS_ORD = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
-  
-  const agrupado = useMemo(() => {
-    const result = {};
-    for (const dia of DIAS_ORD) {
-      const del_dia = allAsig.filter(a => a.dia === dia);
-      const tm = del_dia.filter(a => a.hora_inicio < '15:00').sort((a,b) => a.hora_inicio.localeCompare(b.hora_inicio));
-      const tn = del_dia.filter(a => a.hora_inicio >= '15:00').sort((a,b) => a.hora_inicio.localeCompare(b.hora_inicio));
-      result[dia] = { tm, tn };
-    }
-    return result;
-  }, [allAsig]);
-
-  const renderTabla = (asigs, turnoLabel) => {
-    if (asigs.length === 0) return <p className="text-slate-300 text-sm p-3 text-center">Sin asignaciones</p>;
-    return (
-      <table className="w-full text-xs">
-        <thead><tr className="bg-slate-100">
-          <th className="p-2 text-left w-16">Hora</th>
-          <th className="p-2 text-left">Cátedra</th>
-          <th className="p-2 text-left">Docente</th>
-          <th className="p-2 text-left">Sede</th>
-        </tr></thead>
-        <tbody>
-          {asigs.map((a, i) => (
-            <tr key={i} className={`border-b ${!a.docente ? 'bg-yellow-50' : ''}`}>
-              <td className="p-2 font-bold">{a.hora_inicio}</td>
-              <td className="p-2"><span className="font-mono bg-slate-800 text-white px-1 rounded text-[9px] mr-1">{a.cat_codigo}</span>{a.cat_nombre}</td>
-              <td className="p-2">{a.docente ? <span className="text-emerald-600 font-medium">{a.docente.nombre} {a.docente.apellido}</span> : <span className="text-red-400 italic">Pendiente</span>}</td>
-              <td className="p-2">{a.sede_nombre || 'Remoto'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
-  };
-
-  return (
-    <div className="p-8">
-      <h2 className="text-2xl font-bold text-slate-800 mb-2">📋 Docentes por Día y Turno</h2>
-      <p className="text-slate-500 text-sm mb-6">Listado de todas las cátedras y docentes ordenados por día, empezando por TM y luego TN.</p>
-      <div className="space-y-6">
-        {DIAS_ORD.map(dia => {
-          const { tm, tn } = agrupado[dia] || { tm: [], tn: [] };
-          if (tm.length === 0 && tn.length === 0) return null;
-          return (
-            <div key={dia}>
-              <h3 className="text-lg font-bold text-slate-700 mb-2">{dia.toUpperCase()}</h3>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-white rounded-xl border overflow-hidden">
-                  <div className="bg-yellow-500 text-white text-center py-2 font-bold text-sm">☀️ TURNO MAÑANA ({tm.length})</div>
-                  {renderTabla(tm, 'TM')}
-                </div>
-                <div className="bg-white rounded-xl border overflow-hidden">
-                  <div className="bg-indigo-600 text-white text-center py-2 font-bold text-sm">🌙 TURNO NOCHE ({tn.length})</div>
-                  {renderTabla(tn, 'TN')}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ==================== CALENDARIO ====================
-function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
-  const [filtroSede, setFiltroSede] = useState('');
-  const [filtroDocente, setFiltroDocente] = useState('');
-  const [filtroCatedra, setFiltroCatedra] = useState('');
-  const [filtroDia, setFiltroDia] = useState('');
-  const [buscarDocente, setBuscarDocente] = useState('');
-  const [buscarCatedra, setBuscarCatedra] = useState('');
-  const [mostrarSugDoc, setMostrarSugDoc] = useState(false);
-  const [mostrarSugCat, setMostrarSugCat] = useState(false);
-
-  const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).map(a => ({ ...a, cat_codigo: c.codigo, cat_nombre: c.nombre, cat_inscriptos: c.inscriptos || 0 }))), [catedras]);
-
-  // v4.0 MEJORA 5: Ordenar por código
-  const asigOrdenadas = useMemo(() => {
-    return [...allAsig].sort((a, b) => {
-      const na = parseInt((a.cat_codigo || '').replace(/[^0-9]/g, '')) || 9999;
-      const nb = parseInt((b.cat_codigo || '').replace(/[^0-9]/g, '')) || 9999;
-      return na - nb;
-    });
-  }, [allAsig]);
-
-  const asigFiltradas = useMemo(() => {
-    return asigOrdenadas.filter(a => a.dia && a.hora_inicio).filter(a => {
-      if (filtroDia && a.dia !== filtroDia) return false;
-      if (filtroSede === 'remoto') return !a.sede_id;
-      if (filtroSede) return a.sede_id === parseInt(filtroSede);
-      return true;
-    }).filter(a => {
-      if (filtroDocente) return a.docente?.id === parseInt(filtroDocente);
-      if (buscarDocente && !filtroDocente) {
-        const b = buscarDocente.toLowerCase();
-        if (!a.docente) return false;
-        return (a.docente.nombre || '').toLowerCase().includes(b);
-      }
-      return true;
-    }).filter(a => {
-      if (filtroCatedra) return a.cat_codigo === filtroCatedra;
-      if (buscarCatedra && !filtroCatedra) {
-        const b = buscarCatedra.toLowerCase();
-        return a.cat_codigo.toLowerCase().includes(b) || a.cat_nombre.toLowerCase().includes(b);
-      }
-      return true;
-    });
-  }, [asigOrdenadas, filtroSede, filtroDocente, filtroCatedra, buscarDocente, buscarCatedra]);
-
-  const docentesSugeridos = useMemo(() => {
-    if (!buscarDocente || filtroDocente) return [];
-    const b = buscarDocente.toLowerCase();
-    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b)).slice(0, 8);
-  }, [docentes, buscarDocente, filtroDocente]);
-
-  const catedrasSugeridas = useMemo(() => {
-    if (!buscarCatedra || filtroCatedra) return [];
-    const b = buscarCatedra.toLowerCase();
-    return catedras.filter(c => c.codigo.toLowerCase().includes(b) || c.nombre.toLowerCase().includes(b)).slice(0, 8);
-  }, [catedras, buscarCatedra, filtroCatedra]);
-
-  return (
-    <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Calendario</h2></div>
-      <div className="bg-white rounded-xl border p-4 mb-6 grid grid-cols-4 gap-4">
-        <div>
-          <label className="text-sm text-slate-600 font-medium">Día:</label>
-          <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroDia} onChange={e => setFiltroDia(e.target.value)}>
-            <option value="">Todos los días</option>
-            {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="text-sm text-slate-600 font-medium">Sede:</label>
-          <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
-            <option value="">Todas</option>
-            {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-            <option value="remoto">🏠 Solo Remotos</option>
-          </select>
-        </div>
-        <div className="relative">
-          <label className="text-sm text-slate-600 font-medium">Docente:</label>
-          <input type="text" placeholder="Buscar por nombre..." className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
-            value={buscarDocente} onChange={e => { setBuscarDocente(e.target.value); setFiltroDocente(''); setMostrarSugDoc(true); }}
-            onFocus={() => setMostrarSugDoc(true)} onBlur={() => setTimeout(() => setMostrarSugDoc(false), 150)} />
-          {filtroDocente && <button onClick={() => { setBuscarDocente(''); setFiltroDocente(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>}
-          {mostrarSugDoc && docentesSugeridos.length > 0 && (
-            <div className="absolute z-20 w-full border rounded-lg bg-white shadow-lg mt-1 max-h-48 overflow-y-auto">
-              <div className="p-2 text-xs text-slate-400 border-b cursor-pointer hover:bg-slate-50"
-                onMouseDown={() => { setBuscarDocente(''); setFiltroDocente(''); setMostrarSugDoc(false); }}>Ver todos</div>
-              {docentesSugeridos.map(d => (
-                <div key={d.id} className="p-2 text-sm cursor-pointer hover:bg-amber-50"
-                  onMouseDown={() => { setFiltroDocente(d.id.toString()); setBuscarDocente(`${d.nombre} ${d.apellido}`); setMostrarSugDoc(false); }}>
-                  {d.nombre} {d.apellido}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="relative">
-          <label className="text-sm text-slate-600 font-medium">Cátedra:</label>
-          <input type="text" placeholder="Buscar por código o nombre..." className="w-full border rounded-lg px-3 py-2 mt-1 text-sm"
-            value={buscarCatedra} onChange={e => { setBuscarCatedra(e.target.value); setFiltroCatedra(''); setMostrarSugCat(true); }}
-            onFocus={() => setMostrarSugCat(true)} onBlur={() => setTimeout(() => setMostrarSugCat(false), 150)} />
-          {filtroCatedra && <button onClick={() => { setBuscarCatedra(''); setFiltroCatedra(''); }} className="absolute right-2 top-9 text-slate-400 hover:text-red-500 text-lg">×</button>}
-          {mostrarSugCat && catedrasSugeridas.length > 0 && (
-            <div className="absolute z-20 w-full border rounded-lg bg-white shadow-lg mt-1 max-h-48 overflow-y-auto">
-              <div className="p-2 text-xs text-slate-400 border-b cursor-pointer hover:bg-slate-50"
-                onMouseDown={() => { setBuscarCatedra(''); setFiltroCatedra(''); setMostrarSugCat(false); }}>Ver todas</div>
-              {catedrasSugeridas.map(c => (
-                <div key={c.id} className="p-2 text-sm cursor-pointer hover:bg-amber-50"
-                  onMouseDown={() => { setFiltroCatedra(c.codigo); setBuscarCatedra(`${c.codigo} - ${c.nombre}`); setMostrarSugCat(false); }}>
-                  <span className="font-mono text-xs bg-slate-800 text-white px-1 rounded mr-1">{c.codigo}</span>{c.nombre}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      {/* Grilla */}
-      {(() => { const diasMostrar = filtroDia ? [filtroDia] : DIAS; return (
-      <div className="bg-white rounded-xl border shadow-sm overflow-auto mb-6">
-        <table className="w-full text-sm">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="p-2 border-r w-20">Hora</th>
-            {diasMostrar.map(d => <th key={d} className="p-2 border-r min-w-[130px]">{d}</th>)}
-          </tr></thead>
-          <tbody>
-            {HORAS.map(hora => (
-              <tr key={hora} className="border-b">
-                <td className="p-2 border-r bg-slate-50 font-medium text-center">{hora}</td>
-                {diasMostrar.map(dia => {
-                  const celdas = asigFiltradas.filter(a => a.dia === dia && a.hora_inicio === hora);
-                  return (
-                    <td key={dia} className="p-1 border-r align-top">
-                      {celdas.map(a => {
-                        const sinDocente = !a.docente;
-                        // v4.0 MEJORA 10: Color por sede
-                        const sedeNombre = a.sede_nombre || '';
-                        let bgClass = 'bg-gray-50 border-gray-200';
-                        if (sinDocente) { bgClass = 'bg-orange-50 border-orange-300'; }
-                        else if (sedeNombre.includes('Caballito')) { bgClass = 'bg-emerald-50 border-emerald-300'; }
-                        else if (sedeNombre.includes('Vicente')) { bgClass = 'bg-amber-50 border-amber-300'; }
-                        else if (sedeNombre.includes('Avellaneda')) { bgClass = 'bg-blue-50 border-blue-300'; }
-                        else if (sedeNombre.includes('Online')) { bgClass = 'bg-purple-50 border-purple-300'; }
-                        return (
-                          <div key={a.id} className={`p-1 mb-1 rounded text-xs border ${bgClass}`}>
-                            <p className="font-bold text-slate-800">{a.cat_codigo}</p>
-                            <p className={sinDocente ? 'text-orange-500 italic' : 'text-slate-600'}>{sinDocente ? '⚠️ Sin docente' : a.docente?.nombre}</p>
-                            <p className="text-slate-400">{sedeNombre || '🏠'}</p>
-                          </div>
-                        );
-                      })}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      ); })()}
-      {/* Lista ordenada por código */}
-      <div className="bg-white rounded-xl border shadow-sm p-4">
-        <h3 className="font-semibold mb-3">📋 Lista ({asigFiltradas.length} asignaciones) — ordenadas por código</h3>
-        <div className="overflow-auto max-h-80">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50"><tr>
-              <th className="p-2 text-left">Cátedra</th><th className="p-2 text-left">Docente</th>
-              <th className="p-2">Modalidad</th><th className="p-2">Día</th><th className="p-2">Hora</th><th className="p-2">Sede</th><th className="p-2">Inscriptos</th>
-            </tr></thead>
-            <tbody>
-              {asigFiltradas.map(a => {
-                const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                return (
-                  <tr key={a.id} className="border-b">
-                    <td className="p-2"><span className="font-mono">{a.cat_codigo}</span> {a.cat_nombre}</td>
-                    <td className="p-2">{a.docente ? a.docente.nombre : <span className="text-orange-500 italic">⚠️ Sin docente</span>}</td>
-                    <td className="p-2 text-center"><span className={mod.color}>{mod.icon}</span></td>
-                    <td className="p-2 text-center">{a.dia}</td>
-                    <td className="p-2 text-center">{a.hora_inicio}</td>
-                    <td className="p-2 text-center">{a.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[a.sede_nombre]||'bg-gray-500'}`}>{a.sede_nombre}</span> : '🏠'}</td>
-                    <td className="p-2 text-center font-bold text-cyan-600">{a.cat_inscriptos || 0}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ==================== v13.0: HORARIOS POR CARRERA Y SEDE ====================
-function PlanCarreraView({ cuatrimestre }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [sedeActiva, setSedeActiva] = useState('');
-  const [carreraAbierta, setCarreraAbierta] = useState({});
-  const [importando, setImportando] = useState(false);
-
-  const cargar = async (sedeOverride) => {
-    setLoading(true);
-    try {
-      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-      const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-      const sede = sedeOverride || sedeActiva;
-      const sedeP = sede ? `${qp ? '&' : '?'}sede=${encodeURIComponent(sede)}` : '';
-      setData(await apiFetch(`/api/plan-carrera/sugerencias${qp}${sedeP}`));
-    } catch (e) { console.error(e); }
-    setLoading(false);
-  };
-
-  // ALL hooks BEFORE any conditional return
-  useEffect(() => { cargar(); }, [cuatrimestre]);
-  
-  // Set default sede when data arrives
-  useEffect(() => {
-    if (data?.sedes) {
-      const keys = Object.keys(data.sedes);
-      if (keys.length > 0 && !sedeActiva) {
-        setSedeActiva(keys[0]);
-      }
-    }
-  }, [data]);
-
-  const importarPlan = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImportando(true);
-    try {
-      const form = new FormData();
-      form.append('file', file);
-      const res = await fetch(`${API_URL}/api/importar/plan-carrera`, { method: 'POST', body: form });
-      const r = await res.json();
-      alert(`✅ ${r.importados} registros importados`);
-      cargar();
-    } catch (e) { alert('Error: ' + e.message); }
-    setImportando(false);
-    e.target.value = '';
-  };
-
-  const toggleCarrera = (key) => {
-    setCarreraAbierta(prev => ({...prev, [key]: !prev[key]}));
-  };
-
-  const cambiarSede = (s) => {
-    setSedeActiva(s);
-    cargar(s);
-  };
-
-  // Conditional return AFTER all hooks
-  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
-
-  const sedes = data?.sedes || {};
-  const sedeKeys = Object.keys(sedes);
-
-  return (
-    <div className="p-8">
-      <div className="flex justify-between items-start mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800">🗺️ Horarios por Carrera y Sede</h2>
-          <p className="text-slate-500 text-sm">Sugerencia automática basada en el molde de horarios importado, cruzado con inscriptos actuales.</p>
-        </div>
-        <label className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer ${importando ? 'bg-slate-300' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-          {importando ? '⏳ Importando...' : '📥 Importar molde (Horarios.xlsx)'}
-          <input type="file" accept=".xlsx" className="hidden" onChange={importarPlan} disabled={importando} />
-        </label>
-      </div>
-
-      {!data?.plan_importado ? (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-8 text-center">
-          <p className="text-4xl mb-3">📥</p>
-          <p className="text-amber-800 font-medium">No hay molde de horarios importado</p>
-          <p className="text-amber-600 text-sm mt-2">Subí el archivo Horarios.xlsx con la estructura de carreras, años y cátedras por sede. El sistema lo cruza con los inscriptos para generar sugerencias.</p>
-        </div>
-      ) : (
-        <>
-          <div className="flex gap-2 mb-6 flex-wrap">
-            {sedeKeys.map(s => (
-              <button key={s} onClick={() => cambiarSede(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
-            ))}
-          </div>
-
-          {sedeActiva && sedes[sedeActiva] ? Object.entries(sedes[sedeActiva]).map(([carrera, annos]) => {
-                const key = `${sedeActiva}-${carrera}`;
-                const abierta = carreraAbierta[key] !== false;
-                const totalCats = Object.values(annos).flat().length;
-                const abrir = Object.values(annos).flat().filter(c => c.criterio === 'ABRIR').length;
-                const asinc = Object.values(annos).flat().filter(c => c.criterio === 'ASINCRÓNICA').length;
-                const conDoc = Object.values(annos).flat().filter(c => c.tiene_docente).length;
-                return (
-                  <div key={key} className="mb-3">
-                    <div onClick={() => toggleCarrera(key)} className="flex items-center gap-3 p-3 bg-blue-900 text-white rounded-t-xl cursor-pointer hover:bg-blue-800">
-                      <span className="text-lg">{abierta ? '▼' : '▶'}</span>
-                      <span className="font-bold flex-1">{carrera}</span>
-                      <span className="text-xs bg-blue-700 px-2 py-1 rounded">{totalCats} cát.</span>
-                      <span className="text-xs bg-emerald-600 px-2 py-1 rounded">{conDoc} con doc.</span>
-                      {abrir - conDoc > 0 && <span className="text-xs bg-red-500 px-2 py-1 rounded">{abrir - conDoc} faltan</span>}
-                      {asinc > 0 && <span className="text-xs bg-purple-500 px-2 py-1 rounded">{asinc} asinc.</span>}
-                    </div>
-                    {abierta && (
-                      <div className="bg-white border border-t-0 rounded-b-xl overflow-hidden">
-                        <table className="w-full text-xs">
-                          <thead><tr className="bg-slate-100 text-slate-600">
-                            <th className="p-2 text-left">Año</th>
-                            <th className="p-2 text-left">Cátedra</th>
-                            <th className="p-2 text-center w-14">Inscr.</th>
-                            <th className="p-2 text-center w-20">Criterio</th>
-                            <th className="p-2 text-center">Sugerencia TM</th>
-                            <th className="p-2 text-center">Sugerencia TN</th>
-                            <th className="p-2 text-center">Actual TM</th>
-                            <th className="p-2 text-center">Actual TN</th>
-                            <th className="p-2 text-left">Docente</th>
-                          </tr></thead>
-                          <tbody>
-                            {Object.entries(annos).map(([anno, cats]) => cats.map((cat, idx) => (
-                              <tr key={`${anno}-${cat.codigo}-${idx}`} className={`border-b ${cat.criterio === 'ASINCRÓNICA' ? 'bg-purple-50' : cat.criterio === 'SIN ALUMNOS' ? 'bg-slate-50 text-slate-400' : !cat.tiene_docente && cat.criterio === 'ABRIR' ? 'bg-yellow-50' : ''}`}>
-                                <td className="p-2 text-slate-500">{idx === 0 ? anno : ''}</td>
-                                <td className="p-2">
-                                  <span className="font-mono bg-slate-800 text-white px-1 rounded text-[9px] mr-1">{cat.codigo}</span>
-                                  {cat.nombre}
-                                </td>
-                                <td className="p-2 text-center font-bold text-cyan-600">{cat.inscriptos || ''}</td>
-                                <td className="p-2 text-center">
-                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${cat.criterio === 'ABRIR' ? 'bg-emerald-100 text-emerald-700' : cat.criterio === 'ASINCRÓNICA' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-400'}`}>{cat.criterio}</span>
-                                </td>
-                                <td className="p-2 text-center text-blue-600">{cat.sugerencia_tm || ''}</td>
-                                <td className="p-2 text-center text-indigo-600">{cat.sugerencia_tn || ''}</td>
-                                <td className="p-2 text-center">{cat.actual_tm ? <span className="bg-emerald-100 text-emerald-700 px-1 rounded text-[9px]">{cat.actual_tm}</span> : ''}</td>
-                                <td className="p-2 text-center">{cat.actual_tn ? <span className="bg-indigo-100 text-indigo-700 px-1 rounded text-[9px]">{cat.actual_tn}</span> : ''}</td>
-                                <td className="p-2">{cat.docente ? <span className="text-emerald-600 font-medium">{cat.docente}</span> : cat.criterio === 'ABRIR' ? <span className="text-red-400 italic">Pendiente</span> : <span className="text-purple-400">🎥</span>}</td>
-                              </tr>
-                            )))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                );
-              }) : <p className="text-slate-400 text-center p-8">Seleccioná una sede</p>}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ==================== SOLAPAMIENTOS ====================
-function SolapamientosView({ solapamientos, cuatrimestre, tab: initialTab = 'horarios' }) {
-  const [tab, setTab] = useState(initialTab);
-  const [carreraConf, setCarreraConf] = useState(null);
-  const [loadingCarr, setLoadingCarr] = useState(false);
-
-  useEffect(() => {
-    const cargar = async () => {
-      setLoadingCarr(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-        setCarreraConf(await apiFetch(`/api/solapamientos-carreras${qp}`));
-      } catch (e) { console.error(e); }
-      setLoadingCarr(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
-
-  const totalCarr = carreraConf?.total || 0;
-
-  const renderConflictTable = (items, color, showSede = true) => {
-    if (!items?.length) return <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center"><p className="text-2xl mb-1">✅</p><p className="text-green-700 font-medium">Sin conflictos</p></div>;
-    return (
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
-          <thead><tr className={`${color} text-white text-xs`}>
-            <th className="p-3 text-left">Carrera</th><th className="p-3 text-left">Año</th>
-            {showSede && <th className="p-3 text-left">Sede</th>}
-            <th className="p-3 text-center">Día</th><th className="p-3 text-center">Hora</th>
-            <th className="p-3 text-left">Cátedras en conflicto</th>
-          </tr></thead>
-          <tbody>{items.map((conf, i) => (
-            <tr key={i} className="border-b bg-yellow-50 hover:bg-yellow-100">
-              <td className="p-3 font-medium text-xs">{conf.carrera}</td>
-              <td className="p-3 text-xs">{conf.anno}</td>
-              {showSede && <td className="p-3 text-xs">{conf.sede_plan}</td>}
-              <td className="p-3 text-center font-bold">{conf.dia}</td>
-              <td className="p-3 text-center font-bold">{conf.hora}</td>
-              <td className="p-3"><div className="flex flex-wrap gap-1">
-                {conf.catedras_en_conflicto.map((c, j) => (
-                  <span key={j} className="px-2 py-1 bg-red-100 border border-red-300 rounded text-xs">
-                    <span className="font-mono font-bold">{c.codigo}</span> {c.nombre?.substring(0, 25)}
-                    {c.docente && <span className="text-emerald-600 ml-1 font-medium">({c.docente})</span>}
-                    {!c.docente && <span className="text-slate-400 ml-1">(sin doc.)</span>}
-                  </span>
-                ))}
-              </div></td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>
-    );
-  };
-
-  return (
-    <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">⚠️ Detector de Solapamientos</h2></div>
-      <div className="flex gap-2 mb-6">
-        <button onClick={() => setTab('horarios')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'horarios' ? 'bg-orange-500 text-white' : 'bg-slate-100'}`}>
-          🕐 Horarios/Docentes ({solapamientos.length})
-        </button>
-        <button onClick={() => setTab('carreras')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'carreras' ? 'bg-red-600 text-white' : 'bg-slate-100'}`}>
-          🎓 Entre Carreras ({totalCarr})
-        </button>
-      </div>
-
-      {tab === 'horarios' && (
-        solapamientos.length === 0 ? (
-          <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-            <p className="text-4xl mb-2">✅</p><p className="text-green-700 font-medium text-lg">No hay solapamientos de horarios</p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {solapamientos.map((s, i) => (
-              <div key={i} className={`p-4 rounded-xl border ${s.tipo === 'CATEDRA' ? 'bg-red-50 border-red-300' : 'bg-orange-50 border-orange-300'}`}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`px-3 py-1 rounded text-sm font-bold text-white ${s.tipo === 'CATEDRA' ? 'bg-red-500' : 'bg-orange-500'}`}>{s.severidad}</span>
-                  <span className="font-medium">{s.tipo === 'CATEDRA' ? '🎓 Cátedra' : '👨‍🏫 Docente'}</span>
-                </div>
-                <p className="text-slate-700">{s.mensaje}</p>
-              </div>
-            ))}
-          </div>
+@app.post("/api/asignaciones")
+def crear_asignacion(data: dict, db: Session = Depends(get_db)):
+    try:
+        cat_id = data.get("catedra_id")
+        cuat_id = data.get("cuatrimestre_id", 1)
+        modalidad = data.get("modalidad", "virtual_tm")
+        dia = data.get("dia")
+        hora = data.get("hora_inicio")
+        sede_id = data.get("sede_id")
+        docente_id = data.get("docente_id")
+        if dia and hora and modalidad != 'asincronica':
+            conflict = verificar_solapamiento_catedra(cat_id, dia, hora, cuat_id, None, db)
+            if conflict:
+                raise HTTPException(status_code=400, detail=conflict)
+        # v9.0: Verificar disponibilidad del docente
+        if docente_id and dia and hora:
+            from sqlalchemy import text
+            try:
+                disp_rows = db.execute(text(f"SELECT COUNT(*) FROM docente_disponibilidad WHERE docente_id = {docente_id}")).scalar()
+                if disp_rows and disp_rows > 0:
+                    tiene_disp = db.execute(text(
+                        f"SELECT disponible FROM docente_disponibilidad WHERE docente_id = {docente_id} AND dia = '{dia}' AND hora = '{hora}'"
+                    )).fetchone()
+                    if not tiene_disp or not tiene_disp[0]:
+                        raise HTTPException(status_code=400, detail=f"⛔ El docente no tiene disponibilidad el {dia} a las {hora}. Revisá su disponibilidad horaria antes de asignarle.")
+            except HTTPException: raise
+            except Exception: pass
+        asig = Asignacion(
+            catedra_id=cat_id, cuatrimestre_id=cuat_id,
+            docente_id=docente_id if docente_id else None,
+            modalidad=modalidad,
+            dia=dia if dia else None, hora_inicio=hora if hora else None,
+            hora_fin=data.get("hora_fin") if data.get("hora_fin") else None,
+            sede_id=sede_id if sede_id else None,
+            recibe_alumnos_presenciales=data.get("recibe_alumnos_presenciales", False),
         )
-      )}
+        db.add(asig); db.commit()
+        return {"id": asig.id, "ok": True}
+    except HTTPException: raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-      {tab === 'carreras' && (
-        loadingCarr ? <div className="text-center p-8">⏳ Analizando...</div> :
-        carreraConf?.sin_plan ? (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-8 text-center">
-            <p className="text-4xl mb-2">📥</p>
-            <p className="text-amber-700 font-medium">Importá primero el molde de horarios para detectar solapamientos entre carreras</p>
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-4 gap-4 mb-6">
-              <div className="bg-white rounded-xl border p-4 text-center">
-                <p className={`text-3xl font-bold ${totalCarr > 0 ? 'text-red-600' : 'text-green-600'}`}>{totalCarr}</p>
-                <p className="text-xs text-slate-500">Total conflictos</p>
-              </div>
-              <div className="bg-white rounded-xl border p-4 text-center">
-                <p className={`text-3xl font-bold ${(carreraConf?.total_presencial||0) > 0 ? 'text-blue-600' : 'text-green-600'}`}>{carreraConf?.total_presencial || 0}</p>
-                <p className="text-xs text-slate-500">🏫 Presenciales</p>
-              </div>
-              <div className="bg-white rounded-xl border p-4 text-center">
-                <p className={`text-3xl font-bold ${(carreraConf?.total_cied||0) > 0 ? 'text-purple-600' : 'text-green-600'}`}>{carreraConf?.total_cied || 0}</p>
-                <p className="text-xs text-slate-500">🖥️ CIED</p>
-              </div>
-              <div className="bg-white rounded-xl border p-4 text-center">
-                <p className={`text-3xl font-bold ${(carreraConf?.total_docentes||0) > 0 ? 'text-orange-600' : 'text-green-600'}`}>{carreraConf?.total_docentes || 0}</p>
-                <p className="text-xs text-slate-500">👨‍🏫 Docentes</p>
-              </div>
-            </div>
+@app.put("/api/asignaciones/{asignacion_id}")
+def actualizar_asignacion(asignacion_id: int, data: dict, db: Session = Depends(get_db)):
+    try:
+        asig = db.query(Asignacion).filter(Asignacion.id == asignacion_id).first()
+        if not asig: raise HTTPException(status_code=404, detail="No encontrada")
+        dia = data.get("dia", asig.dia)
+        hora = data.get("hora_inicio", asig.hora_inicio)
+        if dia and hora and data.get("modalidad", asig.modalidad) != 'asincronica':
+            conflict = verificar_solapamiento_catedra(asig.catedra_id, dia, hora, asig.cuatrimestre_id, asig.id, db)
+            if conflict: raise HTTPException(status_code=400, detail=conflict)
+        for field in ["docente_id", "modalidad", "dia", "hora_inicio", "hora_fin", "sede_id", "recibe_alumnos_presenciales"]:
+            if field in data:
+                val = data[field]
+                if field in ["docente_id", "sede_id"] and (val == "" or val == "null" or not val):
+                    val = None
+                setattr(asig, field, val if val else None)
+        asig.modificada = True
+        db.commit()
+        return {"ok": True}
+    except HTTPException: raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-blue-800 mb-3 flex items-center gap-2">🏫 Presenciales <span className="text-sm font-normal text-slate-500">— Alumnos que no pueden cursar dos materias de su carrera porque coinciden en día/hora en su sede</span></h3>
-              {renderConflictTable(carreraConf?.presencial, 'bg-blue-800')}
-            </div>
+@app.delete("/api/asignaciones/{asignacion_id}")
+def eliminar_asignacion(asignacion_id: int, db: Session = Depends(get_db)):
+    asig = db.query(Asignacion).filter(Asignacion.id == asignacion_id).first()
+    if not asig: raise HTTPException(status_code=404, detail="No encontrada")
+    db.delete(asig); db.commit()
+    return {"ok": True}
 
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-purple-800 mb-3 flex items-center gap-2">🖥️ CIED <span className="text-sm font-normal text-slate-500">— Solo si NO hay ninguna combinación de horarios que evite el conflicto</span></h3>
-              {renderConflictTable(carreraConf?.cied, 'bg-purple-800', false)}
-            </div>
 
-            <div className="mb-6">
-              <h3 className="text-lg font-bold text-orange-800 mb-3 flex items-center gap-2">👨‍🏫 Docentes <span className="text-sm font-normal text-slate-500">— Un mismo docente asignado a dos cátedras distintas al mismo tiempo</span></h3>
-              {carreraConf?.docentes?.length > 0 ? (
-                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-                  <table className="w-full text-sm">
-                    <thead><tr className="bg-orange-800 text-white text-xs">
-                      <th className="p-3 text-left">Docente</th><th className="p-3 text-center">Día</th><th className="p-3 text-center">Hora</th>
-                      <th className="p-3 text-left">Cátedras en conflicto</th>
-                    </tr></thead>
-                    <tbody>{carreraConf.docentes.map((conf, i) => (
-                      <tr key={i} className="border-b bg-yellow-50 hover:bg-yellow-100">
-                        <td className="p-3 font-bold text-orange-700">{conf.docente}</td>
-                        <td className="p-3 text-center font-bold">{conf.dia}</td>
-                        <td className="p-3 text-center font-bold">{conf.hora}</td>
-                        <td className="p-3"><div className="flex flex-wrap gap-1">
-                          {conf.asignaciones.map((a, j) => (
-                            <span key={j} className="px-2 py-1 bg-orange-100 border border-orange-300 rounded text-xs">
-                              <span className="font-mono font-bold">{a.codigo}</span> {a.nombre?.substring(0, 25)} <span className="text-slate-500">({a.sede})</span>
-                            </span>
-                          ))}
-                        </div></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              ) : <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center"><p className="text-2xl mb-1">✅</p><p className="text-green-700 font-medium">Ningún docente está asignado a dos cátedras distintas al mismo tiempo</p></div>}
-            </div>
-          </>
-        )
-      )}
-    </div>
-  );
-}
+# ==================== DOCENTES ====================
 
-// ==================== v6.0: INSCRIPTOS POR CURSO ====================
-function InscriptosPorCursoView({ cuatrimestre }) {
-  const [datos, setDatos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [buscar, setBuscar] = useState('');
-  const [filtroMod, setFiltroMod] = useState('');
-  const [filtroTipo, setFiltroTipo] = useState('');
+def calcular_tipo_modalidad(docente, db):
+    asigs = db.query(Asignacion).filter(Asignacion.docente_id == docente.id).all()
+    if not asigs: return "SIN_ASIGNACIONES"
+    if any(a.recibe_alumnos_presenciales for a in asigs): return "PRESENCIAL_VIRTUAL"
+    if any(a.sede_id for a in asigs): return "SEDE_VIRTUAL"
+    return "REMOTO"
 
-  useEffect(() => {
-    const cargar = async () => {
-      setLoading(true);
-      try {
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-        const r = await apiFetch(`/api/inscriptos/por-curso${qParam}`);
-        setDatos(r);
-      } catch (e) { console.error(e); }
-      setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
+@app.get("/api/docentes")
+def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    docentes = db.query(Docente).order_by(Docente.apellido, Docente.nombre).all()
+    # Pre-load disponibilidad
+    disp_map = {}
+    try:
+        for r in db.execute(text("SELECT docente_id, dia, hora, disponible FROM docente_disponibilidad WHERE disponible = TRUE")).fetchall():
+            if r[0] not in disp_map: disp_map[r[0]] = []
+            disp_map[r[0]].append(f"{r[1]} {r[2]}")
+    except: pass
+    result = []
+    for d in docentes:
+        try:
+            asigs_data = []
+            all_asigs = d.asignaciones or []
+            if cuatrimestre_id:
+                all_asigs = [a for a in all_asigs if a.cuatrimestre_id == cuatrimestre_id]
+            for a in all_asigs:
+                asigs_data.append({
+                    "id": a.id, "modalidad": a.modalidad, "dia": a.dia,
+                    "hora_inicio": a.hora_inicio,
+                    "catedra_codigo": a.catedra.codigo if a.catedra else None,
+                    "catedra_nombre": a.catedra.nombre if a.catedra else None,
+                    "sede_nombre": a.sede.nombre if a.sede else None,
+                    "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
+                })
+            sedes_data = [{"id": ds.sede.id, "nombre": ds.sede.nombre} for ds in (d.sedes or []) if ds.sede]
+            tipo = calcular_tipo_modalidad(d, db)
+            horas = getattr(d, 'horas_asignadas', 0) or 0
+            cfpea = getattr(d, 'sociedad_cfpea', False) or False
+            isftea = getattr(d, 'sociedad_isftea', False) or False
+            mat_av = getattr(d, 'materias_av', 0) or 0
+            mat_cab = getattr(d, 'materias_cab', 0) or 0
+            mat_vl = getattr(d, 'materias_vl', 0) or 0
+            # v16.0: availability summary
+            disp_list = disp_map.get(d.id, [])
+            disp_resumen = f"{len(disp_list)} franjas" if disp_list else "Sin asignar"
+            result.append({
+                "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
+                "email": d.email, "tipo_modalidad": tipo,
+                "horas_asignadas": horas, "notas": getattr(d, 'notas', None),
+                "sociedad_cfpea": cfpea, "sociedad_isftea": isftea,
+                "materias_av": mat_av, "materias_cab": mat_cab, "materias_vl": mat_vl,
+                "especialidad": getattr(d, 'especialidad', None),
+                "catedras_referencia": getattr(d, 'catedras_referencia', None),
+                "disponibilidad_resumen": disp_resumen,
+                "disponibilidad_franjas": disp_list[:6],
+                "sedes": sedes_data, "asignaciones": asigs_data,
+            })
+        except Exception:
+            result.append({"id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
+                "email": d.email, "tipo_modalidad": "SIN_ASIGNACIONES",
+                "horas_asignadas": 0, "sociedad_cfpea": False, "sociedad_isftea": False,
+                "materias_av": 0, "materias_cab": 0, "materias_vl": 0,
+                "especialidad": None, "catedras_referencia": None,
+                "disponibilidad_resumen": "Sin asignar", "disponibilidad_franjas": [],
+                "sedes": [], "asignaciones": []})
+    return result
 
-  const filtrados = useMemo(() => {
-    return datos.filter(d => {
-      if (buscar && !d.curso_completo.toLowerCase().includes(buscar.toLowerCase()) &&
-          !d.curso_nombre.toLowerCase().includes(buscar.toLowerCase())) return false;
-      if (filtroMod && d.modalidad !== filtroMod) return false;
-      if (filtroTipo && d.tipo_curso !== filtroTipo) return false;
-      return true;
-    });
-  }, [datos, buscar, filtroMod, filtroTipo]);
+@app.post("/api/docentes")
+def crear_docente(data: dict, db: Session = Depends(get_db)):
+    dni = data.get("dni", "").strip()
+    if not dni or len(dni) < 7: raise HTTPException(status_code=400, detail="DNI inválido")
+    if db.query(Docente).filter(Docente.dni == dni).first():
+        raise HTTPException(status_code=400, detail="DNI ya existe")
+    d = Docente(dni=dni, nombre=data.get("nombre", ""), apellido=data.get("apellido", ""), email=data.get("email"))
+    db.add(d); db.commit()
+    return {"id": d.id, "ok": True}
 
-  const totalAlumnos = filtrados.reduce((s, d) => s + (d.alumnos_unicos || 0), 0);
-  const totalInsc = filtrados.reduce((s, d) => s + (d.inscripciones || 0), 0);
+@app.put("/api/docentes/{docente_id}")
+def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    d = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not d: raise HTTPException(status_code=404, detail="No encontrado")
+    for field in ["nombre", "apellido", "email", "dni"]:
+        if field in data and data[field]:
+            setattr(d, field, data[field])
+    # v9.0: all numeric and boolean fields via SQL
+    from sqlalchemy import text
+    for fld in ['horas_asignadas', 'materias_av', 'materias_cab', 'materias_vl']:
+        if fld in data:
+            try: db.execute(text(f"UPDATE docentes SET {fld} = {int(data[fld])} WHERE id = {docente_id}"))
+            except: pass
+    for fld in ['sociedad_cfpea', 'sociedad_isftea']:
+        if fld in data:
+            try:
+                val = 'TRUE' if data[fld] else 'FALSE'
+                db.execute(text(f"UPDATE docentes SET {fld} = {val} WHERE id = {docente_id}"))
+            except: pass
+    if "notas" in data:
+        try: db.execute(text("UPDATE docentes SET notas = :val WHERE id = :id"), {"val": data["notas"], "id": docente_id})
+        except: pass
+    # v16.0: especialidad y catedras_referencia
+    for fld in ['especialidad', 'catedras_referencia']:
+        if fld in data:
+            try: db.execute(text(f"UPDATE docentes SET {fld} = :val WHERE id = :id"), {"val": data[fld], "id": docente_id})
+            except: pass
+    db.commit()
+    return {"ok": True}
 
-  if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
+@app.delete("/api/docentes/{docente_id}")
+def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
+    d = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not d: raise HTTPException(status_code=404, detail="No encontrado")
+    db.query(Asignacion).filter(Asignacion.docente_id == docente_id).update({"docente_id": None})
+    db.query(DocenteSede).filter(DocenteSede.docente_id == docente_id).delete()
+    from sqlalchemy import text
+    try: db.execute(text(f"DELETE FROM docente_disponibilidad WHERE docente_id = {docente_id}"))
+    except: pass
+    db.delete(d); db.commit()
+    return {"ok": True}
 
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">📊 Inscriptos por Curso</h2>
-        <p className="text-slate-500 text-sm">Cantidad de alumnos inscriptos en cada curso/carrera. Datos importados del Excel de alumnos.</p>
-      </div>
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">Total Cursos</p><p className="text-2xl font-bold">{filtrados.length}</p></div>
-        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">👤 Alumnos (DNI único)</p><p className="text-2xl font-bold text-blue-600">{totalAlumnos}</p></div>
-        <div className="bg-white rounded-xl border p-4 text-center"><p className="text-xs text-slate-500">📚 Inscripciones a materias</p><p className="text-2xl font-bold text-cyan-600">{totalInsc}</p></div>
-      </div>
-      <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
-        <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm"
-          value={buscar} onChange={e => setBuscar(e.target.value)} />
-        <select className="border rounded-lg px-3 py-2 text-sm" value={filtroMod} onChange={e => setFiltroMod(e.target.value)}>
-          <option value="">Todas las modalidades</option>
-          <option value="CIED">🖥️ CIED</option>
-          <option value="Presencial">🏫 Presencial</option>
-        </select>
-        <select className="border rounded-lg px-3 py-2 text-sm" value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}>
-          <option value="">Todos los tipos</option>
-          <option value="Superior">Superior</option>
-          <option value="BCE">BCE Secundario</option>
-          <option value="BEA">BEA</option>
-        </select>
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-3 text-sm font-semibold">#</th>
-            <th className="text-left p-3 text-sm font-semibold">Curso</th>
-            <th className="text-center p-3 text-sm font-semibold">Sede</th>
-            <th className="text-center p-3 text-sm font-semibold">Modalidad</th>
-            <th className="text-center p-3 text-sm font-semibold">Tipo</th>
-            <th className="text-center p-3 text-sm font-semibold">Alumnos</th>
-            <th className="text-center p-3 text-sm font-semibold">Inscripciones</th>
-          </tr></thead>
-          <tbody>
-            {filtrados.map((d, i) => (
-              <tr key={i} className="border-b hover:bg-slate-50">
-                <td className="p-3 text-sm text-slate-400">{i + 1}</td>
-                <td className="p-3 text-sm">{d.curso_completo}</td>
-                <td className="p-3 text-center">
-                  <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[d.sede] || 'bg-gray-500'}`}>{d.sede}</span>
-                </td>
-                <td className="p-3 text-center">
-                  <span className={`px-2 py-1 rounded text-xs font-medium ${d.modalidad === 'CIED' ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                    {d.modalidad === 'CIED' ? '🖥️ CIED' : '🏫 Presencial'}
-                  </span>
-                </td>
-                <td className="p-3 text-center">
-                  {d.tipo_curso !== 'Superior' ? <span className={`px-2 py-0.5 rounded text-xs font-bold ${d.tipo_curso === 'BCE' ? 'bg-orange-100 text-orange-700' : 'bg-teal-100 text-teal-700'}`}>{d.tipo_curso}</span> : ''}
-                </td>
-                <td className="p-3 text-center"><span className="text-lg font-bold text-blue-600">{d.alumnos_unicos || 0}</span></td>
-                <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{d.inscripciones || 0}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{filtrados.length} cursos — {totalAlumnos} alumnos — {totalInsc} inscripciones a materias</p>
-    </div>
-  );
-}
+@app.put("/api/docentes/{docente_id}/sedes")
+def actualizar_sedes_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    d = db.query(Docente).filter(Docente.id == docente_id).first()
+    if not d: raise HTTPException(status_code=404, detail="No encontrado")
+    db.query(DocenteSede).filter(DocenteSede.docente_id == docente_id).delete()
+    for sid in data.get("sede_ids", []):
+        db.add(DocenteSede(docente_id=docente_id, sede_id=sid))
+    db.commit()
+    return {"ok": True}
 
-// ==================== CURSOS ====================
-function CursosView({ cursos, sedes, recargar }) {
-  const [buscar, setBuscar] = useState('');
-  const [filtroSede, setFiltroSede] = useState('');
-  const [expandido, setExpandido] = useState(null);
-  const cursosFiltrados = useMemo(() => {
-    return cursos.filter(c => {
-      if (buscar && !c.nombre.toLowerCase().includes(buscar.toLowerCase())) return false;
-      if (filtroSede && c.sede_id !== parseInt(filtroSede)) return false;
-      return true;
-    });
-  }, [cursos, buscar, filtroSede]);
-  return (
-    <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cursos / Carreras</h2></div>
-      <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
-        <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm" value={buscar} onChange={e => setBuscar(e.target.value)} />
-        <select className="border rounded-lg px-3 py-2 text-sm" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
-          <option value="">Todas las sedes</option>
-          {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
-        </select>
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-4 text-sm font-semibold">Curso</th>
-            <th className="text-center p-4 text-sm font-semibold">Sede</th>
-            <th className="text-center p-4 text-sm font-semibold">Cátedras</th>
-            <th className="text-center p-4 text-sm font-semibold w-24">Ver</th>
-          </tr></thead>
-          <tbody>
-            {cursosFiltrados.map(c => (
-              <React.Fragment key={c.id}>
-                <tr className="border-b hover:bg-slate-50">
-                  <td className="p-4 font-medium">{c.nombre}</td>
-                  <td className="p-4 text-center">{c.sede_nombre ? <span className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[c.sede_nombre]||'bg-gray-500'}`}>{c.sede_nombre}</span> : '-'}</td>
-                  <td className="p-4 text-center"><span className={`text-lg font-bold ${c.cant_catedras > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>{c.cant_catedras}</span></td>
-                  <td className="p-4 text-center">{c.cant_catedras > 0 && <button onClick={() => setExpandido(expandido === c.id ? null : c.id)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">{expandido === c.id ? '▲' : '▼'}</button>}</td>
-                </tr>
-                {expandido === c.id && c.catedras?.length > 0 && (
-                  <tr><td colSpan="4" className="bg-slate-50 px-8 py-3">
-                    <div className="flex flex-wrap gap-2">
-                      {c.catedras.map(cat => (
-                        <span key={cat.id} className="px-3 py-1 bg-white border rounded-lg text-sm">
-                          <span className="font-mono bg-slate-800 text-white px-1 rounded text-xs mr-1">{cat.catedra_codigo}</span>{cat.catedra_nombre}
-                        </span>
-                      ))}
-                    </div>
-                  </td></tr>
-                )}
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{cursosFiltrados.length} cursos</p>
-    </div>
-  );
-}
+# ===== v5.0: Disponibilidad horaria =====
+@app.get("/api/docentes/{docente_id}/disponibilidad")
+def get_disponibilidad(docente_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        rows = db.execute(text(f"SELECT dia, hora, disponible FROM docente_disponibilidad WHERE docente_id = {docente_id}")).fetchall()
+        return [{"dia": r[0], "hora": r[1], "disponible": r[2]} for r in rows]
+    except Exception:
+        return []
 
-// ==================== v6.0: BCE / BEA SECUNDARIO ====================
-function BceBeaView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
-  const [modalCatedra, setModalCatedra] = useState(null);
-  const [modalEditar, setModalEditar] = useState(null);
-  const [editCatInfo, setEditCatInfo] = useState(null);
-  const [buscar, setBuscar] = useState('');
+@app.put("/api/docentes/{docente_id}/disponibilidad")
+def set_disponibilidad(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        db.execute(text(f"DELETE FROM docente_disponibilidad WHERE docente_id = {docente_id}"))
+        for item in data.get("disponibilidad", []):
+            dia = item.get("dia")
+            hora = item.get("hora")
+            disponible = item.get("disponible", True)
+            if dia and hora:
+                db.execute(text(
+                    f"INSERT INTO docente_disponibilidad (docente_id, dia, hora, disponible) VALUES ({docente_id}, '{dia}', '{hora}', {disponible})"
+                ))
+        db.commit()
+        return {"ok": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
-  const catedrasBCE = useMemo(() => {
-    return catedras.filter(c => {
-      const n = (c.nombre || '').toUpperCase();
-      const vinc = c.cursos_vinculados || [];
-      return vinc.some(v => {
-        const cn = (v.curso_nombre || '').toUpperCase();
-        return cn.includes('BCE') || cn.includes('BEA') || cn.includes('SECUNDARIO') || cn.includes('BACHILLERATO');
-      }) || n.includes('BCE') || n.includes('BEA') || n.includes('SECUNDARIO');
-    });
-  }, [catedras]);
 
-  const lista = useMemo(() => {
-    const base = catedrasBCE.length > 0 ? catedrasBCE : catedras;
-    if (!buscar) return base;
-    const b = buscar.toLowerCase();
-    return base.filter(c => c.nombre.toLowerCase().includes(b) || c.codigo.toLowerCase().includes(b));
-  }, [catedras, catedrasBCE, buscar]);
+# ==================== CURSOS ====================
 
-  const eliminarAsig = async (id) => {
-    if (!window.confirm('¿Eliminar?')) return;
-    try { await apiFetch(`/api/asignaciones/${id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
-  };
+@app.get("/api/cursos")
+def get_cursos(sede_id: int = None, db: Session = Depends(get_db)):
+    q = db.query(Curso)
+    if sede_id: q = q.filter(Curso.sede_id == sede_id)
+    result = []
+    for c in q.order_by(Curso.nombre).all():
+        catedras_vinc = []
+        try:
+            for cc in (c.catedras or []):
+                catedras_vinc.append({"id": cc.id, "catedra_id": cc.catedra_id, "catedra_codigo": cc.catedra.codigo if cc.catedra else None, "catedra_nombre": cc.catedra.nombre if cc.catedra else None, "turno": cc.turno})
+        except Exception: pass
+        result.append({"id": c.id, "nombre": c.nombre, "sede_id": c.sede_id, "sede_nombre": c.sede.nombre if c.sede else None, "cant_catedras": len(catedras_vinc), "catedras": catedras_vinc})
+    return result
 
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🏫 BCE Secundario / BEA</h2>
-        <p className="text-slate-500 text-sm">Cátedras del secundario acelerado. Asignaciones y horarios se tratan aparte.</p>
-      </div>
-      <div className="bg-white rounded-xl border p-3 mb-4">
-        <input type="text" placeholder="Buscar cátedra por código o nombre..." className="w-full px-3 py-2 border rounded-lg text-sm"
-          value={buscar} onChange={e => setBuscar(e.target.value)} />
-      </div>
-      {catedrasBCE.length === 0 && !buscar && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
-          <p className="text-amber-700 text-sm">No se detectaron cátedras vinculadas a cursos BCE/BEA automáticamente. Usá el buscador para encontrar las cátedras que necesitás, o vinculá los cursos BCE/BEA desde Importar.</p>
-        </div>
-      )}
-      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead><tr className="bg-orange-50 border-b">
-            <th className="text-left p-3 text-sm font-semibold">Cátedra</th>
-            <th className="text-left p-3 text-sm font-semibold">Asignaciones</th>
-            <th className="text-center p-3 text-sm font-semibold w-20">Inscriptos</th>
-            <th className="text-center p-3 text-sm font-semibold w-24">Acciones</th>
-          </tr></thead>
-          <tbody>
-            {lista.slice(0, 50).map(cat => (
-              <tr key={cat.id} className="border-b hover:bg-slate-50">
-                <td className="p-3">
-                  <span className="px-2 py-1 bg-orange-700 text-white rounded text-xs font-mono mr-2">{cat.codigo}</span>
-                  <span className="font-medium">{cat.nombre}</span>
-                </td>
-                <td className="p-3">
-                  {cat.asignaciones?.length > 0 ? cat.asignaciones.map(a => {
-                    const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                    return (
-                      <div key={a.id} className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs border mr-1 mb-1" style={{background: mod.bg ? undefined : '#f8f8f8'}}>
-                        <span>{a.docente ? a.docente.nombre : '⚠️ Sin doc.'}</span>
-                        {a.dia && <span className="text-slate-400">{a.dia} {a.hora_inicio}</span>}
-                        <button onClick={() => { setModalEditar(a); setEditCatInfo({codigo: cat.codigo, nombre: cat.nombre}); }} className="text-blue-500">✏️</button>
-                        <button onClick={() => eliminarAsig(a.id)} className="text-red-400">×</button>
-                      </div>
-                    );
-                  }) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
-                </td>
-                <td className="p-3 text-center"><span className="text-lg font-bold text-cyan-600">{cat.inscriptos || 0}</span></td>
-                <td className="p-3 text-center">
-                  <button onClick={() => setModalCatedra(cat)} className="px-3 py-1 bg-amber-500 text-slate-900 rounded text-sm font-medium">+ Asignar</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{lista.length} cátedras</p>
-      {modalCatedra && <ModalAsignarCatedra catedra={modalCatedra} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} onClose={() => setModalCatedra(null)} recargar={recargar} />}
-      {modalEditar && editCatInfo && <ModalEditarAsignacion asignacion={modalEditar} docentes={docentes} sedes={sedes} onClose={() => { setModalEditar(null); setEditCatInfo(null); }} recargar={recargar} catCodigo={editCatInfo.codigo} catNombre={editCatInfo.nombre} />}
-    </div>
-  );
-}
 
-// ==================== IMPORTAR VIEW (v4.0 con apertura y alumnos consolidados) ====================
-function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
-  const [uploading, setUploading] = useState('');
-  const [resultado, setResultado] = useState(null);
-  const [horariosPreview, setHorariosPreview] = useState(null);
-  const [cuatriSeleccionado, setCuatriSeleccionado] = useState(
-    cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1')
-  );
+# ==================== IMPORTACIONES ====================
 
-  const subirArchivo = async (endpoint, label, extraParams = '') => {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.xlsx,.xls';
-    input.onchange = async (e) => {
-      const file = e.target.files[0]; if (!file) return;
-      setUploading(label); setResultado(null);
-      const formData = new FormData();
-      formData.append('file', file);
-      try {
-        const res = await fetch(`${API_URL}${endpoint}${extraParams}`, { method: 'POST', body: formData });
-        const data = await res.json();
-        if (res.ok) { setResultado({ ok: true, data, label }); recargar(); }
-        else { setResultado({ ok: false, error: data.detail || 'Error', label }); }
-      } catch (err) { setResultado({ ok: false, error: err.message, label }); }
-      setUploading('');
-    };
-    input.click();
-  };
+@app.post("/api/importar/catedras")
+async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = None
+        for name in wb.sheetnames:
+            if "catedr" in name.lower() or "cátedr" in name.lower(): ws = wb[name]; break
+        if ws is None: ws = wb[wb.sheetnames[0]]
+        creadas = actualizadas = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            codigo = nombre = None
+            if len(vals) >= 2 and vals[1]:
+                m = re.match(r'^(c\.\d+)\s+(.+)', vals[1], re.IGNORECASE)
+                if m: codigo, nombre = m.group(1), m.group(2).strip()
+            if not codigo and len(vals) >= 2:
+                try:
+                    num = int(float(vals[0]))
+                    if num > 0 and vals[1]:
+                        m = re.match(r'^(c\.\d+)\s+(.+)', vals[1], re.IGNORECASE)
+                        if m: codigo, nombre = m.group(1), m.group(2).strip()
+                        else: codigo, nombre = f"c.{num}", vals[1]
+                except: pass
+            if codigo:
+                ex = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+                if ex:
+                    if nombre and nombre != ex.nombre: ex.nombre = nombre; actualizadas += 1
+                else:
+                    db.add(Catedra(codigo=codigo, nombre=nombre or f"Cátedra {codigo}")); creadas += 1
+        db.commit(); wb.close()
+        return {"creadas": creadas, "actualizadas": actualizadas}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-  // v4.0 MEJORA 12: Replicar cuatrimestre
-  const [replicarOrigen, setReplicarOrigen] = useState('');
-  const [replicarDestino, setReplicarDestino] = useState('');
-  const [replicando, setReplicando] = useState(false);
+@app.post("/api/importar/apertura-catedras")
+async def importar_apertura_catedras(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        abiertas = ya_existentes = 0
+        errores = []
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            if not any(vals): continue
+            codigo = None
+            nombre = None
+            for v in vals:
+                m = re.match(r'^(c\.\d+)\s*(.*)', v, re.IGNORECASE)
+                if m: codigo = m.group(1); nombre = m.group(2).strip() if m.group(2) else None; break
+            if not codigo and vals[0]:
+                try:
+                    num = int(float(vals[0]))
+                    if num > 0: codigo = f"c.{num}"; nombre = vals[1] if len(vals) > 1 else None
+                except: pass
+            if not codigo: continue
+            catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            if not catedra:
+                if nombre: catedra = Catedra(codigo=codigo, nombre=nombre); db.add(catedra); db.flush()
+                else: continue
+            if db.query(Asignacion).filter(Asignacion.catedra_id == catedra.id, Asignacion.cuatrimestre_id == cuatrimestre_id).first():
+                ya_existentes += 1; continue
+            db.add(Asignacion(catedra_id=catedra.id, cuatrimestre_id=cuatrimestre_id, modalidad='virtual_tm'))
+            abiertas += 1
+        db.commit(); wb.close()
+        return {"abiertas": abiertas, "ya_existentes": ya_existentes, "errores": errores[:20]}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-  const replicar = async () => {
-    if (!replicarOrigen || !replicarDestino) { alert('Seleccioná origen y destino'); return; }
-    if (replicarOrigen === replicarDestino) { alert('Origen y destino no pueden ser iguales'); return; }
-    if (!window.confirm('¿Replicar todas las aperturas del cuatrimestre seleccionado? Los docentes NO se copian, solo la estructura.')) return;
-    setReplicando(true);
-    try {
-      const r = await apiFetch('/api/cuatrimestres/replicar', {
-        method: 'POST',
-        body: JSON.stringify({ origen_id: parseInt(replicarOrigen), destino_id: parseInt(replicarDestino) }),
-      });
-      setResultado({ ok: true, data: r, label: 'Replicar cuatrimestre' });
-      recargar();
-    } catch (e) { setResultado({ ok: false, error: e.message, label: 'Replicar' }); }
-    setReplicando(false);
-  };
+@app.post("/api/importar/cursos")
+async def importar_cursos(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        creados = omitidos = 0
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            sede_texto = vals[0] if len(vals) > 0 else ""
+            nombre = vals[1] if len(vals) > 1 else ""
+            if not nombre or len(nombre) < 3: continue
+            if any(x in nombre.lower() for x in ['no disponible', '//bajas//', 'test ']): omitidos += 1; continue
+            sede = db.query(Sede).filter(Sede.nombre == sede_texto).first() if sede_texto else None
+            if not sede and sede_texto and len(sede_texto) > 2:
+                sede = Sede(nombre=sede_texto, color="bg-gray-500"); db.add(sede); db.flush()
+            if not db.query(Curso).filter(Curso.nombre == nombre).first():
+                db.add(Curso(nombre=nombre, sede_id=sede.id if sede else None)); creados += 1
+        db.commit(); wb.close()
+        return {"creados": creados, "omitidos": omitidos}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-  return (
-    <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Importar Datos</h2></div>
-      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
-        <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
-      </div>
+@app.post("/api/importar/docentes")
+async def importar_docentes(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        headers = [str(c.value).lower().strip() if c.value else "" for c in ws[1]]
+        col_map = {"dni": -1, "nombre": -1, "apellido": -1, "email": -1}
+        for i, h in enumerate(headers):
+            if any(x in h for x in ["dni", "documento"]): col_map["dni"] = i
+            elif h in ["nombre", "nombres"]: col_map["nombre"] = i
+            elif "apellido" in h: col_map["apellido"] = i
+            elif any(x in h for x in ["mail", "email", "correo"]): col_map["email"] = i
+        es_combinado = any("apellido y nombre" in h or "apellido, nombre" in h for h in headers)
+        creados = actualizados = 0; errores = []
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            if es_combinado:
+                dni = vals[0].replace(".", "").replace("-", "").replace(" ", "") if vals else ""
+                if dni.endswith(".0"): dni = dni[:-2]
+                parts = (vals[1] if len(vals) > 1 else "").split(",", 1)
+                apellido = parts[0].strip().title()
+                nombre = parts[1].strip().title() if len(parts) > 1 else ""
+                email = vals[2] if len(vals) > 2 else None
+            else:
+                def gv(k):
+                    idx = col_map.get(k, -1)
+                    return vals[idx] if 0 <= idx < len(vals) and vals[idx] else None
+                dni = (gv("dni") or (vals[0] if vals else "")).replace(".", "").replace("-", "").replace(" ", "")
+                if dni.endswith(".0"): dni = dni[:-2]
+                nombre = gv("nombre") or ""; apellido = gv("apellido") or ""; email = gv("email")
+            if not dni or len(dni) < 7: continue
+            ex = db.query(Docente).filter(Docente.dni == dni).first()
+            if ex:
+                if nombre: ex.nombre = nombre
+                if apellido: ex.apellido = apellido
+                if email: ex.email = email
+                actualizados += 1
+            else:
+                if not nombre and not apellido: continue
+                db.add(Docente(dni=dni, nombre=nombre, apellido=apellido, email=email)); creados += 1
+        db.commit(); wb.close()
+        return {"creados": creados, "actualizados": actualizados, "errores": errores[:10]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-      {/* v4.0 MEJORA 1: Apertura masiva de cátedras */}
-      <h3 className="font-semibold text-slate-600 mb-3">📋 Apertura de cátedras por cuatrimestre</h3>
-      <div className="bg-white rounded-xl border p-6 mb-8 border-amber-200">
-        <h3 className="font-semibold mb-2">📚 Abrir cátedras para un cuatrimestre</h3>
-        <p className="text-sm text-slate-500 mb-1">Subí un Excel con las cátedras que se abrirán. Cada una se crea como "pendiente" (sin turno ni docente asignado).</p>
-        <p className="text-xs text-slate-400 mb-3 font-mono">Formato: | Número | c.XX Nombre de la cátedra |</p>
-        <div className="mb-4">
-          <label className="text-sm text-slate-600 font-medium">Cuatrimestre destino:</label>
-          <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50"
-            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
-            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
-        </div>
-        <button onClick={() => subirArchivo('/api/importar/apertura-catedras', 'Apertura Cátedras', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'Apertura Cátedras'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-amber-500 text-slate-900 hover:bg-amber-400">
-          {uploading === 'Apertura Cátedras' ? '⏳ Importando...' : '📤 Subir Excel de aperturas'}
-        </button>
-      </div>
+@app.post("/api/importar/catedra-cursos")
+async def importar_catedra_cursos(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        creados = 0; errores = []
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            if len(vals) < 3: continue
+            materia_texto = vals[1]; curso_nombre = vals[2]; sede_nombre = vals[3] if len(vals) > 3 else ""
+            m = re.match(r'^(c\.\d+)\s+(.+?)(?:\s*-\s*(Mañana|Noche|Virtual|Tarde))?\s*$', materia_texto, re.IGNORECASE)
+            codigo = m.group(1) if m else (f"c.{vals[0]}" if vals[0] else None)
+            turno = m.group(3) if m else None
+            if not codigo or not curso_nombre: continue
+            catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            if not catedra: continue
+            curso = db.query(Curso).filter(Curso.nombre == curso_nombre).first()
+            if not curso:
+                sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first() if sede_nombre else None
+                curso = Curso(nombre=curso_nombre, sede_id=sede.id if sede else None); db.add(curso); db.flush()
+            sede = db.query(Sede).filter(Sede.nombre == sede_nombre).first() if sede_nombre else None
+            if not db.query(CatedraCurso).filter(CatedraCurso.catedra_id == catedra.id, CatedraCurso.curso_id == curso.id, CatedraCurso.turno == turno).first():
+                db.add(CatedraCurso(catedra_id=catedra.id, curso_id=curso.id, turno=turno, sede_id=sede.id if sede else None)); creados += 1
+        db.commit(); wb.close()
+        return {"creados": creados, "errores": errores[:20]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-      <h3 className="font-semibold text-slate-600 mb-3">Datos base</h3>
-      <div className="grid grid-cols-3 gap-6 mb-8">
-        {[
-          { id: 'catedras', icon: '📚', titulo: 'Importar Cátedras', desc: 'Excel con: Número + "c.XX Nombre"', endpoint: '/api/importar/catedras', color: 'bg-slate-800 text-white' },
-          { id: 'cursos', icon: '🎓', titulo: 'Importar Cursos', desc: 'Excel con: Sede + Nombre del curso', endpoint: '/api/importar/cursos', color: 'bg-blue-600 text-white' },
-          { id: 'docentes', icon: '👨‍🏫', titulo: 'Importar Docentes', desc: 'Excel: DNI + Apellido, Nombre', endpoint: '/api/importar/docentes', color: 'bg-amber-500 text-slate-900' },
-        ].map(imp => (
-          <div key={imp.id} className="bg-white rounded-xl border p-6">
-            <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
-            <p className="text-sm text-slate-500 mb-4">{imp.desc}</p>
-            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)} disabled={uploading === imp.titulo}
-              className={`w-full py-2.5 rounded-lg font-medium disabled:opacity-50 ${imp.color}`}>
-              {uploading === imp.titulo ? '⏳...' : '📤 Subir Excel'}
-            </button>
-          </div>
-        ))}
-      </div>
+@app.post("/api/importar/links-meet")
+async def importar_links_meet(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        ws = wb[wb.sheetnames[0]]
+        actualizados = 0; errores = []
+        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            vals = [str(c).strip() if c is not None else "" for c in row]
+            if len(vals) < 2: continue
+            codigo = link = None
+            for v in vals:
+                if re.match(r'^c\.\d+', v, re.IGNORECASE): codigo = v
+                elif 'meet.google.com' in v or 'http' in v: link = v
+            if not codigo or not link: continue
+            cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            if cat: cat.link_meet = link; actualizados += 1
+        db.commit(); wb.close()
+        return {"actualizados": actualizados, "errores": errores[:10]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-      <h3 className="font-semibold text-slate-600 mb-3">Vinculaciones</h3>
-      <div className="grid grid-cols-2 gap-6 mb-8">
-        {[
-          { id: 'cc', icon: '🔗', titulo: 'Vincular Cátedras ↔ Cursos', endpoint: '/api/importar/catedra-cursos', color: 'bg-teal-600 text-white' },
-          { id: 'meet', icon: '📹', titulo: 'Links de Meet', endpoint: '/api/importar/links-meet', color: 'bg-green-600 text-white' },
-        ].map(imp => (
-          <div key={imp.id} className="bg-white rounded-xl border p-6 border-dashed border-slate-300">
-            <h3 className="font-semibold mb-2">{imp.icon} {imp.titulo}</h3>
-            <button onClick={() => subirArchivo(imp.endpoint, imp.titulo)} disabled={uploading === imp.titulo}
-              className={`w-full py-2.5 rounded-lg font-medium disabled:opacity-50 ${imp.color}`}>
-              {uploading === imp.titulo ? '⏳...' : '📤 Subir Excel'}
-            </button>
-          </div>
-        ))}
-      </div>
+# ===== v5.0: Importar alumnos con clasificación sede/turno/modalidad =====
+@app.post("/api/importar/alumnos")
+async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        content = await file.read()
+        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
+        creados = 0; inscripciones = 0; actualizados = 0; errores = []
+        stats = {'virtual': 0, 'presencial': 0, 'turnos': {}, 'sedes': {}}
+        for ws in wb:
+            for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                vals = [str(c).strip() if c is not None else "" for c in row]
+                if len(vals) < 4: continue
+                alumno_texto = vals[1]
+                dni_raw = str(vals[2]).strip() if vals[2] else ""
+                materia_texto = vals[3]
+                curso_texto = vals[4] if len(vals) > 4 else ""
+                dni = re.sub(r'[.\-\s]', '', dni_raw)
+                if '.' in dni:
+                    try: dni = str(int(float(dni)))
+                    except: pass
+                if not dni or len(dni) < 6: continue
+                m_nombre = re.match(r'^(.+?)\s*\(\d+\)', alumno_texto)
+                nombre_completo = m_nombre.group(1).strip() if m_nombre else alumno_texto
+                partes = nombre_completo.strip().split(' ')
+                nombre = ' '.join(partes[:-1]) if len(partes) >= 2 else nombre_completo
+                apellido = partes[-1] if len(partes) >= 2 else ""
+                m_cod = re.match(r'^(c\.\d+)', materia_texto, re.IGNORECASE)
+                if not m_cod: continue
+                codigo = m_cod.group(1)
+                catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+                if not catedra: continue
+                # v5.0: Clasificar por curso
+                modalidad_alumno, sede_ref, es_cied = clasificar_alumno_curso(curso_texto)
+                turno = extraer_turno_materia(materia_texto)
+                alumno = db.query(Alumno).filter(Alumno.dni == dni).first()
+                if not alumno:
+                    alumno = Alumno(dni=dni, nombre=nombre, apellido=apellido)
+                    db.add(alumno); db.flush(); creados += 1
+                existe = db.query(Inscripcion).filter(
+                    Inscripcion.alumno_id == alumno.id,
+                    Inscripcion.catedra_id == catedra.id,
+                    Inscripcion.cuatrimestre_id == cuatrimestre_id
+                ).first()
+                if not existe:
+                    insc = Inscripcion(alumno_id=alumno.id, catedra_id=catedra.id, cuatrimestre_id=cuatrimestre_id)
+                    db.add(insc); db.flush()
+                    try:
+                        db.execute(text(
+                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
+                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "id": insc.id})
+                    except Exception:
+                        pass
+                    inscripciones += 1
+                else:
+                    # SIEMPRE sobreescribir clasificación (no COALESCE)
+                    try:
+                        db.execute(text(
+                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
+                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "id": existe.id})
+                        actualizados += 1
+                    except Exception:
+                        pass
+                # Contar stats siempre
+                stats[modalidad_alumno] = stats.get(modalidad_alumno, 0) + 1
+                if turno: stats['turnos'][turno] = stats['turnos'].get(turno, 0) + 1
+                if sede_ref: stats['sedes'][sede_ref] = stats['sedes'].get(sede_ref, 0) + 1
+        db.commit(); wb.close()
+        return {
+            "alumnos_nuevos": creados, "inscripciones_nuevas": inscripciones,
+            "inscripciones_actualizadas": actualizados,
+            "virtuales": stats.get('virtual', 0), "presenciales": stats.get('presencial', 0),
+            "por_turno": stats['turnos'], "por_sede": stats['sedes'],
+            "errores": errores[:20]
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
 
-      <h3 className="font-semibold text-slate-600 mb-3">🗺️ Molde de horarios por carrera</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-blue-200">
-        <p className="text-sm text-slate-500 mb-3">Subí el archivo <strong>Horarios.xlsx</strong> con la estructura de carreras, años y cátedras por sede. Se importa una sola vez y sirve como "molde" para generar sugerencias.</p>
-        <button onClick={() => subirArchivo('/api/importar/plan-carrera', 'Plan Carrera')}
-          disabled={uploading === 'Plan Carrera'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700">
-          {uploading === 'Plan Carrera' ? '⏳ Importando...' : '📤 Importar molde de horarios'}
-        </button>
-      </div>
 
-      {/* v4.0 MEJORA 4: Alumnos consolidados */}
-      <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
-        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos (v6.0)</h3>
-        <p className="text-sm text-slate-500 mb-1">El sistema ahora clasifica automáticamente cada alumno según su CURSO:</p>
-        <p className="text-xs text-slate-500 mb-1">🖥️ <strong>Virtual</strong>: Si el curso dice "CIED" o es "Online-Interior"</p>
-        <p className="text-xs text-slate-500 mb-1">🏫 <strong>Presencial</strong>: Si el curso NO dice "CIED" (requiere profesor en aula)</p>
-        <p className="text-xs text-slate-500 mb-1">📋 <strong>Turno</strong>: Se lee de la MATERIA (Mañana / Noche / Virtual)</p>
-        <p className="text-xs text-slate-400 mb-3">Si el Excel tiene varias hojas, se procesan todas.</p>
-        <div className="mb-4">
-          <label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
-          <select className="w-full border-2 border-cyan-300 rounded-lg px-3 py-2 mt-1 bg-cyan-50"
-            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
-            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
-        </div>
-        <button onClick={() => subirArchivo('/api/importar/alumnos', 'Alumnos', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'Alumnos'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-cyan-600 text-white hover:bg-cyan-700">
-          {uploading === 'Alumnos' ? '⏳...' : '📤 Subir Excel de inscriptos'}
-        </button>
-      </div>
+# ==================== SOLAPAMIENTOS ====================
 
-      <div className="bg-white rounded-xl border p-6 mb-6 border-emerald-200">
-        <h3 className="font-semibold mb-2">📅 Importar Horarios y Designaciones</h3>
-        <p className="text-sm text-slate-500 mb-1">Importa asignaciones con día, hora, sede y docente. <strong>Borra las asignaciones anteriores</strong> y carga las nuevas.</p>
-        <p className="text-xs text-slate-400 mb-3">Paso 1: Vista previa de cambios → Paso 2: Confirmar y aplicar. Docentes no existentes se crean automáticamente.</p>
-        {!horariosPreview ? (
-          <button onClick={async () => {
-            const input = document.createElement('input'); input.type = 'file'; input.accept = '.xlsx';
-            input.onchange = async (ev) => {
-              const file = ev.target.files?.[0]; if (!file) return;
-              setUploading('Preview Horarios');
-              try {
-                const form = new FormData(); form.append('file', file);
-                const res = await fetch(`${API_URL}/api/importar/horarios-preview?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
-                const data = await res.json();
-                setHorariosPreview({ data, file });
-              } catch (e) { alert('Error: ' + e.message); }
-              setUploading(null);
-            }; input.click();
-          }} disabled={uploading === 'Preview Horarios'}
-            className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-emerald-600 text-white hover:bg-emerald-700">
-            {uploading === 'Preview Horarios' ? '⏳ Analizando...' : '🔍 Paso 1: Analizar Excel de horarios'}
-          </button>
-        ) : (
-          <div>
-            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-3">
-              <p className="font-bold text-emerald-800 text-lg mb-2">Vista previa de cambios</p>
-              <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-red-600">{horariosPreview.data.asignaciones_actuales_a_borrar}</p><p className="text-xs text-slate-500">Se borran</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-emerald-600">{horariosPreview.data.asignaciones_nuevas}</p><p className="text-xs text-slate-500">Se crean</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-blue-600">{horariosPreview.data.con_docente_existente}</p><p className="text-xs text-slate-500">Con docente</p></div>
-              </div>
-              {horariosPreview.data.docentes_a_crear?.length > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
-                  <p className="font-medium text-amber-800 text-sm">🆕 Se crearán {horariosPreview.data.docentes_a_crear.length} docentes nuevos:</p>
-                  <p className="text-xs text-amber-600 mt-1">{horariosPreview.data.docentes_a_crear.join(', ')}</p>
-                </div>
-              )}
-              {horariosPreview.data.catedras_no_encontradas?.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
-                  <p className="font-medium text-red-800 text-sm">⚠️ Cátedras no encontradas:</p>
-                  <p className="text-xs text-red-600 mt-1">{horariosPreview.data.catedras_no_encontradas.join(', ')}</p>
-                </div>
-              )}
-              {horariosPreview.data.preview?.length > 0 && (
-                <details className="mt-2"><summary className="text-xs text-slate-500 cursor-pointer">Ver primeras {horariosPreview.data.preview.length} asignaciones</summary>
-                  <div className="mt-2 max-h-48 overflow-y-auto text-[10px]">
-                    <table className="w-full"><thead><tr className="bg-slate-100"><th className="p-1">Cát.</th><th className="p-1">Nombre</th><th className="p-1">Día</th><th className="p-1">Hora</th><th className="p-1">Sede</th><th className="p-1">Docente</th><th className="p-1">Est.</th></tr></thead>
-                    <tbody>{horariosPreview.data.preview.map((r,i) => <tr key={i} className="border-b"><td className="p-1 font-mono">{r.cat}</td><td className="p-1">{r.nombre}</td><td className="p-1">{r.dia}</td><td className="p-1">{r.hora}</td><td className="p-1">{r.sede}</td><td className="p-1">{r.docente}</td><td className="p-1">{r.estado}</td></tr>)}</tbody></table>
-                  </div>
-                </details>
-              )}
-            </div>
-            <div className="flex gap-3">
-              <button onClick={async () => {
-                setUploading('Aplicar Horarios');
-                try {
-                  const form = new FormData(); form.append('file', horariosPreview.file);
-                  const res = await fetch(`${API_URL}/api/importar/horarios-aplicar?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
-                  if (!res.ok) { const txt = await res.text(); throw new Error(txt); }
-                  const data = await res.json();
-                  if (data.error) { alert('⚠️ ' + data.error); setUploading(null); return; }
-                  setResultado({ ok: true, data, label: 'Importar Horarios' });
-                  setHorariosPreview(null); recargar();
-                } catch (e) { alert('Error: ' + e.message); }
-                setUploading(null);
-              }} disabled={uploading === 'Aplicar Horarios'}
-                className="flex-1 py-2.5 rounded-lg font-bold bg-emerald-600 text-white hover:bg-emerald-700">
-                {uploading === 'Aplicar Horarios' ? '⏳ Aplicando...' : '✅ Confirmar y aplicar cambios'}
-              </button>
-              <button onClick={() => setHorariosPreview(null)} className="px-6 py-2.5 rounded-lg font-medium bg-slate-200 hover:bg-slate-300">
-                ❌ Cancelar
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+def verificar_solapamiento_catedra(catedra_id, dia, hora_inicio, cuatrimestre_id, excluir_id, db):
+    q = db.query(Asignacion).filter(Asignacion.catedra_id == catedra_id, Asignacion.dia == dia, Asignacion.hora_inicio == hora_inicio, Asignacion.cuatrimestre_id == cuatrimestre_id, Asignacion.modalidad != 'asincronica')
+    if excluir_id: q = q.filter(Asignacion.id != excluir_id)
+    if q.first(): return f"⛔ La cátedra ya tiene clase el {dia} a las {hora_inicio}."
+    return None
 
-      <h3 className="font-semibold text-slate-600 mb-3">👨‍🏫 Docentes</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-indigo-200">
-        <h3 className="font-semibold mb-2">📋 Importar Docentes desde CUIT</h3>
-        <p className="text-sm text-slate-500 mb-3">Excel con columnas: CUIT | APELLIDO, NOMBRE. Extrae el DNI automáticamente. Si ya existe, actualiza el nombre.</p>
-        <button onClick={() => subirArchivo('/api/importar/docentes-cuit', 'Docentes CUIT')}
-          disabled={uploading === 'Docentes CUIT'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-indigo-600 text-white hover:bg-indigo-700">
-          {uploading === 'Docentes CUIT' ? '⏳...' : '📤 Importar docentes con CUIT'}
-        </button>
-      </div>
+@app.get("/api/horarios/solapamientos")
+def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    try:
+        q = db.query(Asignacion).filter(Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None), Asignacion.modalidad != 'asincronica')
+        if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+        asigs = q.all()
+        solapamientos = []; checked = set()
+        for i, a1 in enumerate(asigs):
+            for a2 in asigs[i+1:]:
+                if a1.dia != a2.dia or a1.hora_inicio != a2.hora_inicio: continue
+                pair = tuple(sorted([a1.id, a2.id]))
+                if pair in checked: continue
+                checked.add(pair)
+                cat1 = a1.catedra; cat2 = a2.catedra
+                if a1.catedra_id == a2.catedra_id:
+                    solapamientos.append({"tipo": "CATEDRA", "severidad": "CRITICO", "mensaje": f"Cátedra {cat1.codigo if cat1 else '?'} tiene dos clases {a1.dia} {a1.hora_inicio}.", "dia": a1.dia, "hora": a1.hora_inicio})
+                elif a1.docente_id and a1.docente_id == a2.docente_id:
+                    doc = a1.docente
+                    solapamientos.append({"tipo": "DOCENTE", "severidad": "ALTO", "mensaje": f"{doc.nombre} {doc.apellido} tiene {cat1.codigo} y {cat2.codigo} el {a1.dia} {a1.hora_inicio}.", "dia": a1.dia, "hora": a1.hora_inicio})
+        return solapamientos
+    except Exception: return []
 
-      <div className="bg-white rounded-xl border p-6 mb-6 border-violet-200">
-        <h3 className="font-semibold mb-2">🎯 Cátedras de Referencia por Docente</h3>
-        <p className="text-sm text-slate-500 mb-3">Define qué cátedras puede dictar cada docente. Se usa para las sugerencias automáticas de armado de horarios.</p>
-        <div className="flex gap-3">
-          <button onClick={() => subirArchivo('/api/importar/catedras-referencia', 'Cát. Referencia')}
-            disabled={uploading === 'Cát. Referencia'}
-            className="flex-1 py-2.5 rounded-lg font-medium disabled:opacity-50 bg-violet-600 text-white hover:bg-violet-700">
-            {uploading === 'Cát. Referencia' ? '⏳...' : '📤 Importar desde Excel de designaciones'}
-          </button>
-          <button onClick={async () => {
-            setUploading('Auto-ref');
-            try {
-              const r = await fetch(`${API_URL}/api/docentes/auto-referencia?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST' });
-              const data = await r.json();
-              setResultado({ ok: true, data, label: 'Auto-asignar referencias' }); recargar();
-            } catch (e) { alert(e.message); }
-            setUploading(null);
-          }} disabled={uploading === 'Auto-ref'}
-            className="flex-1 py-2.5 rounded-lg font-medium disabled:opacity-50 bg-violet-100 text-violet-700 border border-violet-300 hover:bg-violet-200">
-            {uploading === 'Auto-ref' ? '⏳...' : '🔄 Auto-asignar desde asignaciones actuales'}
-          </button>
-        </div>
-      </div>
+@app.get("/api/docentes/estadisticas")
+def get_estadisticas_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    stats = {"presencial_virtual": 0, "sede_virtual": 0, "remoto": 0, "sin_asignaciones": 0}
+    for d in db.query(Docente).all():
+        tipo = calcular_tipo_modalidad(d, db)
+        if tipo == "PRESENCIAL_VIRTUAL": stats["presencial_virtual"] += 1
+        elif tipo == "SEDE_VIRTUAL": stats["sede_virtual"] += 1
+        elif tipo == "REMOTO": stats["remoto"] += 1
+        else: stats["sin_asignaciones"] += 1
+    return stats
 
-      <div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
-        <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
-        <p className="text-sm text-slate-500 mb-1">BCE: alumnos del secundario acelerado. Se asignan como <strong>Virtual</strong> a la sede del curso.</p>
-        <p className="text-sm text-slate-500 mb-3">BEA: alumnos del bachillerato. Todos se asignan a <strong>Caballito Virtual</strong>.</p>
-        <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'BCE/BEA'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-orange-500 text-white hover:bg-orange-600">
-          {uploading === 'BCE/BEA' ? '⏳...' : '📤 Subir Excel BCE/BEA'}
-        </button>
-      </div>
+# ===== v15.0: Importar alumnos BCE/BEA =====
+@app.post("/api/importar/alumnos-bce-bea")
+async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    """BCE/BEA: todos virtuales, sin turno. BEA siempre a Caballito Virtual. BCE a la sede del alumno + Virtual."""
+    from openpyxl import load_workbook
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    total = 0; errores = []; no_encontradas = set()
+    # Pre-load all catedras for name matching
+    all_cats = {c.nombre.lower().strip(): c for c in db.query(Catedra).all()}
+    all_cats_by_code = {c.codigo: c for c in db.query(Catedra).all()}
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            try:
+                vals = list(row)
+                if len(vals) < 5: continue
+                alumno_nombre = str(vals[1] or '').strip()
+                dni = str(vals[2] or '').strip()
+                materia = str(vals[3] or '').strip()
+                curso = str(vals[4] or '').strip()
+                if not alumno_nombre or not materia: continue
+                # Try to find cátedra: first by code pattern, then by name
+                cat = None
+                cod_match = re.search(r'c\.(\d+)', materia)
+                if cod_match:
+                    cat = all_cats_by_code.get(f"c.{cod_match.group(1)}")
+                if not cat:
+                    cod_match = re.search(r'c\.(\d+)', curso)
+                    if cod_match:
+                        cat = all_cats_by_code.get(f"c.{cod_match.group(1)}")
+                if not cat:
+                    # Match by name (BCE files only have the name, e.g. "Lengua I")
+                    mat_lower = materia.lower().strip()
+                    cat = all_cats.get(mat_lower)
+                    if not cat:
+                        # Partial match
+                        for nombre, c in all_cats.items():
+                            if mat_lower in nombre or nombre in mat_lower:
+                                cat = c; break
+                if not cat:
+                    no_encontradas.add(materia)
+                    continue
+                # Determine BCE or BEA
+                es_bea = 'BEA' in curso.upper() or 'BEA' in materia.upper()
+                if es_bea:
+                    sede_ref = 'Caballito'
+                else:
+                    sede_match = re.search(r'\(([^)]+)\)', curso)
+                    sede_ref = normalizar_sede(sede_match.group(1).strip()) if sede_match else 'Online - Interior'
+                # Clean DNI
+                dni = re.sub(r'[^\d]', '', dni)[:10]
+                # Find or create alumno
+                al = db.query(Alumno).filter(Alumno.dni == dni).first() if dni else None
+                if not al:
+                    al_nombre = re.sub(r'\s*\(.*\)', '', alumno_nombre).strip()
+                    al = Alumno(nombre=al_nombre, dni=dni)
+                    db.add(al); db.flush()
+                # Upsert inscription
+                existing = db.query(Inscripcion).filter(
+                    Inscripcion.alumno_id == al.id, Inscripcion.catedra_id == cat.id,
+                    Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
+                if existing:
+                    existing.turno = 'Virtual'; existing.modalidad_alumno = 'virtual'
+                    existing.sede_referencia = sede_ref; existing.curso_nombre = curso
+                else:
+                    db.add(Inscripcion(alumno_id=al.id, catedra_id=cat.id, cuatrimestre_id=cuatrimestre_id,
+                        turno='Virtual', modalidad_alumno='virtual', sede_referencia=sede_ref, curso_nombre=curso))
+                total += 1
+            except Exception as e:
+                errores.append(str(e)[:100])
+    db.commit()
+    wb.close()
+    return {"importados": total, "tipo": "BCE/BEA", "errores": errores[:10], "no_encontradas": list(no_encontradas)[:20]}
 
-      {/* v4.0 MEJORA 12: Replicar cuatrimestre */}
-      <h3 className="font-semibold text-slate-600 mb-3">🔄 Replicar cuatrimestre anterior</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-violet-200">
-        <p className="text-sm text-slate-500 mb-3">Copiá la apertura de cátedras de un cuatrimestre anterior a uno nuevo. Se copian las materias abiertas con su horario y sede, pero sin docente (hay que reasignarlos).</p>
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="text-sm text-slate-600 font-medium">Copiar de:</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={replicarOrigen} onChange={e => setReplicarOrigen(e.target.value)}>
-              <option value="">Seleccionar origen</option>
-              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-sm text-slate-600 font-medium">Hacia:</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={replicarDestino} onChange={e => setReplicarDestino(e.target.value)}>
-              <option value="">Seleccionar destino</option>
-              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </select>
-          </div>
-        </div>
-        <button onClick={replicar} disabled={replicando}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-violet-600 text-white hover:bg-violet-700">
-          {replicando ? '⏳ Replicando...' : '🔄 Replicar apertura'}
-        </button>
-      </div>
+@app.post("/api/cuatrimestres/replicar")
+def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
+    origen_id = data.get("origen_id"); destino_id = data.get("destino_id")
+    if not origen_id or not destino_id: raise HTTPException(status_code=400, detail="Faltan datos")
+    asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == origen_id).all()
+    if not asigs: raise HTTPException(status_code=400, detail="Origen sin asignaciones")
+    replicadas = ya_existentes = 0
+    for a in asigs:
+        if db.query(Asignacion).filter(Asignacion.catedra_id == a.catedra_id, Asignacion.cuatrimestre_id == destino_id, Asignacion.modalidad == a.modalidad).first():
+            ya_existentes += 1; continue
+        db.add(Asignacion(catedra_id=a.catedra_id, cuatrimestre_id=destino_id, modalidad=a.modalidad, dia=a.dia, hora_inicio=a.hora_inicio, hora_fin=a.hora_fin, sede_id=a.sede_id, recibe_alumnos_presenciales=a.recibe_alumnos_presenciales))
+        replicadas += 1
+    db.commit()
+    return {"replicadas": replicadas, "ya_existentes": ya_existentes}
 
-      {resultado && (
-        <div className={`p-4 rounded-xl border ${resultado.ok ? 'bg-green-50 border-green-300' : 'bg-red-50 border-red-300'}`}>
-          <p className="font-medium text-lg">{resultado.ok ? '✅' : '❌'} {resultado.label}</p>
-          {resultado.ok && resultado.data && (
-            <div className="mt-2 text-sm">
-              {Object.entries(resultado.data).filter(([k]) => k !== 'errores').map(([k, v]) => {
-                if (Array.isArray(v) && v.length > 0) {
-                  return <div key={k} className="mt-2"><p className="font-medium text-orange-700">{k} ({v.length}):</p>{v.map((item, i) => <p key={i} className="text-xs ml-2">• {typeof item === 'string' ? item : JSON.stringify(item)}</p>)}</div>;
-                }
-                if (Array.isArray(v) && v.length === 0) return null;
-                if (typeof v === 'object' && v !== null) {
-                  return <p key={k}>{k}: <strong>{Object.entries(v).map(([sk,sv]) => `${sk}: ${sv}`).join(', ')}</strong></p>;
-                }
-                return <p key={k}>{k}: <strong>{v}</strong></p>;
-              })}
-              {resultado.data.errores?.length > 0 && (
-                <div className="mt-2 text-xs text-orange-600">
-                  <p>Advertencias:</p>
-                  {resultado.data.errores.map((e, i) => <p key={i}>• {e}</p>)}
-                </div>
-              )}
-            </div>
-          )}
-          {!resultado.ok && <p className="mt-2 text-sm text-red-600">{resultado.error}</p>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ==================== v15.0: DOCENTE ROW EDITOR — ESTADO EN EL PADRE ====================
-// DocenteEditRow reads/writes from a shared editStore ref, never loses data
-function DocenteEditRow({ docId, editStore, onSave }) {
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  const vals = editStore.current[docId] || {};
-  const set = (campo, valor) => {
-    editStore.current[docId] = {...editStore.current[docId], [campo]: valor};
-    setDirty(true); setSaved(false);
-  };
-
-  const guardar = async () => {
-    setSaving(true);
-    const data = editStore.current[docId];
-    try {
-      const payload = {
-        horas_asignadas: parseInt(data.horas_asignadas) || 0,
-        materias_av: parseInt(data.materias_av) || 0,
-        materias_cab: parseInt(data.materias_cab) || 0,
-        materias_vl: parseInt(data.materias_vl) || 0,
-        sociedad_cfpea: !!data.sociedad_cfpea,
-        sociedad_isftea: !!data.sociedad_isftea,
-        notas: data.notas || '',
-        especialidad: data.especialidad || '',
-        catedras_referencia: data.catedras_referencia || '',
-      };
-      const res = await fetch(`${API_URL}/api/docentes/${docId}`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
-      });
-      if (!res.ok) throw new Error('Error del servidor');
-      setDirty(false); setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
-    } catch (e) { alert('Error al guardar: ' + e.message); }
-    setSaving(false);
-  };
-
-  // Force re-render when editStore changes (using a trick)
-  const [, forceUpdate] = useState(0);
-  const setAndUpdate = (campo, valor) => { set(campo, valor); forceUpdate(n => n + 1); };
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      {[['horas_asignadas','Hs'],['materias_av','Av'],['materias_cab','Cab'],['materias_vl','VL']].map(([campo,label]) => (
-        <div key={campo} className="text-center">
-          <label className="text-[8px] text-slate-400 block">{label}</label>
-          <input type="number" min="0" max="99" className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-            value={vals[campo] ?? 0} onChange={e => setAndUpdate(campo, e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
-        </div>
-      ))}
-      {[['sociedad_cfpea','CFPEA'],['sociedad_isftea','ISFTEA']].map(([campo,label]) => (
-        <div key={campo} className="text-center">
-          <label className="text-[8px] text-slate-400 block">{label}</label>
-          <input type="checkbox" checked={!!vals[campo]} onChange={e => setAndUpdate(campo, e.target.checked)} className="w-4 h-4" />
-        </div>
-      ))}
-      <div className="flex-1 min-w-[80px]">
-        <input type="text" placeholder="Notas..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.notas ?? ''} onChange={e => setAndUpdate('notas', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
-      </div>
-      <div className="min-w-[70px]">
-        <label className="text-[8px] text-slate-400 block">Especialidad</label>
-        <input type="text" placeholder="Área..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.especialidad ?? ''} onChange={e => setAndUpdate('especialidad', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
-      </div>
-      <div className="min-w-[80px]">
-        <label className="text-[8px] text-slate-400 block">Cát. ref.</label>
-        <input type="text" placeholder="c.1, c.3..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.catedras_referencia ?? ''} onChange={e => setAndUpdate('catedras_referencia', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
-      </div>
-      <button onClick={guardar} disabled={saving}
-        className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap ${saved ? 'bg-emerald-500 text-white' : dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'}`}>
-        {saving ? '⏳' : saved ? '✅' : dirty ? '💾 GUARDAR' : '—'}
-      </button>
-    </div>
-  );
-}
-
-// SociedadCheck is now handled by DocenteEditRow
-
-// ==================== v10.0: NOTAS INPUT ====================
-function NotasInput({ item, endpoint }) {
-  const [val, setVal] = useState(item.notas || '');
-  const [saved, setSaved] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const guardar = async () => {
-    setSaving(true);
-    try {
-      await apiFetch(`/api/${endpoint}/${item.id}`, { method: 'PUT', body: JSON.stringify({ notas: val }) });
-      setSaved(true);
-    } catch (e) { alert(e.message); }
-    setSaving(false);
-  };
-  return (
-    <div className="flex items-center gap-0.5">
-      <input type="text" className={`w-full border rounded px-1 py-0.5 text-[10px] ${!saved ? 'border-amber-500 bg-amber-50' : 'border-slate-200'}`}
-        placeholder="Notas..." value={val} onChange={e => { setVal(e.target.value); setSaved(false); }}
-        onBlur={() => { if (!saved) guardar(); }} onKeyDown={e => e.key === 'Enter' && guardar()} />
-      {!saved && !saving && <button onClick={guardar} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
-    </div>
-  );
-}
-
-// ==================== v12.0: DECISION INPUT MULTI-SELECT ====================
-function DecisionInput({ catedra }) {
-  const opciones = ['TM Avellaneda','TN Avellaneda','TM Caballito','TN Caballito','TM Vicente López','TN Vicente López','CIED Virtual','Asincrónica','No abrir'];
-  const initRef = useRef(false);
-  const [selected, setSelected] = useState(() => {
-    const d = catedra.decision_apertura || '';
-    return d ? d.split(',').map(s => s.trim()).filter(Boolean) : [];
-  });
-  const [open, setOpen] = useState(false);
-  // Do NOT re-sync from parent — only initialize once
-  
-  const toggle = async (op) => {
-    let newSel;
-    if (op === 'No abrir' || op === 'Asincrónica') {
-      newSel = selected.includes(op) ? [] : [op];
-    } else {
-      newSel = selected.filter(s => s !== 'No abrir' && s !== 'Asincrónica');
-      newSel = newSel.includes(op) ? newSel.filter(s => s !== op) : [...newSel, op];
+# ===== v11.0: Dashboard con flujo guiado =====
+@app.get("/api/dashboard")
+def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    total_cats = db.query(Catedra).count()
+    total_docs = db.query(Docente).count()
+    total_cursos = db.query(Curso).count()
+    # Asignaciones
+    q_a = db.query(Asignacion)
+    if cuatrimestre_id: q_a = q_a.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = q_a.all()
+    cats_abiertas = len(set(a.catedra_id for a in asigs))
+    con_docente = len([a for a in asigs if a.docente_id])
+    sin_docente = len([a for a in asigs if not a.docente_id])
+    # Inscriptos
+    q_i = "SELECT COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: q_i += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_insc = db.execute(text(q_i)).scalar() or 0
+    # Inscriptos clasificados vs sin clasificar
+    q_clas = "SELECT COUNT(*) FROM inscripciones WHERE modalidad_alumno IS NOT NULL"
+    if cuatrimestre_id: q_clas += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    clasificados = db.execute(text(q_clas)).scalar() or 0
+    sin_clasificar = total_insc - clasificados
+    # Decisiones tomadas
+    q_dec = "SELECT COUNT(*) FROM catedras WHERE decision_apertura IS NOT NULL AND decision_apertura != ''"
+    decisiones_tomadas = db.execute(text(q_dec)).scalar() or 0
+    cats_con_inscriptos_q = "SELECT COUNT(DISTINCT catedra_id) FROM inscripciones"
+    if cuatrimestre_id: cats_con_inscriptos_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    cats_con_inscriptos = db.execute(text(cats_con_inscriptos_q)).scalar() or 0
+    decisiones_pendientes = max(0, cats_con_inscriptos - decisiones_tomadas)
+    # Disponibilidad docentes
+    docs_con_dispo = db.execute(text("SELECT COUNT(DISTINCT docente_id) FROM docente_disponibilidad")).scalar() or 0
+    # Solapamientos
+    solaps = len(get_solapamientos(cuatrimestre_id, db))
+    # Criterio
+    criterio = get_criterio_apertura(cuatrimestre_id, db)
+    # Cobertura
+    cobertura = round((con_docente / max(1, con_docente + sin_docente)) * 100) if asigs else 0
+    docs_con_asig = len(set(a.docente_id for a in asigs if a.docente_id))
+    # Pasos
+    pasos = [
+        {"num": 1, "titulo": "Cargar datos base", "desc": "Cátedras, docentes y cursos",
+         "completo": total_cats > 0 and total_docs > 0,
+         "detalle": f"{total_cats} cátedras, {total_docs} docentes, {total_cursos} cursos",
+         "seccion": "importar"},
+        {"num": 2, "titulo": "Importar inscriptos", "desc": "Subir archivos de alumnos por materia",
+         "completo": total_insc > 0 and sin_clasificar == 0,
+         "parcial": total_insc > 0 and sin_clasificar > 0,
+         "detalle": f"{total_insc} inscripciones ({clasificados} clasificadas" + (f", {sin_clasificar} sin clasificar)" if sin_clasificar > 0 else ")"),
+         "seccion": "importar"},
+        {"num": 3, "titulo": "Decidir qué abrir", "desc": "≥10 inscriptos total = abrir con docente (1 cada 100). 1-9 = asincrónica (pregrabada). 0 = no abrir.",
+         "completo": decisiones_pendientes == 0 and cats_con_inscriptos > 0,
+         "parcial": decisiones_tomadas > 0 and decisiones_pendientes > 0,
+         "detalle": f"{decisiones_tomadas} decididas, {decisiones_pendientes} pendientes de {cats_con_inscriptos}",
+         "seccion": "decisiones"},
+        {"num": 4, "titulo": "Cargar disponibilidad", "desc": "Horarios disponibles de cada docente",
+         "completo": docs_con_dispo >= total_docs * 0.8 if total_docs > 0 else False,
+         "parcial": docs_con_dispo > 0,
+         "detalle": f"{docs_con_dispo} de {total_docs} docentes con disponibilidad cargada",
+         "seccion": "disponibilidad"},
+        {"num": 5, "titulo": "Asignar docentes", "desc": "Vincular docentes a cátedras con día y horario",
+         "completo": sin_docente == 0 and con_docente > 0,
+         "parcial": con_docente > 0,
+         "detalle": f"{con_docente} asignados, {sin_docente} sin docente",
+         "seccion": "catedras"},
+        {"num": 6, "titulo": "Verificar solapamientos", "desc": "Revisar que no haya conflictos de horarios",
+         "completo": solaps == 0 and con_docente > 0,
+         "parcial": False,
+         "detalle": f"{solaps} solapamientos detectados" if solaps > 0 else "Sin solapamientos",
+         "seccion": "solapamientos"},
+        {"num": 7, "titulo": "Exportar y distribuir", "desc": "Descargar el Excel completo",
+         "completo": False, "parcial": False,
+         "detalle": "Listo para exportar cuando los pasos anteriores estén completos",
+         "seccion": "exportar"},
+    ]
+    return {
+        "cobertura_pct": cobertura, "pasos": pasos,
+        "total_catedras": total_cats, "catedras_abiertas": cats_abiertas,
+        "con_docente": con_docente, "sin_docente": sin_docente,
+        "total_inscripciones": total_insc, "solapamientos": solaps,
+        "abrir": criterio['stats']['total_abrir'],
+        "asincronicas": criterio['stats']['total_asincronica'],
+        "sin_alumnos": criterio['stats']['total_sin_alumnos'],
+        "docs_sugeridos": criterio['stats']['total_docentes_sugeridos'],
+        "total_docentes": total_docs, "docentes_con_asignacion": docs_con_asig,
+        "total_asignaciones": len(asigs),
+        "decisiones_tomadas": decisiones_tomadas, "decisiones_pendientes": decisiones_pendientes,
     }
-    setSelected(newSel);
-    try {
-      await fetch(`${API_URL}/api/catedras/${catedra.id}`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ decision_apertura: newSel.join(', ') })
-      });
-    } catch (e) {}
-  };
-  
-  const color = selected.length === 0 ? 'border-slate-200' : 
-    selected.includes('No abrir') ? 'border-red-300 bg-red-50' : 
-    selected.includes('Asincrónica') ? 'border-purple-300 bg-purple-50' : 'border-emerald-300 bg-emerald-50';
-  
-  return (
-    <div className="relative">
-      <button onClick={() => setOpen(!open)} className={`w-full border rounded px-1 py-0.5 text-[8px] text-left ${color}`}>
-        {selected.length > 0 ? selected.join(', ') : '— Decidir —'}
-      </button>
-      {open && (
-        <div className="absolute z-50 bg-white border shadow-xl rounded-lg p-2 w-48 left-0 top-full mt-1" onMouseLeave={() => setOpen(false)}>
-          {opciones.map(op => (
-            <label key={op} className="flex items-center gap-1.5 py-0.5 px-1 hover:bg-slate-50 rounded cursor-pointer text-[10px]">
-              <input type="checkbox" checked={selected.includes(op)} onChange={() => toggle(op)} className="w-3 h-3" />
-              {op}
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+
+
+# ===== v13.0: Plan Carrera - Importar molde de horarios =====
+@app.post("/api/importar/plan-carrera")
+async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    from sqlalchemy import text
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    total = 0
+    # Clear existing plan
+    try: db.execute(text("DELETE FROM plan_carrera")); db.commit()
+    except: db.rollback()
+    # PHASE 1: Collect all records first, then deduplicate
+    all_records = []  # [(sede, carrera, anno, codigo, nombre, dtm, htm, dtn, htn)]
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        sede = sheet_name.strip()
+        raw_rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        carrera_act = ''
+        current_anno = ''
+        pending_cats = []  # cats before first año label
+        expect_reset = False  # set after Practica Formativa
+        edi_counter = {}  # (sede, carrera, anno) → count
+        def flush_pending(anno_to_use):
+            nonlocal pending_cats
+            for pc in pending_cats:
+                all_records.append((sede, carrera_act, anno_to_use, pc[0], pc[1], pc[2], pc[3], pc[4], pc[5]))
+            pending_cats = []
+        for vals in raw_rows:
+            if len(vals) < 5: continue
+            b = str(vals[1] or '').strip()
+            c = str(vals[2] or '').strip()
+            d = str(vals[3] or '').strip()
+            e = str(vals[4] or '').strip()
+            # Detect carrera in columns B, C, or D
+            for txt in [b, c, d]:
+                t_up = txt.upper()
+                if ('TECNICO' in t_up or 'TECNICATURA' in t_up) and len(txt) > 15:
+                    flush_pending(current_anno)
+                    carrera_act = txt.strip()
+                    current_anno = ''
+            c_up = c.upper()
+            e_up = e.upper()
+            if 'INSCRIPCION' in c_up or 'INSCRIPCIÓN' in c_up:
+                current_anno = ''
+                continue
+            # "Practica Formativa" without code: set flag to reset AFTER next Profesionalizante (if any)
+            if 'PRACTICA FORMATIVA' in e_up:
+                expect_reset = True
+                continue
+            # "CARRERA / AÑO / CODIGO" header row = start of new carrera block
+            if d.upper().strip() == 'CODIGO' and e_up.strip() == 'MATERIA':
+                current_anno = ''
+                continue
+            if ('1ER' in c_up or '2DO' in c_up or '3ER' in c_up or '4TO' in c_up) and 'AÑO' in c_up:
+                new_anno = c.strip()
+                flush_pending(new_anno)
+                current_anno = new_anno
+            # Extract horarios
+            dia_tm = str(vals[6] or '').strip() if len(vals) > 6 else ''
+            hora_tm = str(vals[7] or '').strip() if len(vals) > 7 else ''
+            dia_tn = str(vals[9] or '').strip() if len(vals) > 9 else ''
+            hora_tn = str(vals[10] or '').strip() if len(vals) > 10 else ''
+            # Detect catedra code
+            try:
+                cod_num = int(float(d))
+                if cod_num > 0 and e and carrera_act:
+                    cod = f'c.{cod_num}'
+                    e_up_check = e.upper()
+                    is_prof = 'PROFESIONALIZANTE' in e_up_check
+                    # If we saw "Practica Formativa" and this is NOT a Profesionalizante → reset year first
+                    if expect_reset and not is_prof and current_anno:
+                        current_anno = ''
+                        expect_reset = False
+                    if current_anno:
+                        all_records.append((sede, carrera_act, current_anno, cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
+                        # Práctica Profesionalizante = last item of a year block → reset
+                        if is_prof:
+                            current_anno = ''
+                            expect_reset = False
+                    else:
+                        pending_cats.append((cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
+            except:
+                # EDI detection: no code, but "EDI" in column E
+                if e.strip().upper() == 'EDI' and carrera_act and current_anno:
+                    edi_key = (sede, carrera_act)  # per carrera, NOT per anno
+                    edi_count = edi_counter.get(edi_key, 0) + 1
+                    edi_counter[edi_key] = edi_count
+                    all_records.append((sede, carrera_act, current_anno, f'EDI-{edi_count}', f'EDI {edi_count} (Espacio de Definición Institucional)', '', '', '', ''))
+        flush_pending(current_anno or 'AÑO')
+    # PHASE 2: Deduplicate — one code per carrera per sede
+    seen = set()
+    unique_records = []
+    for rec in all_records:
+        key = (rec[0], rec[1], rec[3])  # (sede, carrera, codigo)
+        if key in seen: continue
+        seen.add(key)
+        unique_records.append(rec)
+    # PHASE 3: Insert
+    for rec in unique_records:
+        try:
+            db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
+                VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
+                {"s":rec[0],"ca":rec[1],"an":rec[2],"co":rec[3],"no":rec[4],"dtm":rec[5],"htm":rec[6],"dtn":rec[7],"htn":rec[8]})
+            total += 1
+        except: pass
+    db.commit()
+    wb.close()
+    return {"importados": total, "hojas": wb.sheetnames}
+
+# ===== v15.0: Importar docentes desde archivo CUIT =====
+@app.post("/api/importar/docentes-cuit")
+async def importar_docentes_cuit(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    nuevos = 0; existentes = 0; errores = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 2: continue
+            cuit = str(vals[0] or '').strip()
+            nombre_completo = str(vals[1] or '').strip()
+            if not nombre_completo or nombre_completo == 'None' or ',' not in nombre_completo: continue
+            # Extract DNI from CUIT
+            dni_digits = cuit.replace('-', '')
+            dni = dni_digits[2:-1] if len(dni_digits) >= 10 else dni_digits
+            # Parse "APELLIDO, NOMBRE"
+            parts = nombre_completo.split(',', 1)
+            apellido = parts[0].strip()
+            nombre = parts[1].strip() if len(parts) > 1 else ''
+            # Check if exists
+            existing = db.query(Docente).filter(Docente.dni == dni).first()
+            if existing:
+                # Update name if needed
+                if not existing.nombre or existing.nombre != nombre: existing.nombre = nombre
+                if not existing.apellido or existing.apellido != apellido: existing.apellido = apellido
+                existentes += 1
+            else:
+                doc = Docente(nombre=nombre, apellido=apellido, dni=dni)
+                db.add(doc)
+                nuevos += 1
+    db.commit()
+    wb.close()
+    return {"nuevos": nuevos, "actualizados": existentes}
+
+# ===== v16.0: Auto-asignar cátedras de referencia desde asignaciones actuales =====
+@app.post("/api/docentes/auto-referencia")
+def auto_referencia_docentes(cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    docentes = db.query(Docente).all()
+    actualizados = 0
+    for d in docentes:
+        asigs = [a for a in (d.asignaciones or []) if a.cuatrimestre_id == cuatrimestre_id and a.catedra]
+        if not asigs: continue
+        codes = sorted(set(a.catedra.codigo for a in asigs))
+        # Merge with existing refs
+        existing_refs = set((getattr(d, 'catedras_referencia', '') or '').split(','))
+        existing_refs = {r.strip() for r in existing_refs if r.strip()}
+        all_refs = sorted(existing_refs | set(codes))
+        new_val = ', '.join(all_refs)
+        try:
+            db.execute(text("UPDATE docentes SET catedras_referencia = :val WHERE id = :id"),
+                {"val": new_val, "id": d.id})
+            actualizados += 1
+        except: pass
+    db.commit()
+    return {"actualizados": actualizados}
+
+# ===== v16.0: Importar cátedras de referencia desde Excel de designaciones =====
+@app.post("/api/importar/catedras-referencia")
+async def importar_catedras_referencia(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    # Build docente_name → set of codes
+    doc_cats = {}
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 6: continue
+            try: cn = int(float(str(vals[0] or '')))
+            except: continue
+            if cn <= 0: continue
+            cod = f'c.{cn}'
+            doc_raw = str(vals[5] or '').strip()
+            if not doc_raw or doc_raw.lower().startswith('ver '): continue
+            dc = doc_raw.upper().strip()
+            dc = DOCENTE_TYPO_MAP.get(dc, dc)
+            if dc not in doc_cats: doc_cats[dc] = set()
+            doc_cats[dc].add(cod)
+    wb.close()
+    # Match to docentes in DB
+    from sqlalchemy import text
+    all_docs = db.query(Docente).all()
+    doc_by_apellido = {}
+    for d in all_docs:
+        ap = (d.apellido or '').upper().strip()
+        if ap: doc_by_apellido[ap] = d
+        full = f"{(d.apellido or '')} {(d.nombre or '')}".upper().strip()
+        if full: doc_by_apellido[full] = d
+        full2 = f"{(d.nombre or '')} {(d.apellido or '')}".upper().strip()
+        if full2: doc_by_apellido[full2] = d
+    actualizados = 0; no_match = []
+    for doc_name, codes in doc_cats.items():
+        # Find docente
+        docente = doc_by_apellido.get(doc_name)
+        if not docente:
+            for key, d in doc_by_apellido.items():
+                if doc_name in key or key in doc_name:
+                    docente = d; break
+        if not docente:
+            no_match.append(doc_name); continue
+        # Merge with existing
+        existing = set((getattr(docente, 'catedras_referencia', '') or '').split(','))
+        existing = {r.strip() for r in existing if r.strip()}
+        merged = sorted(existing | codes)
+        try:
+            db.execute(text("UPDATE docentes SET catedras_referencia = :val WHERE id = :id"),
+                {"val": ', '.join(merged), "id": docente.id})
+            actualizados += 1
+        except: pass
+    db.commit()
+    return {"actualizados": actualizados, "no_encontrados": no_match}
+
+# ===== v15.0: Typo correction map for docente names =====
+DOCENTE_TYPO_MAP = {
+    'CAPUCCHETI': 'CAPUCHETTI', 'DATRI': "D'ATRI", "D´ATRI": "D'ATRI",
+    'TOMATI': 'TOMATTI', 'MARIA LAURA PAVEL': 'PAVEL',
+    'YANELA CAPUCHETTI': 'CAPUCHETTI', 'YANELA CAPUCCHETI': 'CAPUCHETTI',
+    'DIEGO MARTINEZ': 'MARTINEZ', 'PEREZ LUCAS': 'PEREZ',
+    'ROSCHMAN': 'GONZALEZ LARES ROSCHMAN',
+    'GONZALEZ R': 'GONZALEZ', 'GASTON GONZALEZ': 'GONZALEZ',
+    'GONZALEZ ARIEL': 'GONZALEZ', 'FERNANDEZ L': 'FERNANDEZ',
+    'RODRIGUEZ S': 'RODRIGUEZ', 'HERRERA S.': 'HERRERA', 'HERRERA S': 'HERRERA',
+    'LOPEZ G': 'LOPEZ GHIGLIERI', 'AGUSTINA ACOSTA': 'ACOSTA',
+    'ACOSTA AGUSTINA': 'ACOSTA',
+    # NOT mapping: PALERMO ≠ PALMERO LLANOS (different people)
+    # NOT mapping: KAREN PAMELA FLORENTIN → goes to Caren Pamela, not Isaul
 }
 
-// ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
-function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimestres, recargar }) {
-  const [selectedDoc, setSelectedDoc] = useState(null);
-  const [buscar, setBuscar] = useState('');
-  const [disponibilidad, setDisponibilidad] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [guardando, setGuardando] = useState(false);
+def _parse_horarios_excel(file_content, db, cuatrimestre_id):
+    """Parse horarios Excel and return structured data without applying changes."""
+    from openpyxl import load_workbook
+    import io
+    wb = load_workbook(io.BytesIO(file_content), read_only=True)
+    all_cats = {c.codigo: c for c in db.query(Catedra).all()}
+    all_docs = db.query(Docente).all()
+    doc_by_apellido = {}
+    for d in all_docs:
+        ap = (d.apellido or '').upper().strip()
+        if ap: doc_by_apellido[ap] = d
+        full = f"{(d.apellido or '')} {(d.nombre or '')}".upper().strip()
+        if full: doc_by_apellido[full] = d
+        full2 = f"{(d.nombre or '')} {(d.apellido or '')}".upper().strip()
+        if full2: doc_by_apellido[full2] = d
+    all_sedes = {s.nombre: s for s in db.query(Sede).all()}
+    dia_map = {'LUNES':'Lunes','MARTES':'Martes','MIERCOLES':'Miércoles','MIÉRCOLES':'Miércoles',
+        'JUEVES':'Jueves','VIERNES':'Viernes','SABADO':'Sábado','SÁBADO':'Sábado'}
+    results = []; no_cat = []; no_doc = set(); doc_to_create = set()
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 5: continue
+            try: cod_num = int(float(str(vals[0] or '')))
+            except: continue
+            if cod_num <= 0: continue
+            codigo = f'c.{cod_num}'
+            materia = str(vals[1] or '').strip()
+            dia_raw = str(vals[2] or '').strip()
+            hora_raw = str(vals[3] or '').strip()
+            sede_raw = str(vals[4] or '').strip()
+            doc_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
+            if not dia_raw or not hora_raw: continue
+            dia = dia_map.get(dia_raw.upper().strip(), dia_raw.strip().title())
+            hora = hora_raw.replace('.', ':').replace(' HS','').replace(' hs','').replace('HS','').strip()
+            if hora and ':' in hora:
+                parts = hora.split(':')
+                try: hora = f"{int(parts[0]):02d}:{parts[1].strip()[:2]}"
+                except: pass
+            cat = all_cats.get(codigo)
+            if not cat: no_cat.append(f"{codigo} {materia}"); continue
+            sede_nombre = normalizar_sede(sede_raw)
+            sede_obj = None
+            for sn, so in all_sedes.items():
+                if sn.lower().replace(' ','') == sede_nombre.lower().replace(' ',''): sede_obj = so; break
+            if not sede_obj:
+                for sn, so in all_sedes.items():
+                    if sede_nombre.lower()[:4] in sn.lower(): sede_obj = so; break
+            docente_obj = None; doc_display = ''
+            if doc_raw and not doc_raw.lower().startswith('ver '):
+                doc_clean = doc_raw.upper().strip()
+                if doc_clean.startswith('VER '): doc_clean = doc_clean[4:].strip()
+                # Apply typo map
+                corrected = DOCENTE_TYPO_MAP.get(doc_clean, doc_clean)
+                docente_obj = doc_by_apellido.get(corrected)
+                if not docente_obj:
+                    for key, d in doc_by_apellido.items():
+                        if corrected in key or key in corrected: docente_obj = d; break
+                if docente_obj:
+                    doc_display = f"{docente_obj.nombre} {docente_obj.apellido}"
+                else:
+                    doc_display = doc_raw
+                    doc_to_create.add(doc_raw)
+            modalidad = 'remoto' if sede_nombre in ['Online - Interior', 'ONLINE'] else 'presencial_virtual'
+            results.append({
+                'cat_id': cat.id, 'cat_codigo': codigo, 'cat_nombre': cat.nombre,
+                'dia': dia, 'hora': hora, 'sede_id': sede_obj.id if sede_obj else None,
+                'sede_nombre': sede_nombre, 'docente_id': docente_obj.id if docente_obj else None,
+                'docente_display': doc_display, 'modalidad': modalidad,
+                'doc_raw': doc_raw,
+            })
+    wb.close()
+    return results, list(set(no_cat)), sorted(list(doc_to_create))
 
-  const docsFiltrados = useMemo(() => {
-    if (!buscar) return docentes;
-    const b = buscar.toLowerCase();
-    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b));
-  }, [docentes, buscar]);
+# ===== v15.0: Preview horarios import =====
+@app.post("/api/importar/horarios-preview")
+async def horarios_preview(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    content = await file.read()
+    results, no_cat, doc_to_create = _parse_horarios_excel(content, db, cuatrimestre_id)
+    # Count current asignaciones that would be deleted
+    current_count = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).count()
+    con_doc = len([r for r in results if r['docente_id']])
+    sin_doc = len([r for r in results if not r['docente_id'] and not r['doc_raw']])
+    doc_new = len([r for r in results if not r['docente_id'] and r['doc_raw']])
+    return {
+        "asignaciones_actuales_a_borrar": current_count,
+        "asignaciones_nuevas": len(results),
+        "con_docente_existente": con_doc,
+        "sin_docente": sin_doc,
+        "con_docente_nuevo_a_crear": doc_new,
+        "docentes_a_crear": doc_to_create,
+        "catedras_no_encontradas": no_cat[:20],
+        "preview": [{"cat": r['cat_codigo'], "nombre": r['cat_nombre'][:30], "dia": r['dia'],
+            "hora": r['hora'], "sede": r['sede_nombre'], "docente": r['docente_display'] or '—',
+            "estado": "✅" if r['docente_id'] else ("🆕 Crear" if r['doc_raw'] else "—")} for r in results[:50]],
+    }
 
-  const cargarDisp = async (docId) => {
-    setLoading(true);
-    try { setDisponibilidad(await apiFetch(`/api/docentes/${docId}/disponibilidad`)); }
-    catch (e) { setDisponibilidad([]); }
-    setLoading(false);
-  };
-  const seleccionar = (d) => { setSelectedDoc(d); cargarDisp(d.id); };
-  const isDisponible = (dia, hora) => disponibilidad.find(d => d.dia === dia && d.hora === hora)?.disponible || false;
-  const toggleCelda = (dia, hora) => {
-    const existe = disponibilidad.find(d => d.dia === dia && d.hora === hora);
-    if (existe) setDisponibilidad(disponibilidad.map(d => d.dia === dia && d.hora === hora ? {...d, disponible: !d.disponible} : d));
-    else setDisponibilidad([...disponibilidad, {dia, hora, disponible: true}]);
-  };
-  const guardar = async () => {
-    if (!selectedDoc) return;
-    setGuardando(true);
-    try {
-      await apiFetch(`/api/docentes/${selectedDoc.id}/disponibilidad`, { method: 'PUT', body: JSON.stringify({ disponibilidad: disponibilidad.filter(d => d.disponible) }) });
-      alert('Disponibilidad guardada');
-    } catch (e) { alert('Error: ' + e.message); }
-    setGuardando(false);
-  };
+# ===== v15.0: Apply horarios import (after preview) =====
+@app.post("/api/importar/horarios-aplicar")
+async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    content = await file.read()
+    results, no_cat, doc_to_create = _parse_horarios_excel(content, db, cuatrimestre_id)
+    # 1) Create missing docentes
+    nuevos_docs = 0
+    doc_created_map = {}
+    for doc_name in doc_to_create:
+        parts = doc_name.strip().split(' ', 1)
+        if len(parts) == 2:
+            apellido = parts[0].strip().title()
+            nombre = parts[1].strip().title()
+        else:
+            apellido = parts[0].strip().title()
+            nombre = ''
+        # Use placeholder DNI to avoid unique constraint
+        placeholder_dni = f"PEND-{doc_name.upper().replace(' ','')[:15]}"
+        new_doc = Docente(nombre=nombre, apellido=apellido, dni=placeholder_dni)
+        db.add(new_doc); db.flush()
+        doc_created_map[doc_name.upper()] = new_doc
+        nuevos_docs += 1
+    # 2) Delete existing asignaciones for this cuatrimestre
+    try:
+        deleted = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
+        db.flush()
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Error borrando asignaciones: {str(e)}"}
+    # 3) Create new asignaciones
+    creados = 0
+    for r in results:
+        doc_id = r['docente_id']
+        if not doc_id and r['doc_raw']:
+            created = doc_created_map.get(r['doc_raw'].upper())
+            if created: doc_id = created.id
+        asig = Asignacion(
+            catedra_id=r['cat_id'], docente_id=doc_id,
+            cuatrimestre_id=cuatrimestre_id, dia=r['dia'], hora_inicio=r['hora'],
+            sede_id=r['sede_id'], modalidad=r['modalidad'])
+        db.add(asig)
+        creados += 1
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Error guardando: {str(e)[:200]}"}
+    return {
+        "asignaciones_borradas": deleted,
+        "asignaciones_creadas": creados,
+        "docentes_creados": nuevos_docs,
+        "docentes_nuevos": doc_to_create,
+        "catedras_no_encontradas": no_cat[:20],
+    }
 
-  // Cátedras asignadas a este docente
-  const asigDocente = useMemo(() => {
-    if (!selectedDoc) return [];
-    return catedras.flatMap(c => (c.asignaciones || []).filter(a => a.docente?.id === selectedDoc.id).map(a => ({...a, cat_codigo: c.codigo, cat_nombre: c.nombre})));
-  }, [selectedDoc, catedras]);
+# ===== v13.0: Sugerencias de horarios cruzando plan + inscriptos =====
+@app.get("/api/plan-carrera/sugerencias")
+def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # Get plan
+    q = "SELECT * FROM plan_carrera"
+    filters = []
+    if sede: filters.append(f"sede = '{sede}'")
+    if filters: q += " WHERE " + " AND ".join(filters)
+    q += " ORDER BY sede, carrera, anno, codigo_catedra"
+    try: rows = db.execute(text(q)).fetchall()
+    except: return {"sedes": [], "plan_importado": False}
+    if not rows: return {"sedes": [], "plan_importado": False}
+    # Get inscriptos totales
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    # Get catedra code → id mapping
+    cat_map = {}
+    for c in db.query(Catedra).all():
+        cat_map[c.codigo] = {"id": c.id, "nombre": c.nombre}
+    # Get current asignaciones
+    asig_q = db.query(Asignacion)
+    if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = asig_q.all()
+    asig_map = {}  # catedra_id → [{docente, dia, hora, sede}]
+    for a in asigs:
+        if a.catedra_id not in asig_map: asig_map[a.catedra_id] = []
+        asig_map[a.catedra_id].append({
+            "docente": f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None,
+            "dia": a.dia, "hora": a.hora_inicio, "sede": a.sede.nombre if a.sede else None,
+            "modalidad": a.modalidad,
+        })
+    # Build result grouped by sede → carrera → anno → catedras
+    sedes_result = {}
+    for r in rows:
+        sede_n = r[1]
+        carrera = r[2]
+        anno = r[3]
+        cod = r[4]
+        nombre_plan = r[5]
+        dia_tm = r[6] or ''
+        hora_tm = r[7] or ''
+        dia_tn = r[8] or ''
+        hora_tn = r[9] or ''
+        cat_info = cat_map.get(cod, None)
+        cat_id = cat_info["id"] if cat_info else None
+        insc = total_map.get(cat_id, 0) if cat_id else 0
+        # Criterio
+        if insc >= 10: criterio = "ABRIR"
+        elif insc > 0: criterio = "ASINCRÓNICA"
+        else: criterio = "SIN ALUMNOS"
+        # Current assignment
+        asig_actual = asig_map.get(cat_id, []) if cat_id else []
+        tiene_docente = any(a['docente'] for a in asig_actual)
+        docente_actual = ', '.join([a['docente'] for a in asig_actual if a['docente']]) or None
+        horario_actual_tm = next((f"{a['dia']} {a['hora']}" for a in asig_actual if a['hora'] and a['hora'] < '15:00'), None)
+        horario_actual_tn = next((f"{a['dia']} {a['hora']}" for a in asig_actual if a['hora'] and a['hora'] >= '15:00'), None)
+        if sede_n not in sedes_result: sedes_result[sede_n] = {}
+        if carrera not in sedes_result[sede_n]: sedes_result[sede_n][carrera] = {}
+        if anno not in sedes_result[sede_n][carrera]: sedes_result[sede_n][carrera][anno] = []
+        sedes_result[sede_n][carrera][anno].append({
+            "codigo": cod, "nombre": nombre_plan,
+            "inscriptos": insc, "criterio": criterio,
+            "sugerencia_tm": f"{dia_tm} {hora_tm}".strip() if dia_tm else None,
+            "sugerencia_tn": f"{dia_tn} {hora_tn}".strip() if dia_tn else None,
+            "actual_tm": horario_actual_tm, "actual_tn": horario_actual_tn,
+            "docente": docente_actual, "tiene_docente": tiene_docente,
+        })
+    return {"sedes": sedes_result, "plan_importado": True, "total_registros": len(rows)}
 
-  // Find assigned class at a specific dia+hora
-  const asigEnCelda = (dia, hora) => asigDocente.find(a => a.dia === dia && a.hora_inicio === hora);
 
-  return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🕐 Disponibilidad y Asignaciones</h2>
-        <p className="text-slate-500 text-sm">Marcá disponibilidad (verde) y visualizá las cátedras asignadas (azul) en formato calendario.</p>
-      </div>
-      <div className="grid grid-cols-4 gap-6">
-        <div className="col-span-1">
-          <input type="text" placeholder="Buscar docente..." className="w-full border rounded-lg px-3 py-2 text-sm mb-3"
-            value={buscar} onChange={e => setBuscar(e.target.value)} />
-          <div className="bg-white rounded-xl border max-h-96 overflow-y-auto">
-            {docsFiltrados.map(d => (
-              <div key={d.id} onClick={() => seleccionar(d)}
-                className={`p-3 border-b cursor-pointer hover:bg-amber-50 ${selectedDoc?.id === d.id ? 'bg-amber-100 font-medium' : ''}`}>
-                <p className="text-sm">{d.nombre} {d.apellido}</p>
-                <p className="text-xs text-slate-400">{d.horas_asignadas || 0}h — {d.asignaciones?.length || 0} cátedras</p>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="col-span-3">
-          {!selectedDoc ? (
-            <div className="bg-slate-50 rounded-xl p-12 text-center text-slate-400">← Seleccioná un docente</div>
-          ) : loading ? (
-            <div className="text-center p-8">⏳ Cargando...</div>
-          ) : (
-            <div>
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="font-bold text-lg">{selectedDoc.nombre} {selectedDoc.apellido}</h3>
-                  <p className="text-sm text-slate-500">🟢 Disponible — 🔵 Cátedra asignada — Clic para marcar disponibilidad</p>
-                </div>
-                <button onClick={guardar} disabled={guardando}
-                  className="px-6 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium disabled:opacity-50">
-                  {guardando ? '⏳...' : '💾 Guardar disponibilidad'}
-                </button>
-              </div>
-              {/* Cátedras asignadas resumen */}
-              {asigDocente.length > 0 && (
-                <div className="flex flex-wrap gap-2 mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                  <span className="text-xs text-blue-600 font-medium py-1">Cátedras asignadas:</span>
-                  {asigDocente.map(a => (
-                    <span key={a.id} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
-                      {a.cat_codigo} • {a.dia || 'Pend.'} {a.hora_inicio || ''}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="bg-white rounded-xl border overflow-auto">
-                <table className="w-full text-sm">
-                  <thead><tr className="bg-slate-800 text-white">
-                    <th className="p-2 border-r w-20">Hora</th>
-                    {DIAS.map(d => <th key={d} className="p-2 border-r">{d}</th>)}
-                  </tr></thead>
-                  <tbody>
-                    {HORAS.map(hora => (
-                      <tr key={hora} className="border-b">
-                        <td className="p-2 border-r bg-slate-50 font-medium text-center text-xs">{hora}</td>
-                        {DIAS.map(dia => {
-                          const disp = isDisponible(dia, hora);
-                          const asig = asigEnCelda(dia, hora);
-                          return (
-                            <td key={dia} className="p-0.5 border-r text-center cursor-pointer select-none"
-                              onClick={() => !asig && toggleCelda(dia, hora)}>
-                              {asig ? (
-                                <div className="rounded py-1.5 bg-blue-500 text-white text-[10px] font-bold px-1">
-                                  {asig.cat_codigo}
-                                </div>
-                              ) : (
-                                <div className={`rounded py-1.5 transition-all ${disp ? 'bg-emerald-400 text-white font-bold' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}>
-                                  {disp ? '✓' : ''}
-                                </div>
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+# ===== v16.0: Control de Inscripciones =====
+CARRERA_NORMALIZE = {
+    'ACOMPAÑANTE TERAPÉUTICO': 'TECNICO SUPERIOR EN ACOMPAÑANTE  TERAPEUTICO',
+    'ADMINISTRACIÓN DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
+    'ADMINISTRACION DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
+    'ADMINISTRACION AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
+    'ADMINISTRACIÓN AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
+    'ADMINISTRACIÓN BANCARIA': 'TECNICO SUPERIOR EN ADMINISTRACION BANCARIA',
+    'CIENCIA DE DATOS E INTELIGENCIA ARTIFICIAL': 'TECNICO SUPERIOR EN CIENCIA DE DATOS',
+    'COMERCIO INTERNACIONAL': 'TECNICO SUPERIOR EN COMERCIO',
+    'COUNSELING': 'TECNICO SUPERIOR EN COUSELING',
+    'DESARROLLO HUMANO': 'TECNICO SUPERIOR EN DESARROLLO HUMANO',
+    'DESPACHANTE DE ADUANAS': 'TECNICO SUPERIOR EN DESPACHO ADUANERO',
+    'FINANZAS': 'TECNICO SUPERIOR EN FINANZAS',
+    'GESTORÍA': 'TECNICO SUPERIOR EN GESTORIA',
+    'GUIA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
+    'GUÍA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
+    'HOTELERÍA': 'TECNICO SUPERIOR EN HOTELERIA',
+    'LOGÍSTICA': 'TECNICO SUPERIOR EN LOGISTICA',
+    'LOGISTICA': 'TECNICO SUPERIOR EN LOGISTICA',
+    'MARKETING': 'TECNICO SUPERIOR EN MARKETING',
+    'NEGOCIOS DIGITALES': 'TECNICO SUPERIOR EN NEGOCIOS DIGITALES',
+    'ORGANIZACIÓN DE EVENTOS': 'TECNICO SUPERIOR EN ORGANIZACION DE EVENTOS',
+    'PERIODISMO DEPORTIVO': 'TECNICO SUPERIOR EN PERIODISMO DEPORTIVO',
+    'PSICOPEDAGOGÍA': 'TECNICO SUPERIOR EN PSICOPEDAGOGIA',
+    'PUBLICIDAD': 'TECNICO SUPERIOR EN PUBLICIDAD',
+    'RECURSOS HUMANOS': 'TECNICO SUPERIOR EN RECURSOS HUMANOS',
+    'RELACIONES PUBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
+    'RELACIONES PÚBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
+    'RÉGIMEN ADUANERO': 'TECNICO SUPERIOR EN REGIMEN ADUANERO',
+    'SEGURIDAD E HIGIENE': 'TECNICO SUPERIOR EN HIGIENE Y SEGURIDAD',
+    'SEGUROS': 'TECNICO SUPERIOR EN SEGUROS',
+    'TRABAJO SOCIAL': 'TECNICO SUPERIOR EN TRABAJO SOCIAL',
+    'TURISMO': 'TECNICO SUPERIOR EN TURISMO',
 }
 
-// ==================== EXPORTAR VIEW (v6.0 con desglose) ====================
-function ExportarView({ cuatrimestre, cuatrimestres }) {
-  const [descargando, setDescargando] = useState(false);
-  const descargar = async () => {
-    setDescargando(true);
-    try {
-      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-      const url = `${API_URL}/api/exportar/horarios${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Error al generar');
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      const cuatNombre = cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre || 'Todos';
-      a.download = `IEA_Horarios_${cuatNombre.replace(/ /g, '_')}.xlsx`;
-      a.click();
-    } catch (e) { alert('Error: ' + e.message); }
-    setDescargando(false);
-  };
-  return (
-    <div className="p-8">
-      <h2 className="text-2xl font-bold text-slate-800 mb-6">Exportar</h2>
-      <div className="bg-white rounded-xl border p-6 max-w-xl">
-        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v6.0)</h3>
-        <p className="text-sm text-slate-500 mb-4">
-          Excel con una solapa por sede. Incluye columnas de inscriptos total, virtuales y presenciales.
-          Cátedras ordenadas por código. Múltiples docentes en filas separadas.
-        </p>
-        {cuatrimestre !== 'todos'
-          ? <p className="text-sm text-amber-600 font-medium mb-4">📅 Se exportará: {cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre}</p>
-          : <p className="text-sm text-slate-400 mb-4">💡 Seleccioná un cuatrimestre en el menú para filtrar.</p>}
-        <button onClick={descargar} disabled={descargando}
-          className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold disabled:opacity-50 hover:bg-amber-400">
-          {descargando ? '⏳ Generando...' : '📥 Descargar Excel'}
-        </button>
-      </div>
-    </div>
-  );
-}
+def _extract_carrera(curso):
+    import re
+    c = curso.upper().strip()
+    c = re.split(r'\s*[\(]\s*(AVELLANEDA|CABALLITO|VICENTE|LINIERS|ONLINE|VIRTUAL|PILAR|MONTE|LA PLATA)', c)[0].strip()
+    c = re.split(r'\s*[\-]\s*(CIED|CURSADA|CFE|DCFE|RDCFE|RMEDGC|RMEIGC|NO DISP|RD |RM |RES)', c)[0].strip().strip(' -')
+    return CARRERA_NORMALIZE.get(c, None)
 
-// ==================== APP PRINCIPAL ====================
-export default function App() {
-  const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
-  const [activeView, setActiveView] = useState('dashboard');
-  const [cuatrimestre, setCuatrimestre] = useState('todos');
-  const [catedras, setCatedras] = useState([]);
-  const [cursos, setCursos] = useState([]);
-  const [docentes, setDocentes] = useState([]);
-  const [sedes, setSedes] = useState([]);
-  const [cuatrimestres, setCuatrimestres] = useState([]);
-  const [solapamientos, setSolapamientos] = useState([]);
-  const [necesitanDocente, setNecesitanDocente] = useState([]);
-  const [solapCarrerasCount, setSolapCarrerasCount] = useState(0);
-  const [loading, setLoading] = useState(true);
+def _calc_anno(fecha_str, inicio_str):
+    import math
+    try:
+        if '/' in fecha_str:
+            parts = fecha_str.split('/'); year = int(parts[2]) if len(parts[2]) == 4 else 2000 + int(parts[2])
+        elif '-' in fecha_str:
+            year = int(fecha_str[:4])
+        else: return '3ER AÑO'
+        inicio = (inicio_str or '').strip().lower()
+        start = (year - 2020) * 2 + (1 if 'agosto' in inicio or 'ago' in inicio else 0)
+        current = (2026 - 2020) * 2  # Marzo 2026
+        cuats = max(1, current - start + 1)
+        return {1:'1ER AÑO', 2:'2DO AÑO', 3:'3ER AÑO'}[min(3, math.ceil(cuats / 2))]
+    except: return '3ER AÑO'
 
-  const cargarDatos = useCallback(async () => {
-    const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
-    const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-    try { setSedes(await apiFetch('/api/sedes')); } catch (e) { console.error(e); }
-    try { setCuatrimestres(await apiFetch('/api/cuatrimestres')); } catch (e) { console.error(e); }
-    try { setCatedras(await apiFetch(`/api/catedras${qParam}`)); } catch (e) { console.error(e); }
-    try { setCursos(await apiFetch('/api/cursos')); } catch (e) { console.error(e); }
-    try { setDocentes(await apiFetch(`/api/docentes${qParam}`)); } catch (e) { console.error(e); }
-    try { setSolapamientos(await apiFetch(`/api/horarios/solapamientos${qParam}`)); } catch (e) { console.error(e); }
-    try { setNecesitanDocente(await apiFetch(`/api/catedras/necesitan-docente${qParam}`)); } catch (e) { console.error(e); }
-    try { const sc = await apiFetch(`/api/solapamientos-carreras${qParam}`); setSolapCarrerasCount(sc.total || 0); } catch (e) { console.error(e); }
-    setLoading(false);
-  }, [cuatrimestre]);
+@app.post("/api/control-inscripciones")
+async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    import io, re
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content))
+    # 1) Build plan: (sede, carrera_upper) → {anno → set of codes}
+    from sqlalchemy import text
+    plan = {}; cat_names_db = {}
+    try:
+        for r in db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall():
+            sede_plan = r[0].upper().strip()
+            carrera_up = r[1].upper().strip()
+            key = (sede_plan, carrera_up)
+            if key not in plan: plan[key] = {}
+            if r[2] not in plan[key]: plan[key][r[2]] = set()
+            plan[key][r[2]].add(r[3])
+            cat_names_db[r[3]] = (r[4] or '')[:30]
+    except: pass
+    for c in db.query(Catedra).all():
+        cat_names_db[c.codigo] = c.nombre[:30]
+    # 2) Build inscripcion lookup: DNI → set of codigos inscritos
+    insc_q = db.query(Inscripcion)
+    if cuatrimestre_id and cuatrimestre_id > 0:
+        insc_q = insc_q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    all_insc = insc_q.all()
+    dni_to_codes = {}
+    for ins in all_insc:
+        if not ins.alumno: continue
+        dni_raw = (ins.alumno.dni or '').strip()
+        if not dni_raw: continue
+        dni = dni_raw.replace('.0','').lstrip('0') or dni_raw
+        if dni not in dni_to_codes: dni_to_codes[dni] = set()
+        if ins.catedra: dni_to_codes[dni].add(ins.catedra.codigo)
+        if dni_raw not in dni_to_codes: dni_to_codes[dni_raw] = dni_to_codes[dni]
+    # 3) Sede normalization for plan matching
+    def norm_sede_plan(sede_str, curso_str):
+        """Determine which plan sede to use based on student's sede and curso."""
+        s = sede_str.upper() if sede_str else ''
+        c = curso_str.upper() if curso_str else ''
+        # CIED/Online students → use CIED plan
+        if 'CIED' in c or 'ONLINE' in c or 'VIRTUAL SINCR' in c or 'DIEGEP' in c:
+            return 'CIED'
+        if 'AVELL' in s: return 'AVELLANEDA'
+        if 'CABAL' in s or 'CABALI' in s: return 'CABALLITO'
+        if 'VICENTE' in s or 'VTE' in s: return 'VICENTE LOPEZ'
+        if 'LINIE' in s: return 'CABALLITO'  # Liniers uses Caballito plan
+        return 'CIED'  # Default fallback
+    # 4) Find plan key helper
+    def find_plan_key(sede_norm, carrera_norm):
+        if not carrera_norm: return None
+        ck = carrera_norm.upper().strip()
+        # Exact match
+        key = (sede_norm, ck)
+        if key in plan: return key
+        # Fuzzy match on carrera
+        for (s, c) in plan:
+            if s == sede_norm and (ck in c or c in ck or ck[:25] == c[:25]):
+                return (s, c)
+        # Fallback: try any sede
+        for (s, c) in plan:
+            if ck in c or c in ck or ck[:25] == c[:25]:
+                return (s, c)
+        return None
+    # 4) Process control file
+    results = []; stats = {'total': 0, 'ok': 0, 'faltan': 0, 'sobran': 0, 'sin_plan': 0, 'sin_insc': 0, 'doble': 0}
+    for ws in wb.worksheets:
+        if ws.title.upper() in ['INSTRUCTIVO', 'BCE Y BEA']: continue
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i < 2: continue
+            vals = list(row)
+            if len(vals) < 11: continue
+            nombre = f"{str(vals[1] or '')} {str(vals[2] or '')}".strip()
+            dni_raw = str(vals[3] or '').strip()
+            # Normalize DNI: handle float (29128688.0), int, string
+            try: dni = str(int(float(dni_raw)))
+            except: dni = dni_raw.replace('.0','').strip()
+            fecha = str(vals[4] or '').strip()
+            inicio = str(vals[5] or '').strip()
+            sede = str(vals[9] or '').strip()
+            curso = str(vals[10] or '').strip()
+            if not nombre or not curso or curso == 'None': continue
+            stats['total'] += 1
+            is_doble = 'DOBLE' in curso.upper()
+            if is_doble: stats['doble'] += 1
+            anno = _calc_anno(fecha, inicio)
+            carrera_norm = _extract_carrera(curso)
+            sede_norm = norm_sede_plan(sede, curso)
+            plan_key = find_plan_key(sede_norm, carrera_norm)
+            # Get what they SHOULD take (excluding Prácticas Profesionalizantes)
+            should_codes = set()
+            if plan_key and anno in plan.get(plan_key, {}):
+                for cod in plan[plan_key][anno]:
+                    name_upper = (cat_names_db.get(cod, '') or '').upper()
+                    if 'PROFESIONALIZANTE' not in name_upper and 'PRACTICA PROFESIONAL' not in name_upper:
+                        should_codes.add(cod)
+            # Get what they ARE taking
+            actual_codes = dni_to_codes.get(dni, set())
+            # Compare
+            if not plan_key:
+                estado = 'SIN_PLAN'
+                stats['sin_plan'] += 1
+                faltantes = []; sobrantes = []
+            elif not actual_codes:
+                estado = 'SIN_INSCRIPCIONES'
+                stats['sin_insc'] += 1
+                faltantes = sorted(should_codes)
+                sobrantes = []
+            else:
+                faltantes = sorted(should_codes - actual_codes)
+                sobrantes = sorted(actual_codes - should_codes)
+                if not faltantes and not sobrantes:
+                    estado = 'CORRECTO'
+                    stats['ok'] += 1
+                elif faltantes and sobrantes:
+                    estado = 'FALTAN_Y_SOBRAN'
+                    stats['faltan'] += 1
+                elif faltantes:
+                    estado = 'FALTAN_MATERIAS'
+                    stats['faltan'] += 1
+                else:
+                    estado = 'MATERIAS_EXTRA'
+                    stats['sobran'] += 1
+            results.append({
+                'dni': dni, 'nombre': nombre, 'sede': sede, 'curso': curso[:55],
+                'anno': anno, 'carrera_plan': (f"{plan_key[0]} → {plan_key[1]}" if plan_key else (carrera_norm or '?'))[:55],
+                'estado': estado, 'is_doble': is_doble,
+                'debe_cursar': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(should_codes)],
+                'inscripto_a': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(actual_codes)],
+                'faltantes': [f"{c} ({cat_names_db.get(c, '')})" for c in faltantes],
+                'sobrantes': [f"{c} ({cat_names_db.get(c, '')})" for c in sobrantes],
+            })
+    wb.close()
+    results.sort(key=lambda x: (0 if x['estado']=='CORRECTO' else 1 if x['estado']=='MATERIAS_EXTRA' else 2 if x['estado'].startswith('FALTAN') else 3, x['nombre']))
+    return {"results": results, "stats": stats, "total_results": len(results),
+        "_debug": {"plan_carreras": len(plan), "inscripciones_db": len(all_insc), "dnis_con_inscripciones": len(dni_to_codes), "cuatrimestre_id": cuatrimestre_id}}
 
-  useEffect(() => { if (autenticado) cargarDatos(); }, [cargarDatos, autenticado]);
 
-  if (!autenticado) return <LoginScreen onLogin={() => setAutenticado(true)} />;
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><p className="text-xl">⏳ Cargando sistema...</p></div>;
+@app.post("/api/control-inscripciones/exportar")
+async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from openpyxl import load_workbook, Workbook
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    from starlette.responses import Response
+    import io, re, math
+    from sqlalchemy import text
+    content = await file.read()
+    wb_in = load_workbook(io.BytesIO(content))
+    # Same logic as control_inscripciones
+    plan = {}; cat_names_db = {}
+    try:
+        for r in db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall():
+            sede_plan = r[0].upper().strip(); carrera_up = r[1].upper().strip()
+            key = (sede_plan, carrera_up)
+            if key not in plan: plan[key] = {}
+            if r[2] not in plan[key]: plan[key][r[2]] = set()
+            plan[key][r[2]].add(r[3])
+            cat_names_db[r[3]] = (r[4] or '')[:30]
+    except: pass
+    for c in db.query(Catedra).all(): cat_names_db[c.codigo] = c.nombre[:30]
+    insc_q = db.query(Inscripcion)
+    if cuatrimestre_id and cuatrimestre_id > 0: insc_q = insc_q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    dni_to_codes = {}
+    for ins in insc_q.all():
+        if not ins.alumno: continue
+        dni_raw = (ins.alumno.dni or '').strip()
+        if not dni_raw: continue
+        dni = dni_raw.replace('.0','').lstrip('0') or dni_raw
+        if dni not in dni_to_codes: dni_to_codes[dni] = set()
+        if ins.catedra: dni_to_codes[dni].add(ins.catedra.codigo)
+        if dni_raw not in dni_to_codes: dni_to_codes[dni_raw] = dni_to_codes[dni]
+    def _norm_sede_exp(sede_str, curso_str):
+        s = (sede_str or '').upper(); c = (curso_str or '').upper()
+        if 'CIED' in c or 'ONLINE' in c or 'VIRTUAL SINCR' in c or 'DIEGEP' in c: return 'CIED'
+        if 'AVELL' in s: return 'AVELLANEDA'
+        if 'CABAL' in s or 'CABALI' in s: return 'CABALLITO'
+        if 'VICENTE' in s or 'VTE' in s: return 'VICENTE LOPEZ'
+        return 'CIED'
+    def _find_pk(sede_n, cn):
+        if not cn: return None
+        ck = cn.upper().strip()
+        for (s, c) in plan:
+            if s == sede_n and (ck in c or c in ck or ck[:25] == c[:25]): return (s, c)
+        for (s, c) in plan:
+            if ck in c or c in ck or ck[:25] == c[:25]: return (s, c)
+        return None
+    # Process
+    rows_out = []
+    for ws in wb_in.worksheets:
+        if ws.title.upper() in ['INSTRUCTIVO', 'BCE Y BEA']: continue
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i < 2: continue
+            vals = list(row)
+            if len(vals) < 11: continue
+            nombre = f"{str(vals[1] or '')} {str(vals[2] or '')}".strip()
+            try: dni = str(int(float(str(vals[3] or ''))))
+            except: dni = str(vals[3] or '').replace('.0','').strip()
+            fecha = str(vals[4] or '').strip(); inicio = str(vals[5] or '').strip()
+            sede = str(vals[9] or '').strip(); curso = str(vals[10] or '').strip()
+            if not nombre or not curso or curso == 'None': continue
+            anno = _calc_anno(fecha, inicio)
+            carrera_norm = _extract_carrera(curso)
+            sede_n = _norm_sede_exp(sede, curso)
+            plan_key = _find_pk(sede_n, carrera_norm)
+            should = set()
+            if plan_key and anno in plan.get(plan_key, {}):
+                for cod in plan[plan_key][anno]:
+                    nm = (cat_names_db.get(cod,'') or '').upper()
+                    if 'PROFESIONALIZANTE' not in nm and 'PRACTICA PROFESIONAL' not in nm: should.add(cod)
+            actual = dni_to_codes.get(dni, set())
+            faltan = sorted(should - actual); sobran = sorted(actual - should)
+            if not plan_key: estado = 'SIN PLAN'
+            elif not actual: estado = 'SIN INSCRIPCIONES'
+            elif not faltan and not sobran: estado = 'CORRECTO'
+            elif faltan and sobran: estado = 'FALTAN Y SOBRAN'
+            elif faltan: estado = 'FALTAN MATERIAS'
+            else: estado = 'MATERIAS EXTRA'
+            rows_out.append([nombre, dni, sede, curso[:55], anno, estado,
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in sorted(should)]),
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in sorted(actual)]),
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in faltan]),
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in sobran])])
+    wb_in.close()
+    # Build Excel
+    wb_out = Workbook(); ws_out = wb_out.active; ws_out.title = 'Control Inscripciones'
+    hdr_fill = PatternFill(start_color='1E3A5F', end_color='1E3A5F', fill_type='solid')
+    hdr_font = Font(bold=True, color='FFFFFF', size=10)
+    fills = {'CORRECTO': PatternFill(start_color='D5F5E3', fill_type='solid'),
+        'MATERIAS EXTRA': PatternFill(start_color='D6EAF8', fill_type='solid'),
+        'FALTAN MATERIAS': PatternFill(start_color='FEF9E7', fill_type='solid'),
+        'FALTAN Y SOBRAN': PatternFill(start_color='FADBD8', fill_type='solid'),
+        'SIN INSCRIPCIONES': PatternFill(start_color='F5B7B1', fill_type='solid'),
+        'SIN PLAN': PatternFill(start_color='EAECEE', fill_type='solid')}
+    border = Border(left=Side(style='thin',color='CCCCCC'), right=Side(style='thin',color='CCCCCC'),
+        top=Side(style='thin',color='CCCCCC'), bottom=Side(style='thin',color='CCCCCC'))
+    headers = ['Alumno','DNI','Sede','Carrera','Año','Estado','Debe cursar','Inscripto a','Faltantes','Sobrantes']
+    for col, h in enumerate(headers, 1):
+        c = ws_out.cell(row=1, column=col, value=h); c.fill = hdr_fill; c.font = hdr_font; c.border = border
+    for i, rd in enumerate(rows_out, 2):
+        fill = fills.get(rd[5], fills['SIN PLAN'])
+        for col, val in enumerate(rd, 1):
+            c = ws_out.cell(row=i, column=col, value=val); c.fill = fill; c.border = border
+            c.font = Font(size=9); c.alignment = Alignment(wrap_text=True, vertical='top')
+    for i, w in enumerate([25,12,15,40,10,18,55,55,45,45], 1): ws_out.column_dimensions[chr(64+i)].width = w
+    buf = io.BytesIO(); wb_out.save(buf); buf.seek(0)
+    return Response(content=buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename=control_inscripciones.xlsx'})
 
-  return (
-    <div className="flex min-h-screen bg-slate-100">
-      <Sidebar activeView={activeView} setActiveView={setActiveView} cuatrimestre={cuatrimestre}
-        setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres}
-        solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} solapCarrerasCount={solapCarrerasCount} />
-      <main className="flex-1 overflow-auto">
-        {activeView === 'dashboard' && <DashboardView cuatrimestre={cuatrimestre} setActiveView={setActiveView} />}
-        {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
-        {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
-        {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
-        {activeView === 'decisiones' && <DecisionesView catedras={catedras} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
-        {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
-        {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
-        {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
-        {activeView === 'sugerencias' && <SugerenciasArmadoView cuatrimestre={cuatrimestre} />}
-        {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
-        {activeView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} />}
-        {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
-        {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
-        {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
-        {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
-        {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
-      </main>
-    </div>
-  );
-}
+
+# ===== v16.0: Motor de sugerencias de armado de horarios =====
+@app.get("/api/sugerencias-armado")
+def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # 1) Get plan_carrera entries
+    q = "SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera"
+    if sede: q += f" WHERE sede = '{sede}'"
+    q += " ORDER BY sede, carrera, anno"
+    try: plan = db.execute(text(q)).fetchall()
+    except: return {"sedes": {}, "stats": {}}
+    if not plan: return {"sedes": {}, "stats": {}}
+    # 2) Get inscriptos count
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    # 3) Catedra map
+    cat_map = {c.codigo: {"id": c.id, "nombre": c.nombre} for c in db.query(Catedra).all()}
+    # 4) Current asignaciones
+    asig_q = db.query(Asignacion)
+    if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = asig_q.all()
+    asig_map = {}  # catedra_id → [{docente, dia, hora, sede}]
+    docente_busy = {}  # docente_id → set of (dia, hora)
+    for a in asigs:
+        if a.catedra_id not in asig_map: asig_map[a.catedra_id] = []
+        asig_map[a.catedra_id].append({
+            "docente_id": a.docente_id,
+            "docente": f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None,
+            "dia": a.dia, "hora": a.hora_inicio,
+            "sede": a.sede.nombre if a.sede else None,
+        })
+        if a.docente_id and a.dia and a.hora_inicio:
+            if a.docente_id not in docente_busy: docente_busy[a.docente_id] = set()
+            docente_busy[a.docente_id].add((a.dia, a.hora_inicio))
+    # 5) Docentes with availability and references
+    docentes = db.query(Docente).all()
+    disp_map = {}
+    try:
+        for r in db.execute(text("SELECT docente_id, dia, hora FROM docente_disponibilidad WHERE disponible = TRUE")).fetchall():
+            if r[0] not in disp_map: disp_map[r[0]] = set()
+            disp_map[r[0]].add((r[1], r[2]))
+    except: pass
+    # Build docente lookup for suggestions
+    doc_info = {}
+    for d in docentes:
+        refs = (getattr(d, 'catedras_referencia', '') or '').strip()
+        ref_codes = [r.strip() for r in refs.split(',') if r.strip()] if refs else []
+        avail = disp_map.get(d.id, set())
+        busy = docente_busy.get(d.id, set())
+        free = avail - busy  # Available and not already assigned
+        doc_info[d.id] = {
+            "id": d.id, "nombre": f"{d.nombre} {d.apellido}",
+            "ref_codes": ref_codes, "free_slots": free,
+            "sedes": [ds.sede.nombre for ds in (d.sedes or []) if ds.sede],
+        }
+    # 6) Build result per sede → carrera → anno → catedras with suggestions
+    sedes_result = {}
+    stats = {"total": 0, "con_docente": 0, "sugerido": 0, "sin_sugerencia": 0, "asincronica": 0}
+    for r in plan:
+        sede_n, carrera, anno, cod, nombre_plan = r[0], r[1], r[2], r[3], r[4]
+        cat_info = cat_map.get(cod)
+        cat_id = cat_info["id"] if cat_info else None
+        insc = total_map.get(cat_id, 0) if cat_id else 0
+        criterio = "ABRIR" if insc >= 10 else ("ASINCRÓNICA" if insc > 0 else "SIN ALUMNOS")
+        # Current assignments
+        current_asigs = asig_map.get(cat_id, []) if cat_id else []
+        tiene_docente = any(a['docente'] for a in current_asigs)
+        docente_actual = ', '.join(set(a['docente'] for a in current_asigs if a['docente'])) or None
+        horarios_actuales = [f"{a['dia']} {a['hora']}" for a in current_asigs if a['dia']] if current_asigs else []
+        # Determine status and suggestion
+        estado = "asignado"  # green
+        sugerencia_docente = None
+        if criterio == "ABRIR" and tiene_docente:
+            estado = "asignado"
+            stats["con_docente"] += 1
+        elif criterio == "ABRIR" and not tiene_docente:
+            # Find suggestion
+            candidatos = []
+            for did, dinfo in doc_info.items():
+                # Check if docente has this cátedra as reference
+                if cod in dinfo["ref_codes"]:
+                    # Has free slots → valid candidate
+                    if dinfo["free_slots"]:
+                        score = 10
+                        candidatos.append({"id": did, "nombre": dinfo["nombre"], "score": score,
+                            "free": len(dinfo["free_slots"]), "slots": list(dinfo["free_slots"])[:3]})
+                # If no ref_codes at all, NOT a candidate (we only suggest docentes who can teach this)
+            candidatos.sort(key=lambda x: -x["score"])
+            if candidatos:
+                estado = "sugerido"  # blue
+                sugerencia_docente = candidatos[0]["nombre"]
+                stats["sugerido"] += 1
+            else:
+                estado = "sin_sugerencia"  # red
+                stats["sin_sugerencia"] += 1
+        elif criterio == "ASINCRÓNICA":
+            estado = "asincronica"
+            stats["asincronica"] += 1
+        else:
+            estado = "sin_alumnos"
+        stats["total"] += 1
+        if sede_n not in sedes_result: sedes_result[sede_n] = {}
+        if carrera not in sedes_result[sede_n]: sedes_result[sede_n][carrera] = {}
+        if anno not in sedes_result[sede_n][carrera]: sedes_result[sede_n][carrera][anno] = []
+        sedes_result[sede_n][carrera][anno].append({
+            "codigo": cod, "nombre": nombre_plan, "inscriptos": insc, "criterio": criterio,
+            "estado": estado, "docente_actual": docente_actual, "sugerencia_docente": sugerencia_docente,
+            "horarios": horarios_actuales,
+        })
+    return {"sedes": sedes_result, "stats": stats}
+
+
+# ===== v15.0: Solapamientos entre carreras (lógica correcta) =====
+@app.get("/api/solapamientos-carreras")
+def get_solapamientos_carreras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # 1) Get plan_carrera
+    try: plan = db.execute(text("SELECT sede, carrera, anno, codigo_catedra FROM plan_carrera")).fetchall()
+    except: return {"presencial": [], "cied": [], "docentes": [], "total": 0}
+    if not plan: return {"presencial": [], "cied": [], "docentes": [], "total": 0, "sin_plan": True}
+    carrera_cats = {}
+    for r in plan:
+        key = (r[0], r[1], r[2])
+        if key not in carrera_cats: carrera_cats[key] = []
+        if r[3] not in carrera_cats[key]: carrera_cats[key].append(r[3])
+    # 2) Get asignaciones
+    asig_q = db.query(Asignacion).filter(Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None))
+    if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = asig_q.all()
+    # Build: code → {sede_name → set of (dia, hora)} and code → all slots
+    code_sede_slots = {}; code_all_slots = {}; code_names = {}; code_docentes = {}
+    docente_schedule = {}
+    for a in asigs:
+        if not a.catedra or not a.dia or a.dia == 'Pend.' or not a.hora_inicio or a.hora_inicio == 'Pend.': continue
+        cod = a.catedra.codigo
+        sede_n = a.sede.nombre if a.sede else 'Remoto'
+        doc_name = f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None
+        code_names[cod] = a.catedra.nombre
+        slot = (a.dia, a.hora_inicio)
+        if cod not in code_sede_slots: code_sede_slots[cod] = {}
+        if sede_n not in code_sede_slots[cod]: code_sede_slots[cod][sede_n] = set()
+        code_sede_slots[cod][sede_n].add(slot)
+        if cod not in code_all_slots: code_all_slots[cod] = set()
+        code_all_slots[cod].add(slot)
+        # Track docente per (cod, dia, hora)
+        if doc_name:
+            if cod not in code_docentes: code_docentes[cod] = {}
+            code_docentes[cod][(a.dia, a.hora_inicio)] = doc_name
+            # Docente schedule for type 2
+            if doc_name not in docente_schedule: docente_schedule[doc_name] = []
+            docente_schedule[doc_name].append({"dia": a.dia, "hora": a.hora_inicio, "cod": cod, "nombre": a.catedra.nombre, "sede": sede_n})
+    # Helper to get docente for a (cod, dia, hora)
+    def get_doc(cod, dia, hora):
+        return (code_docentes.get(cod) or {}).get((dia, hora))
+    # === TIPO 1: PRESENCIALES (por sede) ===
+    conf_presencial = []
+    for (sede_p, carrera, anno), codigos in carrera_cats.items():
+        if not anno or sede_p.upper() == 'CIED': continue
+        cat_slots = {}
+        for cod in codigos:
+            for s_name, slots in (code_sede_slots.get(cod) or {}).items():
+                if s_name.upper().replace(' ','')[:4] == sede_p.upper().replace(' ','')[:4]:
+                    if cod not in cat_slots: cat_slots[cod] = set()
+                    cat_slots[cod].update(slots)
+        cods = list(cat_slots.keys())
+        for i in range(len(cods)):
+            for j in range(i+1, len(cods)):
+                overlap = cat_slots[cods[i]] & cat_slots[cods[j]]
+                for (dia, hora) in overlap:
+                    conf_presencial.append({"sede_plan": sede_p, "carrera": carrera, "anno": anno,
+                        "dia": dia, "hora": hora,
+                        "catedras_en_conflicto": [
+                            {"codigo": cods[i], "nombre": code_names.get(cods[i],''), "docente": get_doc(cods[i], dia, hora)},
+                            {"codigo": cods[j], "nombre": code_names.get(cods[j],''), "docente": get_doc(cods[j], dia, hora)}],
+                        "tipo": "presencial"})
+    # === TIPO 1b: CIED (conflicto solo si NO hay combinación posible) ===
+    conf_cied = []
+    for (sede_p, carrera, anno), codigos in carrera_cats.items():
+        if not anno or sede_p.upper() != 'CIED': continue
+        cat_slots = {cod: code_all_slots.get(cod, set()) for cod in codigos if code_all_slots.get(cod)}
+        cods = list(cat_slots.keys())
+        for i in range(len(cods)):
+            for j in range(i+1, len(cods)):
+                can_avoid = any(sa != sb for sa in cat_slots[cods[i]] for sb in cat_slots[cods[j]])
+                if not can_avoid and cat_slots[cods[i]] & cat_slots[cods[j]]:
+                    dia, hora = list(cat_slots[cods[i]] & cat_slots[cods[j]])[0]
+                    conf_cied.append({"sede_plan": "CIED", "carrera": carrera, "anno": anno,
+                        "dia": dia, "hora": hora,
+                        "catedras_en_conflicto": [
+                            {"codigo": cods[i], "nombre": code_names.get(cods[i],''), "docente": get_doc(cods[i], dia, hora)},
+                            {"codigo": cods[j], "nombre": code_names.get(cods[j],''), "docente": get_doc(cods[j], dia, hora)}],
+                        "tipo": "cied"})
+    # === TIPO 2: DOCENTES (mismo docente, distinta cátedra, mismo dia+hora) ===
+    conf_docentes = []
+    for doc_name, schedule in docente_schedule.items():
+        slots = {}
+        for s in schedule:
+            key = (s['dia'], s['hora'])
+            if key not in slots: slots[key] = []
+            slots[key].append(s)
+        for (dia, hora), items in slots.items():
+            cods_unicos = list(set(it['cod'] for it in items))
+            if len(cods_unicos) < 2: continue
+            conf_docentes.append({"docente": doc_name, "dia": dia, "hora": hora,
+                "asignaciones": [{"codigo": it['cod'], "nombre": it['nombre'], "sede": it['sede']} for it in items],
+                "tipo": "docente"})
+    conf_presencial.sort(key=lambda x: (x['sede_plan'], x['carrera'], x['anno']))
+    conf_docentes.sort(key=lambda x: (x['docente'], x['dia']))
+    total = len(conf_presencial) + len(conf_cied) + len(conf_docentes)
+    return {"presencial": conf_presencial, "cied": conf_cied, "docentes": conf_docentes, "total": total,
+        "total_presencial": len(conf_presencial), "total_cied": len(conf_cied), "total_docentes": len(conf_docentes)}
+
+
+# ===== v10.0: Exportar COMPLETO =====
+@app.get("/api/exportar/horarios")
+def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment
+    from sqlalchemy import text
+    wb = Workbook()
+    q = db.query(Asignacion)
+    if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = sorted(q.all(), key=lambda a: sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999'))
+    # -- Inscriptos desglosados --
+    insc_q = """SELECT catedra_id, turno, modalidad_alumno, sede_referencia, COUNT(*) FROM inscripciones WHERE modalidad_alumno IS NOT NULL"""
+    if cuatrimestre_id: insc_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    insc_q += " GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia"
+    insc_desg = {}
+    try:
+        for r in db.execute(text(insc_q)).fetchall():
+            cid, turno, mod, sede, cnt = r
+            if cid not in insc_desg:
+                insc_desg[cid] = {'total':0,'tm_av':0,'tm_cab':0,'tm_vl':0,'tm_cied':0,'tn_av':0,'tn_cab':0,'tn_vl':0,'tn_cied':0,'virt':0}
+            d = insc_desg[cid]; d['total'] += cnt
+            es_cied = (mod == 'virtual')
+            sk = None
+            if not es_cied:
+                sl = (sede or '').lower()
+                if 'avellaneda' in sl: sk = 'av'
+                elif 'caballito' in sl: sk = 'cab'
+                elif 'vicente' in sl: sk = 'vl'
+            if turno == 'Mañana': d[f'tm_{sk}' if sk else 'tm_cied'] += cnt
+            elif turno == 'Noche': d[f'tn_{sk}' if sk else 'tn_cied'] += cnt
+            else: d['virt'] += cnt
+    except: pass
+    total_insc_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_insc_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_insc_q += " GROUP BY catedra_id"
+    total_insc_map = {}
+    try:
+        for r in db.execute(text(total_insc_q)).fetchall(): total_insc_map[r[0]] = r[1]
+    except: pass
+    hf = Font(bold=True, color="FFFFFF", size=10)
+    YELLOW = PatternFill("solid", fgColor="FFFFCC")
+    def make_hdr(ws, headers, color='1D6F42'):
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor=color); cell.alignment = Alignment(horizontal="center")
+    all_cats = sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo))
+
+    # ========== HOJA 1 (PRINCIPAL): Inscriptos de todas las cátedras unificadas ==========
+    ws0 = wb.active; ws0.title = "Inscriptos unificados"
+    make_hdr(ws0, ["#","Código","Cátedra","TM Avellaneda","TM Caballito","TM Vicente López","TM CIED","Total TM","TN Avellaneda","TN Caballito","TN Vicente López","TN CIED","Total TN","CIED Virtual","Sede Avellaneda","Sede Caballito","Sede V.López","Sede CIED","TOTAL"], '0F766E')
+    for i, cat in enumerate(all_cats, 1):
+        d = insc_desg.get(cat.id, {})
+        tm_t = d.get('tm_av',0)+d.get('tm_cab',0)+d.get('tm_vl',0)+d.get('tm_cied',0)
+        tn_t = d.get('tn_av',0)+d.get('tn_cab',0)+d.get('tn_vl',0)+d.get('tn_cied',0)
+        s_av = d.get('tm_av',0)+d.get('tn_av',0)
+        s_cab = d.get('tm_cab',0)+d.get('tn_cab',0)
+        s_vl = d.get('tm_vl',0)+d.get('tn_vl',0)
+        s_cied = d.get('tm_cied',0)+d.get('tn_cied',0)+d.get('virt',0)
+        tot = total_insc_map.get(cat.id, 0)
+        if tot == 0 and d.get('total',0) == 0: continue
+        ws0.append([i, cat.codigo, cat.nombre,
+            d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
+            d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
+            d.get('virt',0) or '', s_av or '', s_cab or '', s_vl or '', s_cied or '', tot or ''])
+        if tot >= 10:
+            tiene = any(1 for a in asigs if a.catedra_id == cat.id)
+            if not tiene:
+                for cell in ws0[ws0.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',28),('D',14),('E',13),('F',16),('G',9),('H',9),('I',14),('J',13),('K',16),('L',9),('M',9),('N',11),('O',14),('P',13),('Q',13),('R',10),('S',7)]:
+        ws0.column_dimensions[col].width = w
+
+    # ========== HOJA 2: Totalidad General (antes "Todas las sedes") ==========
+    ws1 = wb.create_sheet("Totalidad General")
+    ws1.append(["#","Código","Cátedra","TM Av","TM Cab","TM VL","TM CIED","Tot TM","TN Av","TN Cab","TN VL","TN CIED","Tot TN","CIED Virt","TOTAL","Docente","Turno Doc.","Modalidad","Día","Hora","Sede"])
+    for cell in ws1[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="1D6F42"); cell.alignment = Alignment(horizontal="center")
+    for i, a in enumerate(asigs, 1):
+        d = insc_desg.get(a.catedra_id, {})
+        tm_t = d.get('tm_av',0)+d.get('tm_cab',0)+d.get('tm_vl',0)+d.get('tm_cied',0)
+        tn_t = d.get('tn_av',0)+d.get('tn_cab',0)+d.get('tn_vl',0)+d.get('tn_cied',0)
+        tot = total_insc_map.get(a.catedra_id, 0)
+        mod = a.modalidad or ''
+        td = 'Mañana' if 'tm' in mod else ('Noche' if 'tn' in mod else ('Asincrónica' if mod == 'asincronica' else 'Presencial'))
+        ws1.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
+            d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
+            d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
+            d.get('virt',0) or '', tot or '',
+            f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td,
+            mod, a.dia or "Pend.", a.hora_inicio or "Pend.", a.sede.nombre if a.sede else "Remoto"])
+        if tot >= 10 and not a.docente_id:
+            for cell in ws1[ws1.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',28),('D',7),('E',7),('F',7),('G',7),('H',7),('I',7),('J',7),('K',7),('L',7),('M',7),('N',9),('O',7),('P',26),('Q',10),('R',12),('S',10),('T',7),('U',16)]:
+        ws1.column_dimensions[col].width = w
+
+    # ========== HOJAS POR SEDE ==========
+    for sede_key, sede_name, color in [('av','Avellaneda','3B82F6'),('cab','Caballito','10B981'),('vl','Vicente López','F59E0B'),('cied','CIED','8B5CF6')]:
+        ws = wb.create_sheet(sede_name[:31])
+        if sede_key == 'cied':
+            ws.append(["#","Código","Cátedra","TM CIED","TN CIED","Virtual","TOTAL","Docente","Turno","Día","Hora"])
+            sede_asigs = [a for a in asigs if not a.sede_id or (a.modalidad and ('virtual' in a.modalidad or a.modalidad == 'asincronica'))]
+        else:
+            ws.append(["#","Código","Cátedra",f"TM {sede_name}",f"TN {sede_name}","TOTAL","Docente","Turno","Día","Hora"])
+            sede_db = db.query(Sede).filter(Sede.nombre == sede_name).first()
+            sede_asigs = [a for a in asigs if a.sede_id == (sede_db.id if sede_db else -1)]
+        for cell in ws[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor=color); cell.alignment = Alignment(horizontal="center")
+        for i, a in enumerate(sede_asigs, 1):
+            d = insc_desg.get(a.catedra_id, {})
+            mod = a.modalidad or ''
+            td = 'Mañana' if 'tm' in mod else ('Noche' if 'tn' in mod else 'Otro')
+            if sede_key == 'cied':
+                tm_v=d.get('tm_cied',0); tn_v=d.get('tn_cied',0); vv=d.get('virt',0)
+                ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
+                    tm_v or '', tn_v or '', vv or '', (tm_v+tn_v+vv) or '',
+                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td, a.dia or "Pend.", a.hora_inicio or "Pend."])
+            else:
+                tm_v=d.get(f'tm_{sede_key}',0); tn_v=d.get(f'tn_{sede_key}',0)
+                ws.append([i, a.catedra.codigo if a.catedra else "", a.catedra.nombre if a.catedra else "",
+                    tm_v or '', tn_v or '', (tm_v+tn_v) or '',
+                    f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td, a.dia or "Pend.", a.hora_inicio or "Pend."])
+        for col, w in [('A',4),('B',8),('C',28),('D',14),('E',14),('F',10),('G',7),('H',26),('I',10),('J',10),('K',7)]:
+            ws.column_dimensions[col].width = w
+
+    # ========== HOJA: Listado Total Docentes (ordenado por sede) ==========
+    docentes_db = db.query(Docente).order_by(Docente.apellido).all()
+    ws_ld = wb.create_sheet("Listado Docentes")
+    ws_ld.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Sedes","Cátedras asignadas","Modalidad","Día","Hora"])
+    for cell in ws_ld[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="334155"); cell.alignment = Alignment(horizontal="center")
+    idx = 1
+    # Ordenar por sede principal
+    def sede_sort_key(doc):
+        sds = [s.sede.nombre for s in (doc.sedes or []) if s.sede]
+        return sds[0] if sds else 'ZZZ'
+    for doc in sorted(docentes_db, key=sede_sort_key):
+        sds = ', '.join([s.sede.nombre for s in (doc.sedes or []) if s.sede]) or 'Sin sede'
+        doc_asigs = [a for a in asigs if a.docente_id == doc.id]
+        if doc_asigs:
+            for a in doc_asigs:
+                ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+                    getattr(doc, 'horas_asignadas', 0) or '',
+                    "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+                    "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+                    sds, f"{a.catedra.codigo} {a.catedra.nombre}" if a.catedra else "",
+                    a.modalidad or '', a.dia or "Pend.", a.hora_inicio or "Pend."])
+                idx += 1
+        else:
+            ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+                getattr(doc, 'horas_asignadas', 0) or '',
+                "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+                "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+                sds, "SIN MATERIA ASIGNADA", '', '', ''])
+            idx += 1
+    for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',20),('I',34),('J',13),('K',10),('L',7)]:
+        ws_ld.column_dimensions[col].width = w
+
+    # ========== HOJA: Docentes TM ==========
+    ws_dtm = wb.create_sheet("Docentes TM")
+    ws_dtm.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Cátedra","Sede","Día","Hora"])
+    for cell in ws_dtm[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="D97706"); cell.alignment = Alignment(horizontal="center")
+    idx = 1
+    for doc in docentes_db:
+        for a in [a for a in asigs if a.docente_id == doc.id and a.modalidad and 'tm' in a.modalidad]:
+            ws_dtm.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+                getattr(doc, 'horas_asignadas', 0) or '',
+                "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+                "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+                f"{a.catedra.codigo} {a.catedra.nombre}" if a.catedra else "", a.sede.nombre if a.sede else "Remoto",
+                a.dia or "Pend.", a.hora_inicio or "Pend."])
+            idx += 1
+    for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',32),('I',16),('J',10),('K',7)]:
+        ws_dtm.column_dimensions[col].width = w
+
+    # ========== HOJA: Docentes TN ==========
+    ws_dtn = wb.create_sheet("Docentes TN")
+    ws_dtn.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Cátedra","Sede","Día","Hora"])
+    for cell in ws_dtn[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="4338CA"); cell.alignment = Alignment(horizontal="center")
+    idx = 1
+    for doc in docentes_db:
+        for a in [a for a in asigs if a.docente_id == doc.id and a.modalidad and ('tn' in a.modalidad or a.modalidad == 'presencial')]:
+            ws_dtn.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+                getattr(doc, 'horas_asignadas', 0) or '',
+                "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+                "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+                f"{a.catedra.codigo} {a.catedra.nombre}" if a.catedra else "", a.sede.nombre if a.sede else "Remoto",
+                a.dia or "Pend.", a.hora_inicio or "Pend."])
+            idx += 1
+    for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',32),('I',16),('J',10),('K',7)]:
+        ws_dtn.column_dimensions[col].width = w
+
+    # ========== HOJA: Inscriptos por Curso ==========
+    ws_cur = wb.create_sheet("Inscriptos por Curso")
+    ws_cur.append(["#","Curso","Sede","Modalidad","Tipo","Alumnos (DNI)","Inscripciones"])
+    for cell in ws_cur[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="6B21A8"); cell.alignment = Alignment(horizontal="center")
+    c_q = """SELECT curso_nombre, COUNT(DISTINCT alumno_id), COUNT(*) FROM inscripciones WHERE curso_nombre IS NOT NULL AND curso_nombre != ''"""
+    if cuatrimestre_id: c_q += f" AND cuatrimestre_id = {cuatrimestre_id}"
+    c_q += " GROUP BY curso_nombre ORDER BY COUNT(*) DESC"
+    try:
+        for i, r in enumerate(db.execute(text(c_q)).fetchall(), 1):
+            curso_raw, unicos, total = r[0], r[1], r[2]
+            es_cied = 'CIED' in curso_raw.upper()
+            m_s = re.search(r'\(([^)]+)\)', curso_raw)
+            sede_r = normalizar_sede(m_s.group(1).strip()) if m_s else 'Sin sede'
+            mod = 'CIED' if (es_cied or sede_r in ['Online - Interior']) else 'Presencial'
+            es_bce = 'BCE' in curso_raw.upper() or 'SECUNDARIO' in curso_raw.upper()
+            tipo = 'BCE' if es_bce else ('BEA' if 'BEA' in curso_raw.upper() else 'Superior')
+            ws_cur.append([i, curso_raw, sede_r, mod, tipo, unicos, total])
+    except: pass
+    for col, w in [('A',4),('B',60),('C',18),('D',12),('E',10),('F',16),('G',14)]:
+        ws_cur.column_dimensions[col].width = w
+
+    # ========== HOJA: Necesitan Docente (con sede+turno) ==========
+    ws_nd = wb.create_sheet("Necesitan Docente")
+    ws_nd.append(["#","Código","Cátedra","Inscriptos","Doc. necesarios","Doc. actuales","Faltan","Sedes asignadas","Desglose inscriptos"])
+    for cell in ws_nd[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="DC2626"); cell.alignment = Alignment(horizontal="center")
+    nd_data = get_catedras_necesitan_docente(cuatrimestre_id, db)
+    for i, nd in enumerate(nd_data, 1):
+        sedes_asig = ', '.join([f"{sa['turno']} {sa['sede']} ({sa['docente']})" for sa in nd.get('sedes_asignadas', [])]) or 'Sin docente'
+        desglose = ', '.join([f"{ap['turno']} {ap['sede']}: {ap['inscriptos']}" for ap in nd.get('aperturas_info', [])])
+        ws_nd.append([i, nd['codigo'], nd['nombre'], nd['inscriptos_total'],
+            nd['docs_necesarios'], nd['docentes_asignados'], nd['faltan'], sedes_asig, desglose])
+        if nd['faltan'] > 0:
+            for cell in ws_nd[ws_nd.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',30),('D',10),('E',12),('F',10),('G',8),('H',40),('I',50)]:
+        ws_nd.column_dimensions[col].width = w
+
+    # ========== v7.0: 3 nuevas solapas de criterio de apertura ==========
+    criterio = get_criterio_apertura(cuatrimestre_id, db)
+
+    # --- HOJA: Abrir Cátedra (>=10 inscriptos total) ---
+    ws_abrir = wb.create_sheet("Abrir cátedra")
+    ws_abrir.append(["#","Código","Cátedra","Total inscriptos","Docentes sugeridos","Docentes actuales","Faltan","Estado"])
+    for cell in ws_abrir[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="059669"); cell.alignment = Alignment(horizontal="center")
+    for i, item in enumerate(criterio['abrir'], 1):
+        estado = "✅ Cubierto" if item['faltan'] == 0 else "⚠️ Faltan docentes"
+        ws_abrir.append([i, item['codigo'], item['nombre'], item['total'],
+            item['docentes_sugeridos'], item['docentes_actuales'], item['faltan'], estado])
+        if item['faltan'] > 0:
+            for cell in ws_abrir[ws_abrir.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',16),('F',16),('G',8),('H',18)]:
+        ws_abrir.column_dimensions[col].width = w
+
+    # --- HOJA: Cátedra Asincrónica (1-9 inscriptos total) ---
+    ws_asinc = wb.create_sheet("Cátedra asincrónica")
+    ws_asinc.append(["#","Código","Cátedra","Total inscriptos","Observación"])
+    for cell in ws_asinc[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="7C3AED"); cell.alignment = Alignment(horizontal="center")
+    for i, item in enumerate(criterio['asincronica'], 1):
+        ws_asinc.append([i, item['codigo'], item['nombre'], item['total'], "1 a 9 inscriptos → Se dicta de forma asincrónica (pregrabada)"])
+    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',50)]:
+        ws_asinc.column_dimensions[col].width = w
+
+    # --- HOJA: Cátedra sin alumnos ---
+    ws_sin = wb.create_sheet("Cátedra sin alumnos")
+    ws_sin.append(["#","Código","Cátedra","Inscriptos"])
+    for cell in ws_sin[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="6B7280"); cell.alignment = Alignment(horizontal="center")
+    idx = 1
+    for cat in all_cats:
+        ic = total_insc_map.get(cat.id, 0)
+        if ic == 0:
+            ws_sin.append([idx, cat.codigo, cat.nombre, 0])
+            idx += 1
+    for col, w in [('A',4),('B',8),('C',30),('D',12)]:
+        ws_sin.column_dimensions[col].width = w
+
+    # ========== HOJA: Solapamientos ==========
+    ws_sol = wb.create_sheet("Solapamientos")
+    ws_sol.append(["#","Tipo","Severidad","Mensaje","Día","Hora"])
+    for cell in ws_sol[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="B91C1C"); cell.alignment = Alignment(horizontal="center")
+    for i, s in enumerate(get_solapamientos(cuatrimestre_id, db), 1):
+        ws_sol.append([i, s.get('tipo',''), s.get('severidad',''), s.get('mensaje',''), s.get('dia',''), s.get('hora','')])
+    for col, w in [('A',4),('B',12),('C',12),('D',60),('E',12),('F',7)]:
+        ws_sol.column_dimensions[col].width = w
+
+    # ========== HOJA: Horarios por Día y Sede ==========
+    DIAS_ORDEN = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+    HORAS_EXPORT = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00']
+    for sede_db_obj in [None] + list(db.query(Sede).all()):
+        if sede_db_obj:
+            sede_asigs_dia = [a for a in asigs if a.sede_id == sede_db_obj.id]
+            sheet_name = f"Horario {sede_db_obj.nombre}"[:31]
+            color_h = '2563EB'
+        else:
+            sede_asigs_dia = asigs
+            sheet_name = "Horario General"
+            color_h = '1E3A5F'
+        if not sede_asigs_dia and sede_db_obj: continue
+        ws_dia = wb.create_sheet(sheet_name)
+        ws_dia.append(["Hora"] + DIAS_ORDEN)
+        for cell in ws_dia[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor=color_h); cell.alignment = Alignment(horizontal="center")
+        for hora in HORAS_EXPORT:
+            row_data = [hora]
+            for dia in DIAS_ORDEN:
+                celdas = [a for a in sede_asigs_dia if a.dia == dia and a.hora_inicio == hora]
+                if celdas:
+                    txt = " | ".join([
+                        f"{a.catedra.codigo} {(a.docente.apellido if a.docente else 'Sin doc.')}"
+                        for a in celdas
+                    ])
+                else:
+                    txt = ""
+                row_data.append(txt)
+            ws_dia.append(row_data)
+        ws_dia.column_dimensions['A'].width = 7
+        for col in ['B','C','D','E','F','G']:
+            ws_dia.column_dimensions[col].width = 35
+
+    # ========== v12.0: HOJA Criterio de Decisión ==========
+    ws_dec = wb.create_sheet("Criterio de Decisión")
+    ws_dec.append(["#","Código","Cátedra","Total inscriptos","Criterio sistema","Docentes sugeridos","Decisión tomada","Notas"])
+    for cell in ws_dec[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E40AF"); cell.alignment = Alignment(horizontal="center")
+    for i, cat in enumerate(all_cats, 1):
+        ic = total_insc_map.get(cat.id, 0)
+        if ic >= 10:
+            criterio_txt = f"ABRIR ({ic} inscriptos)"
+            docs_sug = 1 if ic <= 100 else (1 + -(-max(0, ic - 100) // 100))
+        elif ic > 0:
+            criterio_txt = f"ASINCRÓNICA ({ic} inscriptos)"
+            docs_sug = 0
+        else:
+            criterio_txt = "SIN ALUMNOS"
+            docs_sug = 0
+        decision = getattr(cat, 'decision_apertura', '') or ''
+        notas_c = getattr(cat, 'notas', '') or ''
+        ws_dec.append([i, cat.codigo, cat.nombre, ic, criterio_txt, docs_sug or '', decision, notas_c])
+        if ic >= 10 and not decision:
+            for cell in ws_dec[ws_dec.max_row]: cell.fill = YELLOW
+    for col, w in [('A',4),('B',8),('C',30),('D',14),('E',22),('F',16),('G',28),('H',30)]:
+        ws_dec.column_dimensions[col].width = w
+
+    # ========== v10.0: BORRADOR HORARIOS TM-TN (formato como usan ellas) ==========
+    DIAS_ORDEN2 = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']
+    HORAS_TM = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00']
+    HORAS_TN = ['17:00','18:00','19:00','20:00','21:00','22:00','23:00']
+    ws_bor = wb.create_sheet("Borrador Horarios")
+    ws_bor.append(["Código","Cátedra","Día","Hora","Sede","Docente","Estado","Notas"])
+    for cell in ws_bor[1]:
+        cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E3A5F"); cell.alignment = Alignment(horizontal="center")
+    PENDIENTE_FILL = PatternFill("solid", fgColor="FEF3C7")
+    HEADER_DIA = PatternFill("solid", fgColor="FBBF24")
+    row_num = 2
+    for dia in DIAS_ORDEN2:
+        # TM header
+        ws_bor.append([f"{dia.upper()} - TM",'','','','','','',''])
+        for cell in ws_bor[ws_bor.max_row]:
+            cell.font = Font(bold=True, size=11); cell.fill = HEADER_DIA
+        row_num += 1
+        dia_asigs_tm = sorted([a for a in asigs if a.dia == dia and a.hora_inicio in HORAS_TM],
+            key=lambda a: (a.hora_inicio or '', sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999')))
+        for a in dia_asigs_tm:
+            cat = a.catedra
+            doc_nombre = f"{a.docente.nombre} {a.docente.apellido}" if a.docente else ""
+            estado = "✅ Asignado" if a.docente_id else "⚠️ PENDIENTE"
+            notas_cat = ""
+            try: notas_cat = getattr(cat, 'notas', '') or ''
+            except: pass
+            ws_bor.append([
+                cat.codigo if cat else "", f"{cat.nombre}" if cat else "",
+                dia, a.hora_inicio or "", a.sede.nombre if a.sede else "Remoto",
+                doc_nombre or "SIN DOCENTE", estado, notas_cat
+            ])
+            if not a.docente_id:
+                for cell in ws_bor[ws_bor.max_row]: cell.fill = PENDIENTE_FILL
+            row_num += 1
+        ws_bor.append(['','','','','','','',''])  # blank row
+        row_num += 1
+        # TN header
+        ws_bor.append([f"{dia.upper()} - TN",'','','','','','',''])
+        for cell in ws_bor[ws_bor.max_row]:
+            cell.font = Font(bold=True, size=11); cell.fill = PatternFill("solid", fgColor="6366F1")
+            cell.font = Font(bold=True, size=11, color="FFFFFF")
+        row_num += 1
+        dia_asigs_tn = sorted([a for a in asigs if a.dia == dia and a.hora_inicio in HORAS_TN],
+            key=lambda a: (a.hora_inicio or '', sort_key_codigo(a.catedra.codigo if a.catedra else 'c.9999')))
+        for a in dia_asigs_tn:
+            cat = a.catedra
+            doc_nombre = f"{a.docente.nombre} {a.docente.apellido}" if a.docente else ""
+            estado = "✅ Asignado" if a.docente_id else "⚠️ PENDIENTE"
+            notas_cat = ""
+            try: notas_cat = getattr(cat, 'notas', '') or ''
+            except: pass
+            ws_bor.append([
+                cat.codigo if cat else "", f"{cat.nombre}" if cat else "",
+                dia, a.hora_inicio or "", a.sede.nombre if a.sede else "Remoto",
+                doc_nombre or "SIN DOCENTE", estado, notas_cat
+            ])
+            if not a.docente_id:
+                for cell in ws_bor[ws_bor.max_row]: cell.fill = PENDIENTE_FILL
+            row_num += 1
+        ws_bor.append(['','','','','','','',''])  # separator
+        ws_bor.append(['','','','','','','',''])
+        row_num += 2
+    for col, w in [('A',8),('B',32),('C',12),('D',10),('E',16),('F',28),('G',14),('H',30)]:
+        ws_bor.column_dimensions[col].width = w
+
+    # ========== v13.0: HORARIOS POR CARRERA Y SEDE ==========
+    try:
+        plan_rows = db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra, dia_tm, hora_tm, dia_tn, hora_tn FROM plan_carrera ORDER BY sede, carrera, anno")).fetchall()
+    except: plan_rows = []
+    if plan_rows:
+        # Group by sede
+        plan_by_sede = {}
+        for r in plan_rows:
+            s = r[0]
+            if s not in plan_by_sede: plan_by_sede[s] = []
+            plan_by_sede[s].append(r)
+        # Asig lookup
+        asig_lookup_exp = {}
+        for a in asigs:
+            cid = a.catedra_id
+            if cid not in asig_lookup_exp: asig_lookup_exp[cid] = []
+            asig_lookup_exp[cid].append(a)
+        cat_code_to_id = {c.codigo: c.id for c in all_cats}
+        for sede_name_p, sede_rows in plan_by_sede.items():
+            ws_pc = wb.create_sheet(f"Plan {sede_name_p}"[:31])
+            ws_pc.append(["Carrera","Año","Código","Cátedra","Inscr.","Criterio",
+                "Sugerencia TM","Sugerencia TN","Docente actual","Horario actual TM","Horario actual TN","Estado"])
+            for cell in ws_pc[1]:
+                cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E40AF"); cell.alignment = Alignment(horizontal="center")
+            prev_carrera = ''
+            for r in sede_rows:
+                sede_p, carrera_p, anno_p, cod_p, nombre_p, dtm, htm, dtn, htn = r
+                cat_id_p = cat_code_to_id.get(cod_p)
+                insc_p = total_insc_map.get(cat_id_p, 0) if cat_id_p else 0
+                crit = "ABRIR" if insc_p >= 10 else ("ASINCRÓNICA" if insc_p > 0 else "SIN ALUMNOS")
+                # Current assignment
+                cat_asigs = asig_lookup_exp.get(cat_id_p, [])
+                doc_act = ', '.join([f"{a.docente.nombre} {a.docente.apellido}" for a in cat_asigs if a.docente]) or ''
+                h_act_tm = next((f"{a.dia} {a.hora_inicio}" for a in cat_asigs if a.hora_inicio and a.hora_inicio < '15:00'), '')
+                h_act_tn = next((f"{a.dia} {a.hora_inicio}" for a in cat_asigs if a.hora_inicio and a.hora_inicio >= '15:00'), '')
+                estado = "✅ Con docente" if doc_act else ("🎥 Asincrónica" if crit == "ASINCRÓNICA" else ("⚠️ PENDIENTE" if crit == "ABRIR" else "—"))
+                show_carrera = carrera_p if carrera_p != prev_carrera else ''
+                prev_carrera = carrera_p
+                ws_pc.append([show_carrera, anno_p, cod_p, nombre_p, insc_p or '', crit,
+                    f"{dtm} {htm}".strip() if dtm else '', f"{dtn} {htn}".strip() if dtn else '',
+                    doc_act, h_act_tm, h_act_tn, estado])
+                if crit == "ABRIR" and not doc_act:
+                    for cell in ws_pc[ws_pc.max_row]: cell.fill = YELLOW
+                elif crit == "ASINCRÓNICA":
+                    for cell in ws_pc[ws_pc.max_row]: cell.fill = PatternFill("solid", fgColor="E9D5FF")
+            for col, w in [('A',38),('B',14),('C',8),('D',34),('E',8),('F',14),('G',18),('H',18),('I',28),('J',18),('K',18),('L',16)]:
+                ws_pc.column_dimensions[col].width = w
+
+    # ========== v14.0: Solapamientos entre carreras ==========
+    solap_carr = get_solapamientos_carreras(cuatrimestre_id, db)
+    if solap_carr.get('conflictos'):
+        ws_sc = wb.create_sheet("Solapamientos Carreras")
+        ws_sc.append(["#","Sede","Carrera","Año","Día","Hora","Cátedras en conflicto","Docentes","Sugerencia"])
+        for cell in ws_sc[1]:
+            cell.font = hf; cell.fill = PatternFill("solid", fgColor="B91C1C"); cell.alignment = Alignment(horizontal="center")
+        for i, conf in enumerate(solap_carr['conflictos'], 1):
+            cats_txt = ' vs '.join([f"{c['codigo']} {c['nombre']}" for c in conf['catedras_en_conflicto']])
+            docs_txt = ', '.join([c['docente'] or 'Sin doc.' for c in conf['catedras_en_conflicto']])
+            ws_sc.append([i, conf['sede_plan'], conf['carrera'][:40], conf['anno'],
+                conf['dia'], conf['hora'], cats_txt, docs_txt, conf['sugerencia']])
+            for cell in ws_sc[ws_sc.max_row]: cell.fill = YELLOW
+        for col, w in [('A',4),('B',16),('C',40),('D',12),('E',12),('F',10),('G',50),('H',30),('I',60)]:
+            ws_sc.column_dimensions[col].width = w
+
+    output = io.BytesIO(); wb.save(output); output.seek(0)
+    from datetime import datetime
+    ahora = datetime.now().strftime("%d-%m-%Y_%H_%M_hs")
+    nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}_{ahora}.xlsx"
+    return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={nombre}"})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
