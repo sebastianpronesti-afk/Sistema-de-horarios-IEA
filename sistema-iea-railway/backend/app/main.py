@@ -1267,59 +1267,72 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
     import io
     content = await file.read()
     wb = load_workbook(io.BytesIO(content), read_only=True)
-    total = 0; errores = []
+    total = 0; errores = []; no_encontradas = set()
+    # Pre-load all catedras for name matching
+    all_cats = {c.nombre.lower().strip(): c for c in db.query(Catedra).all()}
+    all_cats_by_code = {c.codigo: c for c in db.query(Catedra).all()}
     for ws in wb.worksheets:
         for row in ws.iter_rows(min_row=2, values_only=True):
             try:
                 vals = list(row)
-                if len(vals) < 4: continue
-                # Flexible column reading: try ID, ALUMNO, DNI, MATERIA, CURSO
-                alumno_nombre = str(vals[1] or '').strip() if len(vals) > 1 else ''
-                dni = str(vals[2] or '').strip() if len(vals) > 2 else ''
-                materia = str(vals[3] or '').strip() if len(vals) > 3 else ''
-                curso = str(vals[4] or '').strip() if len(vals) > 4 else ''
+                if len(vals) < 5: continue
+                alumno_nombre = str(vals[1] or '').strip()
+                dni = str(vals[2] or '').strip()
+                materia = str(vals[3] or '').strip()
+                curso = str(vals[4] or '').strip()
                 if not alumno_nombre or not materia: continue
-                # Parse cátedra code - try multiple patterns
+                # Try to find cátedra: first by code pattern, then by name
+                cat = None
                 cod_match = re.search(r'c\.(\d+)', materia)
-                if not cod_match:
+                if cod_match:
+                    cat = all_cats_by_code.get(f"c.{cod_match.group(1)}")
+                if not cat:
                     cod_match = re.search(r'c\.(\d+)', curso)
-                if not cod_match:
-                    # Try to find just a number at the start
-                    cod_match = re.search(r'^(\d+)', str(vals[0] or '').strip())
-                if not cod_match: continue
-                codigo = f"c.{cod_match.group(1)}"
-                cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-                if not cat: continue
+                    if cod_match:
+                        cat = all_cats_by_code.get(f"c.{cod_match.group(1)}")
+                if not cat:
+                    # Match by name (BCE files only have the name, e.g. "Lengua I")
+                    mat_lower = materia.lower().strip()
+                    cat = all_cats.get(mat_lower)
+                    if not cat:
+                        # Partial match
+                        for nombre, c in all_cats.items():
+                            if mat_lower in nombre or nombre in mat_lower:
+                                cat = c; break
+                if not cat:
+                    no_encontradas.add(materia)
+                    continue
+                # Determine BCE or BEA
                 es_bea = 'BEA' in curso.upper() or 'BEA' in materia.upper()
                 if es_bea:
                     sede_ref = 'Caballito'
                 else:
                     sede_match = re.search(r'\(([^)]+)\)', curso)
                     sede_ref = normalizar_sede(sede_match.group(1).strip()) if sede_match else 'Online - Interior'
-                al = db.query(Alumno).filter(Alumno.nombre == alumno_nombre, Alumno.dni == dni).first()
+                # Clean DNI
+                dni = re.sub(r'[^\d]', '', dni)[:10]
+                # Find or create alumno
+                al = db.query(Alumno).filter(Alumno.dni == dni).first() if dni else None
                 if not al:
-                    al = Alumno(nombre=alumno_nombre, dni=dni)
+                    al_nombre = re.sub(r'\s*\(.*\)', '', alumno_nombre).strip()
+                    al = Alumno(nombre=al_nombre, dni=dni)
                     db.add(al); db.flush()
+                # Upsert inscription
                 existing = db.query(Inscripcion).filter(
                     Inscripcion.alumno_id == al.id, Inscripcion.catedra_id == cat.id,
                     Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
                 if existing:
-                    existing.turno = 'Virtual'
-                    existing.modalidad_alumno = 'virtual'
-                    existing.sede_referencia = sede_ref
-                    existing.curso_nombre = curso
+                    existing.turno = 'Virtual'; existing.modalidad_alumno = 'virtual'
+                    existing.sede_referencia = sede_ref; existing.curso_nombre = curso
                 else:
-                    insc = Inscripcion(
-                        alumno_id=al.id, catedra_id=cat.id, cuatrimestre_id=cuatrimestre_id,
-                        turno='Virtual', modalidad_alumno='virtual',
-                        sede_referencia=sede_ref, curso_nombre=curso)
-                    db.add(insc)
+                    db.add(Inscripcion(alumno_id=al.id, catedra_id=cat.id, cuatrimestre_id=cuatrimestre_id,
+                        turno='Virtual', modalidad_alumno='virtual', sede_referencia=sede_ref, curso_nombre=curso))
                 total += 1
             except Exception as e:
                 errores.append(str(e)[:100])
     db.commit()
     wb.close()
-    return {"importados": total, "tipo": "BCE/BEA", "errores": errores[:10]}
+    return {"importados": total, "tipo": "BCE/BEA", "errores": errores[:10], "no_encontradas": list(no_encontradas)[:20]}
 
 @app.post("/api/cuatrimestres/replicar")
 def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
