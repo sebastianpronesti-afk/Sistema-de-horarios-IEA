@@ -51,7 +51,7 @@ async function apiFetch(endpoint, options = {}) {
 }
 
 // ==================== SIDEBAR ====================
-function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount }) {
+function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount, solapCarrerasCount }) {
   const menuItems = [
     { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
@@ -66,7 +66,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
-    { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras' },
+    { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
@@ -1587,7 +1587,41 @@ function SolapamientosView({ solapamientos, cuatrimestre, tab: initialTab = 'hor
     cargar();
   }, [cuatrimestre]);
 
-  const carrConflictos = carreraConf?.conflictos || [];
+  const totalCarr = carreraConf?.total || 0;
+
+  const renderConflictTable = (items, color, showSede = true) => {
+    if (!items?.length) return <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center"><p className="text-2xl mb-1">✅</p><p className="text-green-700 font-medium">Sin conflictos</p></div>;
+    return (
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className={`${color} text-white text-xs`}>
+            <th className="p-3 text-left">Carrera</th><th className="p-3 text-left">Año</th>
+            {showSede && <th className="p-3 text-left">Sede</th>}
+            <th className="p-3 text-center">Día</th><th className="p-3 text-center">Hora</th>
+            <th className="p-3 text-left">Cátedras en conflicto</th>
+          </tr></thead>
+          <tbody>{items.map((conf, i) => (
+            <tr key={i} className="border-b bg-yellow-50 hover:bg-yellow-100">
+              <td className="p-3 font-medium text-xs">{conf.carrera}</td>
+              <td className="p-3 text-xs">{conf.anno}</td>
+              {showSede && <td className="p-3 text-xs">{conf.sede_plan}</td>}
+              <td className="p-3 text-center font-bold">{conf.dia}</td>
+              <td className="p-3 text-center font-bold">{conf.hora}</td>
+              <td className="p-3"><div className="flex flex-wrap gap-1">
+                {conf.catedras_en_conflicto.map((c, j) => (
+                  <span key={j} className="px-2 py-1 bg-red-100 border border-red-300 rounded text-xs">
+                    <span className="font-mono font-bold">{c.codigo}</span> {c.nombre?.substring(0, 25)}
+                    {c.docente && <span className="text-emerald-600 ml-1 font-medium">({c.docente})</span>}
+                    {!c.docente && <span className="text-slate-400 ml-1">(sin doc.)</span>}
+                  </span>
+                ))}
+              </div></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div className="p-8">
@@ -1597,7 +1631,7 @@ function SolapamientosView({ solapamientos, cuatrimestre, tab: initialTab = 'hor
           🕐 Horarios/Docentes ({solapamientos.length})
         </button>
         <button onClick={() => setTab('carreras')} className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'carreras' ? 'bg-red-600 text-white' : 'bg-slate-100'}`}>
-          🎓 Entre Carreras ({carrConflictos.length})
+          🎓 Entre Carreras ({totalCarr})
         </button>
       </div>
 
@@ -1626,53 +1660,65 @@ function SolapamientosView({ solapamientos, cuatrimestre, tab: initialTab = 'hor
         carreraConf?.sin_plan ? (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-8 text-center">
             <p className="text-4xl mb-2">📥</p>
-            <p className="text-amber-700 font-medium">Importá primero el molde de horarios (Horarios.xlsx) para detectar solapamientos entre carreras</p>
-          </div>
-        ) : carrConflictos.length === 0 ? (
-          <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
-            <p className="text-4xl mb-2">✅</p><p className="text-green-700 font-medium text-lg">No hay solapamientos entre carreras</p>
-            <p className="text-green-600 text-sm mt-2">Ningún alumno tiene dos materias de su misma carrera y año al mismo día y hora</p>
+            <p className="text-amber-700 font-medium">Importá primero el molde de horarios para detectar solapamientos entre carreras</p>
           </div>
         ) : (
           <>
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-              <p className="text-red-700 font-bold">{carrConflictos.length} solapamientos detectados entre cátedras de una misma carrera</p>
-              <p className="text-red-600 text-sm">Los alumnos de estas carreras no podrían cursar ambas materias porque se dan el mismo día y hora.</p>
+            <div className="grid grid-cols-4 gap-4 mb-6">
+              <div className="bg-white rounded-xl border p-4 text-center">
+                <p className={`text-3xl font-bold ${totalCarr > 0 ? 'text-red-600' : 'text-green-600'}`}>{totalCarr}</p>
+                <p className="text-xs text-slate-500">Total conflictos</p>
+              </div>
+              <div className="bg-white rounded-xl border p-4 text-center">
+                <p className={`text-3xl font-bold ${(carreraConf?.total_presencial||0) > 0 ? 'text-blue-600' : 'text-green-600'}`}>{carreraConf?.total_presencial || 0}</p>
+                <p className="text-xs text-slate-500">🏫 Presenciales</p>
+              </div>
+              <div className="bg-white rounded-xl border p-4 text-center">
+                <p className={`text-3xl font-bold ${(carreraConf?.total_cied||0) > 0 ? 'text-purple-600' : 'text-green-600'}`}>{carreraConf?.total_cied || 0}</p>
+                <p className="text-xs text-slate-500">🖥️ CIED</p>
+              </div>
+              <div className="bg-white rounded-xl border p-4 text-center">
+                <p className={`text-3xl font-bold ${(carreraConf?.total_docentes||0) > 0 ? 'text-orange-600' : 'text-green-600'}`}>{carreraConf?.total_docentes || 0}</p>
+                <p className="text-xs text-slate-500">👨‍🏫 Docentes</p>
+              </div>
             </div>
-            <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-              <table className="w-full text-sm">
-                <thead><tr className="bg-red-800 text-white text-xs">
-                  <th className="p-3 text-left">Carrera</th>
-                  <th className="p-3 text-left">Año</th>
-                  <th className="p-3 text-left">Sede</th>
-                  <th className="p-3 text-center">Día</th>
-                  <th className="p-3 text-center">Hora</th>
-                  <th className="p-3 text-left">Cátedras en conflicto</th>
-                  <th className="p-3 text-left">Sugerencia</th>
-                </tr></thead>
-                <tbody>
-                  {carrConflictos.map((conf, i) => (
-                    <tr key={i} className="border-b bg-yellow-50 hover:bg-yellow-100">
-                      <td className="p-3 font-medium text-xs">{conf.carrera}</td>
-                      <td className="p-3 text-xs">{conf.anno}</td>
-                      <td className="p-3 text-xs">{conf.sede_plan}</td>
-                      <td className="p-3 text-center font-bold">{conf.dia}</td>
-                      <td className="p-3 text-center font-bold">{conf.hora}</td>
-                      <td className="p-3">
-                        <div className="flex flex-wrap gap-1">
-                          {conf.catedras_en_conflicto.map((c, j) => (
-                            <span key={j} className="px-2 py-1 bg-red-100 border border-red-300 rounded text-xs">
-                              <span className="font-mono font-bold">{c.codigo}</span> {c.nombre}
-                              {c.docente && <span className="text-slate-500 ml-1">({c.docente})</span>}
+
+            <div className="mb-6">
+              <h3 className="text-lg font-bold text-blue-800 mb-3 flex items-center gap-2">🏫 Presenciales <span className="text-sm font-normal text-slate-500">— Alumnos que no pueden cursar dos materias de su carrera porque coinciden en día/hora en su sede</span></h3>
+              {renderConflictTable(carreraConf?.presencial, 'bg-blue-800')}
+            </div>
+
+            <div className="mb-6">
+              <h3 className="text-lg font-bold text-purple-800 mb-3 flex items-center gap-2">🖥️ CIED <span className="text-sm font-normal text-slate-500">— Solo si NO hay ninguna combinación de horarios que evite el conflicto</span></h3>
+              {renderConflictTable(carreraConf?.cied, 'bg-purple-800', false)}
+            </div>
+
+            <div className="mb-6">
+              <h3 className="text-lg font-bold text-orange-800 mb-3 flex items-center gap-2">👨‍🏫 Docentes <span className="text-sm font-normal text-slate-500">— Un mismo docente asignado a dos cátedras distintas al mismo tiempo</span></h3>
+              {carreraConf?.docentes?.length > 0 ? (
+                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead><tr className="bg-orange-800 text-white text-xs">
+                      <th className="p-3 text-left">Docente</th><th className="p-3 text-center">Día</th><th className="p-3 text-center">Hora</th>
+                      <th className="p-3 text-left">Cátedras en conflicto</th>
+                    </tr></thead>
+                    <tbody>{carreraConf.docentes.map((conf, i) => (
+                      <tr key={i} className="border-b bg-yellow-50 hover:bg-yellow-100">
+                        <td className="p-3 font-bold text-orange-700">{conf.docente}</td>
+                        <td className="p-3 text-center font-bold">{conf.dia}</td>
+                        <td className="p-3 text-center font-bold">{conf.hora}</td>
+                        <td className="p-3"><div className="flex flex-wrap gap-1">
+                          {conf.asignaciones.map((a, j) => (
+                            <span key={j} className="px-2 py-1 bg-orange-100 border border-orange-300 rounded text-xs">
+                              <span className="font-mono font-bold">{a.codigo}</span> {a.nombre?.substring(0, 25)} <span className="text-slate-500">({a.sede})</span>
                             </span>
                           ))}
-                        </div>
-                      </td>
-                      <td className="p-3 text-xs text-slate-600 italic">{conf.sugerencia}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </div></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ) : <div className="bg-green-50 border border-green-200 rounded-xl p-6 text-center"><p className="text-2xl mb-1">✅</p><p className="text-green-700 font-medium">Ningún docente está asignado a dos cátedras distintas al mismo tiempo</p></div>}
             </div>
           </>
         )
@@ -2560,6 +2606,7 @@ export default function App() {
   const [cuatrimestres, setCuatrimestres] = useState([]);
   const [solapamientos, setSolapamientos] = useState([]);
   const [necesitanDocente, setNecesitanDocente] = useState([]);
+  const [solapCarrerasCount, setSolapCarrerasCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
   const cargarDatos = useCallback(async () => {
@@ -2572,6 +2619,7 @@ export default function App() {
     try { setDocentes(await apiFetch(`/api/docentes${qParam}`)); } catch (e) { console.error(e); }
     try { setSolapamientos(await apiFetch(`/api/horarios/solapamientos${qParam}`)); } catch (e) { console.error(e); }
     try { setNecesitanDocente(await apiFetch(`/api/catedras/necesitan-docente${qParam}`)); } catch (e) { console.error(e); }
+    try { const sc = await apiFetch(`/api/solapamientos-carreras${qParam}`); setSolapCarrerasCount(sc.total || 0); } catch (e) { console.error(e); }
     setLoading(false);
   }, [cuatrimestre]);
 
@@ -2584,7 +2632,7 @@ export default function App() {
     <div className="flex min-h-screen bg-slate-100">
       <Sidebar activeView={activeView} setActiveView={setActiveView} cuatrimestre={cuatrimestre}
         setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres}
-        solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} />
+        solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} solapCarrerasCount={solapCarrerasCount} />
       <main className="flex-1 overflow-auto">
         {activeView === 'dashboard' && <DashboardView cuatrimestre={cuatrimestre} setActiveView={setActiveView} />}
         {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
