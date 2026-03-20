@@ -915,6 +915,40 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
   const [modalNuevo, setModalNuevo] = useState(false);
   const [buscar, setBuscar] = useState('');
 
+  // v15: editStore persiste datos editables en un ref que NUNCA se pierde
+  const editStore = useRef({});
+  const editInitialized = useRef(false);
+  if (!editInitialized.current && docentes.length > 0) {
+    docentes.forEach(d => {
+      if (!editStore.current[d.id]) {
+        editStore.current[d.id] = {
+          horas_asignadas: d.horas_asignadas || 0,
+          materias_av: d.materias_av || 0,
+          materias_cab: d.materias_cab || 0,
+          materias_vl: d.materias_vl || 0,
+          sociedad_cfpea: d.sociedad_cfpea || false,
+          sociedad_isftea: d.sociedad_isftea || false,
+          notas: d.notas || '',
+        };
+      }
+    });
+    editInitialized.current = true;
+  }
+  // Also add new docentes that weren't there at init
+  docentes.forEach(d => {
+    if (!editStore.current[d.id]) {
+      editStore.current[d.id] = {
+        horas_asignadas: d.horas_asignadas || 0,
+        materias_av: d.materias_av || 0,
+        materias_cab: d.materias_cab || 0,
+        materias_vl: d.materias_vl || 0,
+        sociedad_cfpea: d.sociedad_cfpea || false,
+        sociedad_isftea: d.sociedad_isftea || false,
+        notas: d.notas || '',
+      };
+    }
+  });
+
   const stats = useMemo(() => {
     const s = { PRESENCIAL_VIRTUAL: 0, SEDE_VIRTUAL: 0, REMOTO: 0, SIN_ASIGNACIONES: 0 };
     let horas_cfpea = 0, horas_isftea = 0, horas_total = 0;
@@ -1023,7 +1057,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                     <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
                   </td>
                   <td className="p-1" colSpan="7">
-                    <DocenteEditRow docente={d} />
+                    <DocenteEditRow docId={d.id} editStore={editStore} />
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -1388,18 +1422,30 @@ function PlanCarreraView({ cuatrimestre }) {
   const [carreraAbierta, setCarreraAbierta] = useState({});
   const [importando, setImportando] = useState(false);
 
-  const cargar = async () => {
+  const cargar = async (sedeOverride) => {
     setLoading(true);
     try {
       const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
       const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-      const sedeP = sedeActiva ? `${qp ? '&' : '?'}sede=${encodeURIComponent(sedeActiva)}` : '';
+      const sede = sedeOverride || sedeActiva;
+      const sedeP = sede ? `${qp ? '&' : '?'}sede=${encodeURIComponent(sede)}` : '';
       setData(await apiFetch(`/api/plan-carrera/sugerencias${qp}${sedeP}`));
     } catch (e) { console.error(e); }
     setLoading(false);
   };
 
-  useEffect(() => { cargar(); }, [cuatrimestre, sedeActiva]);
+  // ALL hooks BEFORE any conditional return
+  useEffect(() => { cargar(); }, [cuatrimestre]);
+  
+  // Set default sede when data arrives
+  useEffect(() => {
+    if (data?.sedes) {
+      const keys = Object.keys(data.sedes);
+      if (keys.length > 0 && !sedeActiva) {
+        setSedeActiva(keys[0]);
+      }
+    }
+  }, [data]);
 
   const importarPlan = async (e) => {
     const file = e.target.files?.[0];
@@ -1410,7 +1456,7 @@ function PlanCarreraView({ cuatrimestre }) {
       form.append('file', file);
       const res = await fetch(`${API_URL}/api/importar/plan-carrera`, { method: 'POST', body: form });
       const r = await res.json();
-      alert(`✅ ${r.importados} registros importados de ${r.hojas?.length || 0} hojas`);
+      alert(`✅ ${r.importados} registros importados`);
       cargar();
     } catch (e) { alert('Error: ' + e.message); }
     setImportando(false);
@@ -1421,12 +1467,16 @@ function PlanCarreraView({ cuatrimestre }) {
     setCarreraAbierta(prev => ({...prev, [key]: !prev[key]}));
   };
 
+  const cambiarSede = (s) => {
+    setSedeActiva(s);
+    cargar(s);
+  };
+
+  // Conditional return AFTER all hooks
   if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
 
   const sedes = data?.sedes || {};
   const sedeKeys = Object.keys(sedes);
-  // Default to first sede
-  useEffect(() => { if (data && sedeKeys.length > 0 && !sedeActiva) setSedeActiva(sedeKeys[0]); }, [data]); // eslint-disable-line
 
   return (
     <div className="p-8">
@@ -1451,7 +1501,7 @@ function PlanCarreraView({ cuatrimestre }) {
         <>
           <div className="flex gap-2 mb-6 flex-wrap">
             {sedeKeys.map(s => (
-              <button key={s} onClick={() => setSedeActiva(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
+              <button key={s} onClick={() => cambiarSede(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
             ))}
           </div>
 
@@ -2087,72 +2137,68 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v15.0: DOCENTE ROW EDITOR — UN SOLO GUARDAR ====================
-function DocenteEditRow({ docente }) {
-  const [vals, setVals] = useState({
-    horas_asignadas: docente.horas_asignadas || 0,
-    materias_av: docente.materias_av || 0,
-    materias_cab: docente.materias_cab || 0,
-    materias_vl: docente.materias_vl || 0,
-    sociedad_cfpea: docente.sociedad_cfpea || false,
-    sociedad_isftea: docente.sociedad_isftea || false,
-    notas: docente.notas || '',
-  });
+// ==================== v15.0: DOCENTE ROW EDITOR — ESTADO EN EL PADRE ====================
+// DocenteEditRow reads/writes from a shared editStore ref, never loses data
+function DocenteEditRow({ docId, editStore, onSave }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  const vals = editStore.current[docId] || {};
   const set = (campo, valor) => {
-    setVals(prev => ({...prev, [campo]: valor}));
+    editStore.current[docId] = {...editStore.current[docId], [campo]: valor};
     setDirty(true); setSaved(false);
   };
 
   const guardar = async () => {
     setSaving(true);
+    const data = editStore.current[docId];
     try {
-      await fetch(`${API_URL}/api/docentes/${docente.id}`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(vals)
+      const payload = {
+        horas_asignadas: parseInt(data.horas_asignadas) || 0,
+        materias_av: parseInt(data.materias_av) || 0,
+        materias_cab: parseInt(data.materias_cab) || 0,
+        materias_vl: parseInt(data.materias_vl) || 0,
+        sociedad_cfpea: !!data.sociedad_cfpea,
+        sociedad_isftea: !!data.sociedad_isftea,
+        notas: data.notas || '',
+      };
+      const res = await fetch(`${API_URL}/api/docentes/${docId}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
       });
+      if (!res.ok) throw new Error('Error del servidor');
       setDirty(false); setSaved(true);
       setTimeout(() => setSaved(false), 3000);
-    } catch (e) { alert('Error: ' + e.message); }
+    } catch (e) { alert('Error al guardar: ' + e.message); }
     setSaving(false);
   };
 
-  const numInput = (campo, label) => (
-    <div className="text-center">
-      <label className="text-[8px] text-slate-400 block">{label}</label>
-      <input type="number" min="0" max="99"
-        className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : 'border-slate-200'}`}
-        value={vals[campo]} onChange={e => set(campo, e.target.value)}
-        onKeyDown={e => e.key === 'Enter' && guardar()} />
-    </div>
-  );
+  // Force re-render when editStore changes (using a trick)
+  const [, forceUpdate] = useState(0);
+  const setAndUpdate = (campo, valor) => { set(campo, valor); forceUpdate(n => n + 1); };
 
   return (
-    <div className="flex items-center gap-2">
-      {numInput('horas_asignadas', 'Horas')}
-      {numInput('materias_av', 'Av')}
-      {numInput('materias_cab', 'Cab')}
-      {numInput('materias_vl', 'VL')}
-      <div className="text-center">
-        <label className="text-[8px] text-slate-400 block">CFPEA</label>
-        <input type="checkbox" checked={vals.sociedad_cfpea} onChange={e => set('sociedad_cfpea', e.target.checked)} className="w-4 h-4" />
-      </div>
-      <div className="text-center">
-        <label className="text-[8px] text-slate-400 block">ISFTEA</label>
-        <input type="checkbox" checked={vals.sociedad_isftea} onChange={e => set('sociedad_isftea', e.target.checked)} className="w-4 h-4" />
-      </div>
-      <div className="flex-1">
-        <input type="text" placeholder="Notas..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : 'border-slate-200'}`}
-          value={vals.notas} onChange={e => set('notas', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+    <div className="flex items-center gap-2 flex-wrap">
+      {[['horas_asignadas','Hs'],['materias_av','Av'],['materias_cab','Cab'],['materias_vl','VL']].map(([campo,label]) => (
+        <div key={campo} className="text-center">
+          <label className="text-[8px] text-slate-400 block">{label}</label>
+          <input type="number" min="0" max="99" className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
+            value={vals[campo] ?? 0} onChange={e => setAndUpdate(campo, e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+        </div>
+      ))}
+      {[['sociedad_cfpea','CFPEA'],['sociedad_isftea','ISFTEA']].map(([campo,label]) => (
+        <div key={campo} className="text-center">
+          <label className="text-[8px] text-slate-400 block">{label}</label>
+          <input type="checkbox" checked={!!vals[campo]} onChange={e => setAndUpdate(campo, e.target.checked)} className="w-4 h-4" />
+        </div>
+      ))}
+      <div className="flex-1 min-w-[80px]">
+        <input type="text" placeholder="Notas..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
+          value={vals.notas ?? ''} onChange={e => setAndUpdate('notas', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
       </div>
       <button onClick={guardar} disabled={saving}
-        className={`px-3 py-1 rounded text-xs font-bold whitespace-nowrap ${
-          saved ? 'bg-emerald-500 text-white' : dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'
-        }`}>
-        {saving ? '⏳' : saved ? '✅ Guardado' : dirty ? '💾 GUARDAR' : '—'}
+        className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap ${saved ? 'bg-emerald-500 text-white' : dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'}`}>
+        {saving ? '⏳' : saved ? '✅' : dirty ? '💾 GUARDAR' : '—'}
       </button>
     </div>
   );
