@@ -2066,10 +2066,13 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
             anno = _calc_anno(fecha, inicio)
             carrera_norm = _extract_carrera(curso)
             plan_key = find_plan_key(carrera_norm)
-            # Get what they SHOULD take
+            # Get what they SHOULD take (excluding Prácticas Profesionalizantes)
             should_codes = set()
             if plan_key and anno in plan.get(plan_key, {}):
-                should_codes = plan[plan_key][anno]
+                for cod in plan[plan_key][anno]:
+                    name_upper = (cat_names_db.get(cod, '') or '').upper()
+                    if 'PROFESIONALIZANTE' not in name_upper and 'PRACTICA PROFESIONAL' not in name_upper:
+                        should_codes.add(cod)
             # Get what they ARE taking
             actual_codes = dni_to_codes.get(dni, set())
             # Compare
@@ -2098,18 +2101,119 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
                     estado = 'MATERIAS_EXTRA'
                     stats['sobran'] += 1
             results.append({
-                'dni': dni, 'nombre': nombre[:30], 'sede': sede[:15], 'curso': curso[:45],
-                'anno': anno, 'carrera_plan': (plan_key or carrera_norm or '?')[:40],
+                'dni': dni, 'nombre': nombre, 'sede': sede, 'curso': curso[:55],
+                'anno': anno, 'carrera_plan': (plan_key or carrera_norm or '?')[:45],
                 'estado': estado, 'is_doble': is_doble,
-                'debe_cursar': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(should_codes)][:15],
-                'inscripto_a': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(actual_codes)][:15],
-                'faltantes': [f"{c} ({cat_names_db.get(c, '')})" for c in faltantes][:10],
-                'sobrantes': [f"{c} ({cat_names_db.get(c, '')})" for c in sobrantes][:10],
+                'debe_cursar': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(should_codes)],
+                'inscripto_a': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(actual_codes)],
+                'faltantes': [f"{c} ({cat_names_db.get(c, '')})" for c in faltantes],
+                'sobrantes': [f"{c} ({cat_names_db.get(c, '')})" for c in sobrantes],
             })
     wb.close()
     results.sort(key=lambda x: (0 if x['estado']=='CORRECTO' else 1 if x['estado']=='MATERIAS_EXTRA' else 2 if x['estado'].startswith('FALTAN') else 3, x['nombre']))
-    return {"results": results[:500], "stats": stats, "total_results": len(results),
+    return {"results": results, "stats": stats, "total_results": len(results),
         "_debug": {"plan_carreras": len(plan), "inscripciones_db": len(all_insc), "dnis_con_inscripciones": len(dni_to_codes), "cuatrimestre_id": cuatrimestre_id}}
+
+
+@app.post("/api/control-inscripciones/exportar")
+async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from openpyxl import load_workbook, Workbook
+    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
+    from starlette.responses import Response
+    import io, re, math
+    from sqlalchemy import text
+    content = await file.read()
+    wb_in = load_workbook(io.BytesIO(content))
+    # Same logic as control_inscripciones
+    plan = {}; cat_names_db = {}
+    try:
+        for r in db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall():
+            key = r[1].upper().strip()
+            if key not in plan: plan[key] = {}
+            if r[2] not in plan[key]: plan[key][r[2]] = set()
+            plan[key][r[2]].add(r[3])
+            cat_names_db[r[3]] = (r[4] or '')[:30]
+    except: pass
+    for c in db.query(Catedra).all(): cat_names_db[c.codigo] = c.nombre[:30]
+    insc_q = db.query(Inscripcion)
+    if cuatrimestre_id and cuatrimestre_id > 0: insc_q = insc_q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    dni_to_codes = {}
+    for ins in insc_q.all():
+        if not ins.alumno: continue
+        dni_raw = (ins.alumno.dni or '').strip()
+        if not dni_raw: continue
+        dni = dni_raw.replace('.0','').lstrip('0') or dni_raw
+        if dni not in dni_to_codes: dni_to_codes[dni] = set()
+        if ins.catedra: dni_to_codes[dni].add(ins.catedra.codigo)
+        if dni_raw not in dni_to_codes: dni_to_codes[dni_raw] = dni_to_codes[dni]
+    def find_plan_key(cn):
+        if not cn: return None
+        ck = cn.upper().strip()
+        if ck in plan: return ck
+        for k in plan:
+            if ck in k or k in ck: return k
+            if ck[:25] == k[:25]: return k
+        return None
+    # Process
+    rows_out = []
+    for ws in wb_in.worksheets:
+        if ws.title.upper() in ['INSTRUCTIVO', 'BCE Y BEA']: continue
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i < 2: continue
+            vals = list(row)
+            if len(vals) < 11: continue
+            nombre = f"{str(vals[1] or '')} {str(vals[2] or '')}".strip()
+            try: dni = str(int(float(str(vals[3] or ''))))
+            except: dni = str(vals[3] or '').replace('.0','').strip()
+            fecha = str(vals[4] or '').strip(); inicio = str(vals[5] or '').strip()
+            sede = str(vals[9] or '').strip(); curso = str(vals[10] or '').strip()
+            if not nombre or not curso or curso == 'None': continue
+            anno = _calc_anno(fecha, inicio)
+            carrera_norm = _extract_carrera(curso)
+            plan_key = find_plan_key(carrera_norm)
+            should = set()
+            if plan_key and anno in plan.get(plan_key, {}):
+                for cod in plan[plan_key][anno]:
+                    nm = (cat_names_db.get(cod,'') or '').upper()
+                    if 'PROFESIONALIZANTE' not in nm and 'PRACTICA PROFESIONAL' not in nm: should.add(cod)
+            actual = dni_to_codes.get(dni, set())
+            faltan = sorted(should - actual); sobran = sorted(actual - should)
+            if not plan_key: estado = 'SIN PLAN'
+            elif not actual: estado = 'SIN INSCRIPCIONES'
+            elif not faltan and not sobran: estado = 'CORRECTO'
+            elif faltan and sobran: estado = 'FALTAN Y SOBRAN'
+            elif faltan: estado = 'FALTAN MATERIAS'
+            else: estado = 'MATERIAS EXTRA'
+            rows_out.append([nombre, dni, sede, curso[:55], anno, estado,
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in sorted(should)]),
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in sorted(actual)]),
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in faltan]),
+                ', '.join([f"{c} ({cat_names_db.get(c,'')})" for c in sobran])])
+    wb_in.close()
+    # Build Excel
+    wb_out = Workbook(); ws_out = wb_out.active; ws_out.title = 'Control Inscripciones'
+    hdr_fill = PatternFill(start_color='1E3A5F', end_color='1E3A5F', fill_type='solid')
+    hdr_font = Font(bold=True, color='FFFFFF', size=10)
+    fills = {'CORRECTO': PatternFill(start_color='D5F5E3', fill_type='solid'),
+        'MATERIAS EXTRA': PatternFill(start_color='D6EAF8', fill_type='solid'),
+        'FALTAN MATERIAS': PatternFill(start_color='FEF9E7', fill_type='solid'),
+        'FALTAN Y SOBRAN': PatternFill(start_color='FADBD8', fill_type='solid'),
+        'SIN INSCRIPCIONES': PatternFill(start_color='F5B7B1', fill_type='solid'),
+        'SIN PLAN': PatternFill(start_color='EAECEE', fill_type='solid')}
+    border = Border(left=Side(style='thin',color='CCCCCC'), right=Side(style='thin',color='CCCCCC'),
+        top=Side(style='thin',color='CCCCCC'), bottom=Side(style='thin',color='CCCCCC'))
+    headers = ['Alumno','DNI','Sede','Carrera','Año','Estado','Debe cursar','Inscripto a','Faltantes','Sobrantes']
+    for col, h in enumerate(headers, 1):
+        c = ws_out.cell(row=1, column=col, value=h); c.fill = hdr_fill; c.font = hdr_font; c.border = border
+    for i, rd in enumerate(rows_out, 2):
+        fill = fills.get(rd[5], fills['SIN PLAN'])
+        for col, val in enumerate(rd, 1):
+            c = ws_out.cell(row=i, column=col, value=val); c.fill = fill; c.border = border
+            c.font = Font(size=9); c.alignment = Alignment(wrap_text=True, vertical='top')
+    for i, w in enumerate([25,12,15,40,10,18,55,55,45,45], 1): ws_out.column_dimensions[chr(64+i)].width = w
+    buf = io.BytesIO(); wb_out.save(buf); buf.seek(0)
+    return Response(content=buf.read(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename=control_inscripciones.xlsx'})
 
 
 # ===== v16.0: Motor de sugerencias de armado de horarios =====
