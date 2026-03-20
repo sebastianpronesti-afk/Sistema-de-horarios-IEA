@@ -1940,6 +1940,302 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
     return {"sedes": sedes_result, "plan_importado": True, "total_registros": len(rows)}
 
 
+# ===== v16.0: Control de inscripciones a materias =====
+@app.post("/api/control-inscripciones")
+async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    from datetime import datetime
+    import io
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    from sqlalchemy import text
+    # 1) Load plan_carrera
+    try: plan_rows = db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall()
+    except: return {"error": "Importá primero el plan de carrera"}
+    # Build: carrera_keyword → {anno → [codigos]}
+    plan_map = {}  # (carrera_key, anno) → [(codigo, nombre)]
+    carrera_keywords = {}  # keyword → carrera_name
+    for r in plan_rows:
+        carrera = r[1]; anno = r[2]; cod = r[3]; nombre = r[4]
+        key = (carrera, anno)
+        if key not in plan_map: plan_map[key] = []
+        plan_map[key].append({"codigo": cod, "nombre": nombre})
+        # Build keyword index from carrera name
+        words = carrera.upper().replace('TECNICO SUPERIOR EN ', '').replace('TECNICATURA SUPERIOR EN ', '').strip()
+        carrera_keywords[words] = carrera
+    # 2) Load inscripciones by DNI
+    insc_q = db.query(Inscripcion)
+    if cuatrimestre_id: insc_q = insc_q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    inscripciones = insc_q.all()
+    # Build: alumno_dni → set of catedra_codigos
+    alumno_cats = {}
+    for insc in inscripciones:
+        if not insc.alumno: continue
+        dni = (insc.alumno.dni or '').strip()
+        if not dni: continue
+        if dni not in alumno_cats: alumno_cats[dni] = set()
+        if insc.catedra:
+            alumno_cats[dni].add(insc.catedra.codigo)
+    # 3) Parse control file
+    results = []; sin_materias = []; correctos = 0; incorrectos = 0
+    current_year = 2026  # Academic year
+    for ws_name in ['Terciaria', 'BCE Y BEA']:
+        ws = wb[ws_name] if ws_name in wb.sheetnames else None
+        if not ws: continue
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i < 2: continue
+            vals = list(row)
+            if len(vals) < 11: continue
+            id_val = str(vals[0] or '').strip()
+            try: int(float(id_val))
+            except: continue
+            nombre = str(vals[1] or '').strip()
+            apellido = str(vals[2] or '').strip()
+            dni_raw = str(vals[3] or '').strip().replace('.0', '').split('.')[0]
+            fecha_insc = str(vals[4] or '').strip()
+            inicio = str(vals[5] or '').strip()
+            turno = str(vals[6] or '').strip()
+            sede = str(vals[9] or '').strip()
+            curso = str(vals[10] or '').strip()
+            if not curso or curso == 'None': continue
+            # Calculate año de cursada from fecha
+            try:
+                if '-' in fecha_insc:
+                    dt = datetime.strptime(fecha_insc[:10], '%Y-%m-%d')
+                else:
+                    dt = datetime.strptime(fecha_insc, '%d/%m/%Y')
+                start_year = dt.year
+            except:
+                start_year = current_year
+            anno_cursada = min(current_year - start_year + 1, 3)
+            if anno_cursada < 1: anno_cursada = 1
+            anno_label = f"{anno_cursada}ER AÑO" if anno_cursada == 1 else f"{anno_cursada}DO AÑO" if anno_cursada == 2 else f"{anno_cursada}ER AÑO"
+            if anno_cursada == 3: anno_label = "3ER AÑO"
+            # Match carrera from curso name
+            curso_upper = curso.upper()
+            matched_carrera = None
+            for kw, carrera_name in carrera_keywords.items():
+                # Check if keyword appears in curso
+                kw_words = kw.split()
+                if len(kw_words) >= 2 and all(w in curso_upper for w in kw_words):
+                    if not matched_carrera or len(kw) > len(matched_carrera[0]):
+                        matched_carrera = (kw, carrera_name)
+            # Get expected cátedras for this carrera+año
+            esperadas = []
+            if matched_carrera:
+                # Try matching anno
+                for (carrera, anno), cats in plan_map.items():
+                    if carrera == matched_carrera[1] and anno == anno_label:
+                        esperadas = cats
+                        break
+                if not esperadas:
+                    # Try with different anno format
+                    for (carrera, anno), cats in plan_map.items():
+                        if carrera == matched_carrera[1] and str(anno_cursada) in anno:
+                            esperadas = cats
+                            break
+            # Get actual inscriptions
+            inscriptas = alumno_cats.get(dni_raw, set())
+            esp_codigos = set(e['codigo'] for e in esperadas)
+            # Calculate missing and extra (only cátedras with code, not EDIs)
+            esp_reales = set(c for c in esp_codigos if c.startswith('c.'))
+            faltantes = esp_reales - inscriptas if esp_reales else set()
+            extras = inscriptas - esp_reales if esp_reales else set()
+            tiene_inscripciones = len(inscriptas) > 0
+            if not tiene_inscripciones:
+                sin_materias.append({
+                    "nombre": f"{nombre} {apellido}", "dni": dni_raw, "sede": sede,
+                    "curso": curso[:60], "anno": anno_label, "turno": turno,
+                    "carrera": matched_carrera[1][:40] if matched_carrera else "No identificada",
+                })
+            estado = "correcto" if (tiene_inscripciones and len(faltantes) == 0) else ("sin_inscripcion" if not tiene_inscripciones else "incompleto")
+            if estado == "correcto": correctos += 1
+            elif estado == "incompleto": incorrectos += 1
+            results.append({
+                "nombre": f"{nombre} {apellido}", "dni": dni_raw, "sede": sede,
+                "curso": curso[:60], "anno": anno_label, "turno": turno,
+                "carrera": matched_carrera[1][:40] if matched_carrera else "No identificada",
+                "esperadas": len(esp_reales), "inscriptas": len(inscriptas),
+                "faltantes": sorted(list(faltantes))[:10],
+                "extras": sorted(list(extras))[:5],
+                "estado": estado,
+            })
+    wb.close()
+    return {
+        "total_alumnos": len(results),
+        "correctos": correctos,
+        "incompletos": incorrectos,
+        "sin_inscripcion": len(sin_materias),
+        "sin_carrera_match": len([r for r in results if r['carrera'] == 'No identificada']),
+        "sin_materias": sin_materias[:100],
+        "detalle": results[:200],
+    }
+
+
+# ===== v16.0: Control de Inscripciones =====
+CARRERA_NORMALIZE = {
+    'ACOMPAÑANTE TERAPÉUTICO': 'TECNICO SUPERIOR EN ACOMPAÑANTE  TERAPEUTICO',
+    'ADMINISTRACIÓN DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
+    'ADMINISTRACION DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
+    'ADMINISTRACION AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
+    'ADMINISTRACIÓN AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
+    'ADMINISTRACIÓN BANCARIA': 'TECNICO SUPERIOR EN ADMINISTRACION BANCARIA',
+    'CIENCIA DE DATOS E INTELIGENCIA ARTIFICIAL': 'TECNICO SUPERIOR EN CIENCIA DE DATOS',
+    'COMERCIO INTERNACIONAL': 'TECNICO SUPERIOR EN COMERCIO',
+    'COUNSELING': 'TECNICO SUPERIOR EN COUSELING',
+    'DESARROLLO HUMANO': 'TECNICO SUPERIOR EN DESARROLLO HUMANO',
+    'DESPACHANTE DE ADUANAS': 'TECNICO SUPERIOR EN DESPACHO ADUANERO',
+    'FINANZAS': 'TECNICO SUPERIOR EN FINANZAS',
+    'GESTORÍA': 'TECNICO SUPERIOR EN GESTORIA',
+    'GUIA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
+    'GUÍA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
+    'HOTELERÍA': 'TECNICO SUPERIOR EN HOTELERIA',
+    'LOGÍSTICA': 'TECNICO SUPERIOR EN LOGISTICA',
+    'LOGISTICA': 'TECNICO SUPERIOR EN LOGISTICA',
+    'MARKETING': 'TECNICO SUPERIOR EN MARKETING',
+    'NEGOCIOS DIGITALES': 'TECNICO SUPERIOR EN NEGOCIOS DIGITALES',
+    'ORGANIZACIÓN DE EVENTOS': 'TECNICO SUPERIOR EN ORGANIZACION DE EVENTOS',
+    'PERIODISMO DEPORTIVO': 'TECNICO SUPERIOR EN PERIODISMO DEPORTIVO',
+    'PSICOPEDAGOGÍA': 'TECNICO SUPERIOR EN PSICOPEDAGOGIA',
+    'PUBLICIDAD': 'TECNICO SUPERIOR EN PUBLICIDAD',
+    'RECURSOS HUMANOS': 'TECNICO SUPERIOR EN RECURSOS HUMANOS',
+    'RELACIONES PUBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
+    'RELACIONES PÚBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
+    'RÉGIMEN ADUANERO': 'TECNICO SUPERIOR EN REGIMEN ADUANERO',
+    'SEGURIDAD E HIGIENE': 'TECNICO SUPERIOR EN HIGIENE Y SEGURIDAD',
+    'SEGUROS': 'TECNICO SUPERIOR EN SEGUROS',
+    'TRABAJO SOCIAL': 'TECNICO SUPERIOR EN TRABAJO SOCIAL',
+    'TURISMO': 'TECNICO SUPERIOR EN TURISMO',
+}
+
+def _extract_carrera(curso):
+    import re
+    c = curso.upper().strip()
+    c = re.split(r'\s*[\(]\s*(AVELLANEDA|CABALLITO|VICENTE|LINIERS|ONLINE|VIRTUAL|PILAR|MONTE|LA PLATA)', c)[0].strip()
+    c = re.split(r'\s*[\-]\s*(CIED|CURSADA|CFE|DCFE|RDCFE|RMEDGC|RMEIGC|NO DISP|RD |RM |RES)', c)[0].strip().strip(' -')
+    return CARRERA_NORMALIZE.get(c, None)
+
+def _calc_anno(fecha_str, inicio_str):
+    import math
+    try:
+        if '/' in fecha_str:
+            parts = fecha_str.split('/'); year = int(parts[2]) if len(parts[2]) == 4 else 2000 + int(parts[2])
+        elif '-' in fecha_str:
+            year = int(fecha_str[:4])
+        else: return '3ER AÑO'
+        inicio = (inicio_str or '').strip().lower()
+        start = (year - 2020) * 2 + (1 if 'agosto' in inicio or 'ago' in inicio else 0)
+        current = (2026 - 2020) * 2  # Marzo 2026
+        cuats = max(1, current - start + 1)
+        return {1:'1ER AÑO', 2:'2DO AÑO', 3:'3ER AÑO'}[min(3, math.ceil(cuats / 2))]
+    except: return '3ER AÑO'
+
+@app.post("/api/control-inscripciones")
+async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    from openpyxl import load_workbook
+    import io, re
+    content = await file.read()
+    wb = load_workbook(io.BytesIO(content), read_only=True)
+    # 1) Build plan: carrera_upper → {anno → set of codes}
+    from sqlalchemy import text
+    plan = {}; cat_names_db = {}
+    try:
+        for r in db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall():
+            key = r[1].upper().strip()
+            if key not in plan: plan[key] = {}
+            if r[2] not in plan[key]: plan[key][r[2]] = set()
+            plan[key][r[2]].add(r[3])
+            cat_names_db[r[3]] = (r[4] or '')[:30]
+    except: pass
+    # Also from catedras
+    for c in db.query(Catedra).all():
+        cat_names_db[c.codigo] = c.nombre[:30]
+    # 2) Build inscripcion lookup: DNI → set of codigos inscritos
+    insc_q = db.query(Inscripcion)
+    if cuatrimestre_id: insc_q = insc_q.filter(Inscripcion.cuatrimestre_id == cuatrimestre_id)
+    all_insc = insc_q.all()
+    dni_to_codes = {}
+    for ins in all_insc:
+        if not ins.alumno: continue
+        dni = (ins.alumno.dni or '').strip()
+        if not dni: continue
+        if dni not in dni_to_codes: dni_to_codes[dni] = set()
+        if ins.catedra: dni_to_codes[dni].add(ins.catedra.codigo)
+    # 3) Find plan key helper
+    def find_plan_key(carrera_norm):
+        if not carrera_norm: return None
+        ck = carrera_norm.upper().strip()
+        if ck in plan: return ck
+        for key in plan:
+            if ck in key or key in ck: return key
+            if ck[:25] == key[:25]: return key
+        return None
+    # 4) Process control file
+    results = []; stats = {'total': 0, 'ok': 0, 'faltan': 0, 'sobran': 0, 'sin_plan': 0, 'sin_insc': 0, 'doble': 0}
+    for ws in wb.worksheets:
+        if ws.title.upper() in ['INSTRUCTIVO', 'BCE Y BEA']: continue
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i < 2: continue
+            vals = list(row)
+            if len(vals) < 11: continue
+            nombre = f"{str(vals[1] or '')} {str(vals[2] or '')}".strip()
+            dni = str(vals[3] or '').replace('.0','').strip()
+            fecha = str(vals[4] or '').strip()
+            inicio = str(vals[5] or '').strip()
+            sede = str(vals[9] or '').strip()
+            curso = str(vals[10] or '').strip()
+            if not nombre or not curso or curso == 'None': continue
+            stats['total'] += 1
+            is_doble = 'DOBLE' in curso.upper()
+            if is_doble: stats['doble'] += 1
+            anno = _calc_anno(fecha, inicio)
+            carrera_norm = _extract_carrera(curso)
+            plan_key = find_plan_key(carrera_norm)
+            # Get what they SHOULD take
+            should_codes = set()
+            if plan_key and anno in plan.get(plan_key, {}):
+                should_codes = plan[plan_key][anno]
+            # Get what they ARE taking
+            actual_codes = dni_to_codes.get(dni, set())
+            # Compare
+            if not plan_key:
+                estado = 'SIN_PLAN'
+                stats['sin_plan'] += 1
+                faltantes = []; sobrantes = []
+            elif not actual_codes:
+                estado = 'SIN_INSCRIPCIONES'
+                stats['sin_insc'] += 1
+                faltantes = sorted(should_codes)
+                sobrantes = []
+            else:
+                faltantes = sorted(should_codes - actual_codes)
+                sobrantes = sorted(actual_codes - should_codes)
+                if not faltantes and not sobrantes:
+                    estado = 'CORRECTO'
+                    stats['ok'] += 1
+                elif faltantes and sobrantes:
+                    estado = 'FALTAN_Y_SOBRAN'
+                    stats['faltan'] += 1
+                elif faltantes:
+                    estado = 'FALTAN_MATERIAS'
+                    stats['faltan'] += 1
+                else:
+                    estado = 'MATERIAS_EXTRA'
+                    stats['sobran'] += 1
+            results.append({
+                'dni': dni, 'nombre': nombre[:30], 'sede': sede[:15], 'curso': curso[:45],
+                'anno': anno, 'carrera_plan': (plan_key or carrera_norm or '?')[:40],
+                'estado': estado, 'is_doble': is_doble,
+                'debe_cursar': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(should_codes)][:15],
+                'inscripto_a': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(actual_codes)][:15],
+                'faltantes': [f"{c} ({cat_names_db.get(c, '')})" for c in faltantes][:10],
+                'sobrantes': [f"{c} ({cat_names_db.get(c, '')})" for c in sobrantes][:10],
+            })
+    wb.close()
+    results.sort(key=lambda x: (0 if x['estado']=='CORRECTO' else 1 if x['estado']=='MATERIAS_EXTRA' else 2 if x['estado'].startswith('FALTAN') else 3, x['nombre']))
+    return {"results": results[:500], "stats": stats, "total_results": len(results)}
+
+
 # ===== v16.0: Motor de sugerencias de armado de horarios =====
 @app.get("/api/sugerencias-armado")
 def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
