@@ -1471,8 +1471,8 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
             c = str(vals[2] or '').strip()
             d = str(vals[3] or '').strip()
             e = str(vals[4] or '').strip()
-            # Detect carrera
-            for txt in [b, c]:
+            # Detect carrera in columns B, C, or D
+            for txt in [b, c, d]:
                 t_up = txt.upper()
                 if ('TECNICO' in t_up or 'TECNICATURA' in t_up) and len(txt) > 15:
                     flush_pending(current_anno)
