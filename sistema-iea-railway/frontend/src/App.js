@@ -1449,8 +1449,8 @@ function PlanCarreraView({ cuatrimestre }) {
 
   const sedes = data?.sedes || {};
   const sedeKeys = Object.keys(sedes);
-  // Default to first sede if none selected
-  useEffect(() => { if (sedeKeys.length > 0 && !sedeActiva) setSedeActiva(sedeKeys[0]); }, [sedeKeys.length]);
+  // Default to first sede
+  useEffect(() => { if (data && sedeKeys.length > 0 && !sedeActiva) setSedeActiva(sedeKeys[0]); }, [data]); // eslint-disable-line
 
   return (
     <div className="p-8">
@@ -2119,66 +2119,39 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v12.0: DOCENTE FIELD INPUT - DEFINITIVO ====================
-function DocFieldInput({ docente, campo, tipo = 'number', min = 0, max = 99 }) {
-  // Use ref to track the actual saved value from server
-  const serverVal = docente[campo];
-  const [localVal, setLocalVal] = useState(serverVal || (tipo === 'number' ? 0 : false));
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const mountedRef = useRef(true);
-  
-  // Only sync from server when NOT dirty (user hasn't changed it)
-  useEffect(() => {
-    if (!dirty && !saving) {
-      setLocalVal(serverVal || (tipo === 'number' ? 0 : false));
-    }
-  }, [serverVal, dirty, saving, tipo]);
-  
-  useEffect(() => { return () => { mountedRef.current = false; }; }, []);
+// SociedadCheck is now handled by DocFieldInput with tipo='checkbox'
 
-  const guardar = async (valToSave) => {
+// ==================== v15.0: DOCENTE FIELD - AISLADO ====================
+function DocFieldInput({ docId, campo, valorInicial, tipo = 'number', min = 0, max = 99 }) {
+  const [val, setVal] = useState(valorInicial);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const init = useRef(false);
+  useEffect(() => { if (!init.current) { setVal(valorInicial); init.current = true; } }, []);
+  const guardar = async (v) => {
     setSaving(true);
     try {
-      const payload = tipo === 'number' 
-        ? { [campo]: parseInt(valToSave) || 0 } 
-        : { [campo]: !!valToSave };
-      const res = await fetch(`${API_URL}/api/docentes/${docente.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error('Error al guardar');
-      if (mountedRef.current) { setDirty(false); }
-    } catch (e) { alert('Error guardando: ' + e.message); }
-    if (mountedRef.current) setSaving(false);
+      const payload = tipo === 'number' ? { [campo]: parseInt(v) || 0 } : { [campo]: !!v };
+      await fetch(`${API_URL}/api/docentes/${docId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      setDirty(false);
+    } catch (e) { alert('Error: ' + e.message); }
+    setSaving(false);
   };
-
   if (tipo === 'checkbox') {
-    return (
-      <input type="checkbox" checked={!!localVal} 
-        className={`w-4 h-4 cursor-pointer ${saving ? 'opacity-50' : ''}`}
-        onChange={async (e) => {
-          const nv = e.target.checked;
-          setLocalVal(nv); setDirty(true);
-          await guardar(nv);
-        }} />
-    );
+    return <input type="checkbox" checked={!!val} className={`w-4 h-4 cursor-pointer ${saving?'opacity-40':''}`}
+      onChange={e => { const nv = e.target.checked; setVal(nv); guardar(nv); }} />;
   }
   return (
     <div className="flex items-center gap-0.5">
-      <input type="number" min={min} max={max} 
-        className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-500 bg-amber-50' : ''} ${saving ? 'opacity-50' : ''}`}
-        value={localVal} 
-        onChange={e => { setLocalVal(e.target.value); setDirty(true); }}
-        onBlur={() => { if (dirty) guardar(localVal); }}
-        onKeyDown={e => { if (e.key === 'Enter') { e.target.blur(); guardar(localVal); }}} />
-      {dirty && !saving && <button onClick={() => guardar(localVal)} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
+      <input type="number" min={min} max={max}
+        className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty?'border-amber-500 bg-amber-50':''} ${saving?'opacity-40':''}`}
+        value={val} onChange={e => { setVal(e.target.value); setDirty(true); }}
+        onBlur={() => { if (dirty) guardar(val); }}
+        onKeyDown={e => { if (e.key==='Enter') { e.target.blur(); guardar(val); }}} />
+      {dirty && !saving && <button onClick={() => guardar(val)} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
     </div>
   );
 }
-
-// SociedadCheck is now handled by DocFieldInput with tipo='checkbox'
 
 // ==================== v10.0: NOTAS INPUT ====================
 function NotasInput({ item, endpoint }) {
