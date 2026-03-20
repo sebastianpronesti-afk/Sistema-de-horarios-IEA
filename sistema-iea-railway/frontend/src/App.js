@@ -1292,6 +1292,23 @@ function ControlInscripcionesView({ cuatrimestre }) {
             <input type="text" placeholder="🔍 Buscar por nombre o DNI..." value={buscar} onChange={e => setBuscar(e.target.value)}
               className="px-3 py-1.5 border rounded-lg text-sm w-48" />
             <button onClick={analizar} className="px-3 py-1.5 bg-slate-200 rounded-lg text-xs hover:bg-slate-300">📤 Nuevo análisis</button>
+            <button onClick={async () => {
+              const input2 = document.createElement('input'); input2.type = 'file'; input2.accept = '.xlsx';
+              input2.onchange = async (ev2) => {
+                const f = ev2.target.files?.[0]; if (!f) return;
+                setLoading(true);
+                try {
+                  const form2 = new FormData(); form2.append('file', f);
+                  const cuatId2 = cuatrimestre !== 'todos' ? cuatrimestre : '0';
+                  const res2 = await fetch(`${API_URL}/api/control-inscripciones/exportar?cuatrimestre_id=${cuatId2}`, { method: 'POST', body: form2 });
+                  const blob = await res2.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a'); a.href = url; a.download = 'control_inscripciones.xlsx'; a.click();
+                  URL.revokeObjectURL(url);
+                } catch (e) { alert('Error: ' + e.message); }
+                setLoading(false);
+              }; input2.click();
+            }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs hover:bg-emerald-700">📥 Exportar Excel</button>
           </div>
 
           <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
@@ -1308,7 +1325,7 @@ function ControlInscripcionesView({ cuatrimestre }) {
                 <th className="p-2 text-left">Sobrantes</th>
               </tr></thead>
               <tbody>
-                {filtered.slice(0, 200).map((r, i) => {
+                {filtered.map((r, i) => {
                   const cfg = ESTADO_CFG[r.estado] || ESTADO_CFG['SIN_PLAN'];
                   return (
                     <tr key={i} className={`border-b ${cfg.bg} hover:bg-slate-100`}>
@@ -1318,12 +1335,10 @@ function ControlInscripcionesView({ cuatrimestre }) {
                       <td className="p-2 text-center font-bold">{r.anno}</td>
                       <td className="p-2 text-center"><span className={`px-1.5 py-0.5 rounded text-white text-[9px] font-bold ${cfg.badge}`}>{cfg.label}</span></td>
                       <td className="p-2 text-[9px]">
-                        {r.debe_cursar?.slice(0,4).map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
-                        {r.debe_cursar?.length > 4 && <div className="text-slate-400">+{r.debe_cursar.length-4} más</div>}
+                        {r.debe_cursar?.map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
                       </td>
                       <td className="p-2 text-[9px]">
-                        {r.inscripto_a?.slice(0,4).map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
-                        {r.inscripto_a?.length > 4 && <div className="text-slate-400">+{r.inscripto_a.length-4} más</div>}
+                        {r.inscripto_a?.map((c,j) => <div key={j} className="text-slate-600">{c}</div>)}
                       </td>
                       <td className="p-2 text-[9px]">
                         {r.faltantes?.map((c,j) => <div key={j} className="text-red-600 font-medium">{c}</div>)}
@@ -1337,7 +1352,7 @@ function ControlInscripcionesView({ cuatrimestre }) {
               </tbody>
             </table>
           </div>
-          <p className="text-sm text-slate-500 mt-3 text-center">Mostrando {Math.min(filtered.length, 200)} de {filtered.length} alumnos{data.total_results > 500 ? ` (de ${data.total_results} totales)` : ''}</p>
+          <p className="text-sm text-slate-500 mt-3 text-center">{filtered.length} alumnos{data.total_results !== filtered.length ? ` (de ${data.total_results} totales)` : ''}</p>
           {data._debug && st.total === 0 && (
             <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm">
               <p className="font-bold text-amber-800">⚠️ No se procesaron alumnos. Verificá:</p>
