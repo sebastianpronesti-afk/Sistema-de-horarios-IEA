@@ -1936,6 +1936,7 @@ function BceBeaView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, re
 function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   const [uploading, setUploading] = useState('');
   const [resultado, setResultado] = useState(null);
+  const [horariosPreview, setHorariosPreview] = useState(null);
   const [cuatriSeleccionado, setCuatriSeleccionado] = useState(
     cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1')
   );
@@ -2075,13 +2076,88 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
       </div>
 
       <div className="bg-white rounded-xl border p-6 mb-6 border-emerald-200">
-        <h3 className="font-semibold mb-2">📅 Importar Horarios Masivo</h3>
-        <p className="text-sm text-slate-500 mb-1">Importa asignaciones de cátedras con día, hora, sede y docente desde un Excel.</p>
-        <p className="text-xs text-slate-400 mb-3">Columnas: Código | Materia | Día | Hora | Sede | Docente. Si el docente no existe en el sistema, se saltea y se lista al final.</p>
-        <button onClick={() => subirArchivo('/api/importar/horarios-masivo', 'Horarios Masivo', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'Horarios Masivo'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-emerald-600 text-white hover:bg-emerald-700">
-          {uploading === 'Horarios Masivo' ? '⏳...' : '📤 Importar horarios con docentes'}
+        <h3 className="font-semibold mb-2">📅 Importar Horarios y Designaciones</h3>
+        <p className="text-sm text-slate-500 mb-1">Importa asignaciones con día, hora, sede y docente. <strong>Borra las asignaciones anteriores</strong> y carga las nuevas.</p>
+        <p className="text-xs text-slate-400 mb-3">Paso 1: Vista previa de cambios → Paso 2: Confirmar y aplicar. Docentes no existentes se crean automáticamente.</p>
+        {!horariosPreview ? (
+          <button onClick={async () => {
+            const input = document.createElement('input'); input.type = 'file'; input.accept = '.xlsx';
+            input.onchange = async (ev) => {
+              const file = ev.target.files?.[0]; if (!file) return;
+              setUploading('Preview Horarios');
+              try {
+                const form = new FormData(); form.append('file', file);
+                const res = await fetch(`${API_URL}/api/importar/horarios-preview?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
+                const data = await res.json();
+                setHorariosPreview({ data, file });
+              } catch (e) { alert('Error: ' + e.message); }
+              setUploading(null);
+            }; input.click();
+          }} disabled={uploading === 'Preview Horarios'}
+            className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-emerald-600 text-white hover:bg-emerald-700">
+            {uploading === 'Preview Horarios' ? '⏳ Analizando...' : '🔍 Paso 1: Analizar Excel de horarios'}
+          </button>
+        ) : (
+          <div>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-3">
+              <p className="font-bold text-emerald-800 text-lg mb-2">Vista previa de cambios</p>
+              <div className="grid grid-cols-3 gap-3 text-sm mb-3">
+                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-red-600">{horariosPreview.data.asignaciones_actuales_a_borrar}</p><p className="text-xs text-slate-500">Se borran</p></div>
+                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-emerald-600">{horariosPreview.data.asignaciones_nuevas}</p><p className="text-xs text-slate-500">Se crean</p></div>
+                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-blue-600">{horariosPreview.data.con_docente_existente}</p><p className="text-xs text-slate-500">Con docente</p></div>
+              </div>
+              {horariosPreview.data.docentes_a_crear?.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
+                  <p className="font-medium text-amber-800 text-sm">🆕 Se crearán {horariosPreview.data.docentes_a_crear.length} docentes nuevos:</p>
+                  <p className="text-xs text-amber-600 mt-1">{horariosPreview.data.docentes_a_crear.join(', ')}</p>
+                </div>
+              )}
+              {horariosPreview.data.catedras_no_encontradas?.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
+                  <p className="font-medium text-red-800 text-sm">⚠️ Cátedras no encontradas:</p>
+                  <p className="text-xs text-red-600 mt-1">{horariosPreview.data.catedras_no_encontradas.join(', ')}</p>
+                </div>
+              )}
+              {horariosPreview.data.preview?.length > 0 && (
+                <details className="mt-2"><summary className="text-xs text-slate-500 cursor-pointer">Ver primeras {horariosPreview.data.preview.length} asignaciones</summary>
+                  <div className="mt-2 max-h-48 overflow-y-auto text-[10px]">
+                    <table className="w-full"><thead><tr className="bg-slate-100"><th className="p-1">Cát.</th><th className="p-1">Nombre</th><th className="p-1">Día</th><th className="p-1">Hora</th><th className="p-1">Sede</th><th className="p-1">Docente</th><th className="p-1">Est.</th></tr></thead>
+                    <tbody>{horariosPreview.data.preview.map((r,i) => <tr key={i} className="border-b"><td className="p-1 font-mono">{r.cat}</td><td className="p-1">{r.nombre}</td><td className="p-1">{r.dia}</td><td className="p-1">{r.hora}</td><td className="p-1">{r.sede}</td><td className="p-1">{r.docente}</td><td className="p-1">{r.estado}</td></tr>)}</tbody></table>
+                  </div>
+                </details>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={async () => {
+                setUploading('Aplicar Horarios');
+                try {
+                  const form = new FormData(); form.append('file', horariosPreview.file);
+                  const res = await fetch(`${API_URL}/api/importar/horarios-aplicar?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
+                  const data = await res.json();
+                  setResultado({ ok: true, data, label: 'Importar Horarios' });
+                  setHorariosPreview(null); recargar();
+                } catch (e) { alert('Error: ' + e.message); }
+                setUploading(null);
+              }} disabled={uploading === 'Aplicar Horarios'}
+                className="flex-1 py-2.5 rounded-lg font-bold bg-emerald-600 text-white hover:bg-emerald-700">
+                {uploading === 'Aplicar Horarios' ? '⏳ Aplicando...' : '✅ Confirmar y aplicar cambios'}
+              </button>
+              <button onClick={() => setHorariosPreview(null)} className="px-6 py-2.5 rounded-lg font-medium bg-slate-200 hover:bg-slate-300">
+                ❌ Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <h3 className="font-semibold text-slate-600 mb-3">👨‍🏫 Docentes</h3>
+      <div className="bg-white rounded-xl border p-6 mb-6 border-indigo-200">
+        <h3 className="font-semibold mb-2">📋 Importar Docentes desde CUIT</h3>
+        <p className="text-sm text-slate-500 mb-3">Excel con columnas: CUIT | APELLIDO, NOMBRE. Extrae el DNI automáticamente. Si ya existe, actualiza el nombre.</p>
+        <button onClick={() => subirArchivo('/api/importar/docentes-cuit', 'Docentes CUIT')}
+          disabled={uploading === 'Docentes CUIT'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-indigo-600 text-white hover:bg-indigo-700">
+          {uploading === 'Docentes CUIT' ? '⏳...' : '📤 Importar docentes con CUIT'}
         </button>
       </div>
 
