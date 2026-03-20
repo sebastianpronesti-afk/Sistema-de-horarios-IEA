@@ -2074,6 +2074,17 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         </button>
       </div>
 
+      <div className="bg-white rounded-xl border p-6 mb-6 border-emerald-200">
+        <h3 className="font-semibold mb-2">📅 Importar Horarios Masivo</h3>
+        <p className="text-sm text-slate-500 mb-1">Importa asignaciones de cátedras con día, hora, sede y docente desde un Excel.</p>
+        <p className="text-xs text-slate-400 mb-3">Columnas: Código | Materia | Día | Hora | Sede | Docente. Si el docente no existe en el sistema, se saltea y se lista al final.</p>
+        <button onClick={() => subirArchivo('/api/importar/horarios-masivo', 'Horarios Masivo', `?cuatrimestre_id=${cuatriSeleccionado}`)}
+          disabled={uploading === 'Horarios Masivo'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-emerald-600 text-white hover:bg-emerald-700">
+          {uploading === 'Horarios Masivo' ? '⏳...' : '📤 Importar horarios con docentes'}
+        </button>
+      </div>
+
       <div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
         <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
         <p className="text-sm text-slate-500 mb-1">BCE: alumnos del secundario acelerado. Se asignan como <strong>Virtual</strong> a la sede del curso.</p>
@@ -2117,6 +2128,10 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           {resultado.ok && resultado.data && (
             <div className="mt-2 text-sm">
               {Object.entries(resultado.data).filter(([k]) => k !== 'errores').map(([k, v]) => {
+                if (Array.isArray(v) && v.length > 0) {
+                  return <div key={k} className="mt-2"><p className="font-medium text-orange-700">{k} ({v.length}):</p>{v.map((item, i) => <p key={i} className="text-xs ml-2">• {typeof item === 'string' ? item : JSON.stringify(item)}</p>)}</div>;
+                }
+                if (Array.isArray(v) && v.length === 0) return null;
                 if (typeof v === 'object' && v !== null) {
                   return <p key={k}>{k}: <strong>{Object.entries(v).map(([sk,sv]) => `${sk}: ${sv}`).join(', ')}</strong></p>;
                 }
