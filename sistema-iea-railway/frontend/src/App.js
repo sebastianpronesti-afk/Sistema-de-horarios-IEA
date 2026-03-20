@@ -998,13 +998,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-left p-4 text-sm font-semibold">Docente</th>
             <th className="text-center p-4 text-sm font-semibold">Tipo</th>
             <th className="text-center p-4 text-sm font-semibold">Sedes</th>
-            <th className="text-center p-2 text-xs font-semibold">Horas</th>
-            <th className="text-center p-2 text-xs font-semibold">Mat.<br/>Av</th>
-            <th className="text-center p-2 text-xs font-semibold">Mat.<br/>Cab</th>
-            <th className="text-center p-2 text-xs font-semibold">Mat.<br/>VL</th>
-            <th className="text-center p-2 text-xs font-semibold">CFPEA</th>
-            <th className="text-center p-2 text-xs font-semibold">ISFTEA</th>
-            <th className="text-left p-2 text-xs font-semibold">Notas</th>
+            <th className="text-center p-2 text-xs font-semibold" colSpan="7">Horas · Materias por sede · CFPEA · ISFTEA · Notas</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
             <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
@@ -1028,26 +1022,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                     </div>
                     <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
                   </td>
-                  <td className="p-2 text-center">
-                    <DocFieldInput docId={d.id} campo="horas_asignadas" valorInicial={d.horas_asignadas||0} />
-                  </td>
-                  <td className="p-2 text-center">
-                    <DocFieldInput docId={d.id} campo="materias_av" valorInicial={d.materias_av||0} />
-                  </td>
-                  <td className="p-2 text-center">
-                    <DocFieldInput docId={d.id} campo="materias_cab" valorInicial={d.materias_cab||0} />
-                  </td>
-                  <td className="p-2 text-center">
-                    <DocFieldInput docId={d.id} campo="materias_vl" valorInicial={d.materias_vl||0} />
-                  </td>
-                  <td className="p-2 text-center">
-                    <DocFieldInput docId={d.id} campo="sociedad_cfpea" valorInicial={d.sociedad_cfpea||false} tipo="checkbox" />
-                  </td>
-                  <td className="p-2 text-center">
-                    <DocFieldInput docId={d.id} campo="sociedad_isftea" valorInicial={d.sociedad_isftea||false} tipo="checkbox" />
-                  </td>
-                  <td className="p-1">
-                    <NotasInput item={d} endpoint="docentes" />
+                  <td className="p-1" colSpan="7">
+                    <DocenteEditRow docente={d} />
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -1479,14 +1455,8 @@ function PlanCarreraView({ cuatrimestre }) {
             ))}
           </div>
 
-          {Object.entries(sedes).map(([sede_n, carreras]) => (
-            <div key={sede_n} className="mb-8">
-              <h3 className="text-lg font-bold text-slate-700 mb-3 flex items-center gap-2">
-                <span className={`w-3 h-3 rounded-full ${sede_n.includes('AVELLANEDA') || sede_n.includes('Avellaneda') ? 'bg-blue-500' : sede_n.includes('CABALLITO') || sede_n.includes('Caballito') ? 'bg-emerald-500' : sede_n.includes('VICENTE') || sede_n.includes('Vicente') ? 'bg-amber-500' : 'bg-purple-500'}`} />
-                {sede_n}
-              </h3>
-              {Object.entries(carreras).map(([carrera, annos]) => {
-                const key = `${sede_n}-${carrera}`;
+          {sedeActiva && sedes[sedeActiva] ? Object.entries(sedes[sedeActiva]).map(([carrera, annos]) => {
+                const key = `${sedeActiva}-${carrera}`;
                 const abierta = carreraAbierta[key] !== false;
                 const totalCats = Object.values(annos).flat().length;
                 const abrir = Object.values(annos).flat().filter(c => c.criterio === 'ABRIR').length;
@@ -1541,9 +1511,7 @@ function PlanCarreraView({ cuatrimestre }) {
                     )}
                   </div>
                 );
-              })}
-            </div>
-          ))}
+              }) : <p className="text-slate-400 text-center p-8">Seleccioná una sede</p>}
         </>
       )}
     </div>
@@ -2119,39 +2087,78 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// SociedadCheck is now handled by DocFieldInput with tipo='checkbox'
-
-// ==================== v15.0: DOCENTE FIELD - AISLADO ====================
-function DocFieldInput({ docId, campo, valorInicial, tipo = 'number', min = 0, max = 99 }) {
-  const [val, setVal] = useState(valorInicial);
-  const [saving, setSaving] = useState(false);
+// ==================== v15.0: DOCENTE ROW EDITOR — UN SOLO GUARDAR ====================
+function DocenteEditRow({ docente }) {
+  const [vals, setVals] = useState({
+    horas_asignadas: docente.horas_asignadas || 0,
+    materias_av: docente.materias_av || 0,
+    materias_cab: docente.materias_cab || 0,
+    materias_vl: docente.materias_vl || 0,
+    sociedad_cfpea: docente.sociedad_cfpea || false,
+    sociedad_isftea: docente.sociedad_isftea || false,
+    notas: docente.notas || '',
+  });
   const [dirty, setDirty] = useState(false);
-  const init = useRef(false);
-  useEffect(() => { if (!init.current) { setVal(valorInicial); init.current = true; } }, []);
-  const guardar = async (v) => {
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const set = (campo, valor) => {
+    setVals(prev => ({...prev, [campo]: valor}));
+    setDirty(true); setSaved(false);
+  };
+
+  const guardar = async () => {
     setSaving(true);
     try {
-      const payload = tipo === 'number' ? { [campo]: parseInt(v) || 0 } : { [campo]: !!v };
-      await fetch(`${API_URL}/api/docentes/${docId}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-      setDirty(false);
+      await fetch(`${API_URL}/api/docentes/${docente.id}`, {
+        method: 'PUT', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(vals)
+      });
+      setDirty(false); setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
     } catch (e) { alert('Error: ' + e.message); }
     setSaving(false);
   };
-  if (tipo === 'checkbox') {
-    return <input type="checkbox" checked={!!val} className={`w-4 h-4 cursor-pointer ${saving?'opacity-40':''}`}
-      onChange={e => { const nv = e.target.checked; setVal(nv); guardar(nv); }} />;
-  }
+
+  const numInput = (campo, label) => (
+    <div className="text-center">
+      <label className="text-[8px] text-slate-400 block">{label}</label>
+      <input type="number" min="0" max="99"
+        className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : 'border-slate-200'}`}
+        value={vals[campo]} onChange={e => set(campo, e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && guardar()} />
+    </div>
+  );
+
   return (
-    <div className="flex items-center gap-0.5">
-      <input type="number" min={min} max={max}
-        className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty?'border-amber-500 bg-amber-50':''} ${saving?'opacity-40':''}`}
-        value={val} onChange={e => { setVal(e.target.value); setDirty(true); }}
-        onBlur={() => { if (dirty) guardar(val); }}
-        onKeyDown={e => { if (e.key==='Enter') { e.target.blur(); guardar(val); }}} />
-      {dirty && !saving && <button onClick={() => guardar(val)} className="text-[9px] bg-amber-500 text-white px-0.5 rounded">💾</button>}
+    <div className="flex items-center gap-2">
+      {numInput('horas_asignadas', 'Horas')}
+      {numInput('materias_av', 'Av')}
+      {numInput('materias_cab', 'Cab')}
+      {numInput('materias_vl', 'VL')}
+      <div className="text-center">
+        <label className="text-[8px] text-slate-400 block">CFPEA</label>
+        <input type="checkbox" checked={vals.sociedad_cfpea} onChange={e => set('sociedad_cfpea', e.target.checked)} className="w-4 h-4" />
+      </div>
+      <div className="text-center">
+        <label className="text-[8px] text-slate-400 block">ISFTEA</label>
+        <input type="checkbox" checked={vals.sociedad_isftea} onChange={e => set('sociedad_isftea', e.target.checked)} className="w-4 h-4" />
+      </div>
+      <div className="flex-1">
+        <input type="text" placeholder="Notas..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : 'border-slate-200'}`}
+          value={vals.notas} onChange={e => set('notas', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+      </div>
+      <button onClick={guardar} disabled={saving}
+        className={`px-3 py-1 rounded text-xs font-bold whitespace-nowrap ${
+          saved ? 'bg-emerald-500 text-white' : dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'
+        }`}>
+        {saving ? '⏳' : saved ? '✅ Guardado' : dirty ? '💾 GUARDAR' : '—'}
+      </button>
     </div>
   );
 }
+
+// SociedadCheck is now handled by DocenteEditRow
 
 // ==================== v10.0: NOTAS INPUT ====================
 function NotasInput({ item, endpoint }) {
