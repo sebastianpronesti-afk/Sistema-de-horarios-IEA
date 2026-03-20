@@ -58,19 +58,19 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
-    { id: 'decisiones', icon: '🎯', label: 'Decisiones' },
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
     { id: 'docentes_dia', icon: '📋', label: 'Horarios x Día' },
-    { id: 'sugerencias', icon: '🤖', label: 'Sugerencias Armado' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
+    { id: 'sugerencias', icon: '🤖', label: 'Sug. Horarios x Carrera' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
     { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
+    { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
   ];
   return (
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
@@ -686,40 +686,51 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
     let sug = 'SIN ALUMNOS'; let docs = 0;
     if (enAbrir) { sug = 'ABRIR'; docs = enAbrir.docentes_sugeridos; }
     else if (enAsinc) sug = 'ASINCRÓNICA';
-    return { ...c, sugerencia: sug, docs_sug_calc: docs };
+    // Get docente info from sugerencias
+    const sugInfo = sugerencias?.[c.codigo];
+    const tieneDocente = !!sugInfo?.docente_actual;
+    const tieneSugerencia = !!sugInfo?.sugerencia_docente;
+    return { ...c, sugerencia: sug, docs_sug_calc: docs, tieneDocente, tieneSugerencia, sugInfo };
   }).filter(c => {
     if (filtro === 'abrir') return c.sugerencia === 'ABRIR';
     if (filtro === 'asinc') return c.sugerencia === 'ASINCRÓNICA';
     if (filtro === 'sin') return c.sugerencia === 'SIN ALUMNOS';
-    if (filtro === 'pendientes') return !c.decision_apertura && c.sugerencia === 'ABRIR';
-    if (filtro === 'decididas') return !!c.decision_apertura;
+    if (filtro === 'pendientes') return c.sugerencia === 'ABRIR' && !c.tieneDocente;
+    if (filtro === 'decididas') return c.tieneDocente;
     return true;
   });
-  const totalDecididas = catedras.filter(c => c.decision_apertura).length;
-  const totalPendAbrir = catedras.filter(c => !c.decision_apertura && criterio?.abrir?.find(a => a.codigo === c.codigo)).length;
+  const totalDecididas = catedras.filter(c => {
+    const si = sugerencias?.[c.codigo];
+    return !!si?.docente_actual;
+  }).length;
+  const totalPendAbrir = catedras.filter(c => {
+    const enAbrir = criterio?.abrir?.find(a => a.codigo === c.codigo);
+    const si = sugerencias?.[c.codigo];
+    return enAbrir && !si?.docente_actual;
+  }).length;
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🎯 Criterio de Decisión de Apertura</h2>
+        <h2 className="text-2xl font-bold text-slate-800">🎯 Toma de Decisiones</h2>
+        <p className="text-slate-500 text-sm mt-1">Decidí qué cátedras abrir, cuáles van asincrónicas, y asigná docentes.</p>
         <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <p className="text-blue-800 font-semibold mb-2">¿Cómo funciona el criterio?</p>
+          <p className="text-blue-800 font-semibold mb-2">Criterio de apertura</p>
           <div className="text-sm text-blue-700 space-y-1">
-            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente). 1 docente hasta 100 alumnos, +1 cada 100 adicionales.</p>
-            <p>• <strong>1 a 9 inscriptos</strong> → <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente en vivo). Se dicta pero no se "abre".</p>
-            <p>• <strong>0 inscriptos</strong> → <strong>NO SE ABRE</strong> ni se dicta.</p>
-            <p className="text-blue-600 mt-2 italic">"Abrir" = contratar docente con horas. "Asincrónica" = el alumno cursa sin docente presencial.</p>
+            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente)</p>
+            <p>• <strong>1 a 9 inscriptos</strong> → <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
+            <p>• <strong>0 inscriptos</strong> → <strong>NO SE ABRE</strong></p>
           </div>
         </div>
       </div>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        {[{v: criterio?.stats?.total_abrir||0, l:'A abrir (≥10)', c:'text-emerald-600', b:'bg-emerald-50 border-emerald-200'},
-          {v: criterio?.stats?.total_asincronica||0, l:'Asincrónicas (1-9)', c:'text-purple-600', b:'bg-purple-50 border-purple-200'},
-          {v: criterio?.stats?.total_sin_alumnos||0, l:'Sin alumnos', c:'text-slate-400', b:'bg-slate-50'},
-          {v: totalPendAbrir, l:'Pendientes', c:'text-amber-600', b:'bg-amber-50 border-amber-200'}
-        ].map((s,i) => <div key={i} className={`${s.b} rounded-xl border p-3 text-center`}><p className={`text-2xl font-bold ${s.c}`}>{s.v}</p><p className="text-xs">{s.l}</p></div>)}
+      <div className="grid grid-cols-5 gap-3 mb-4">
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-emerald-600">{totalDecididas}</p><p className="text-xs">✅ Con docente</p></div>
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-amber-600">{totalPendAbrir}</p><p className="text-xs">⚠️ Pendientes</p></div>
+        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥10)</p></div>
+        <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-purple-600">{criterio?.stats?.total_asincronica||0}</p><p className="text-xs">Asincrónicas</p></div>
+        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold text-slate-400">{criterio?.stats?.total_sin_alumnos||0}</p><p className="text-xs">Sin alumnos</p></div>
       </div>
       <div className="flex gap-2 mb-4 flex-wrap items-center">
-        {[['todas','Todas'],['abrir','A abrir'],['asinc','Asincrónicas'],['sin','Sin alumnos'],['pendientes','⚠️ Pendientes'],['decididas','✅ Decididas']].map(([k,l]) => (
+        {[['todas','Todas'],['abrir','A abrir'],['decididas','✅ Con docente asignado'],['pendientes','⚠️ Pendientes y sugerencias'],['asinc','🎥 Asincrónicas'],['sin','Sin alumnos']].map(([k,l]) => (
           <button key={k} onClick={() => setFiltro(k)} className={`px-3 py-1.5 rounded-lg text-sm ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
         ))}
         <div className="flex-1" />
@@ -727,41 +738,49 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
           {marcando ? '⏳...' : '🎥 Auto-marcar asincrónicas'}
         </button>
       </div>
+      {filtro === 'pendientes' && totalPendAbrir > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4">
+          <p className="text-amber-800 text-sm font-medium">⚠️ {totalPendAbrir} cátedras abiertas sin docente asignado. Las que tienen sugerencia aparecen en <span className="text-blue-600 font-bold">azul</span>, las que no en <span className="text-red-500 font-bold">rojo</span>.</p>
+        </div>
+      )}
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead><tr className="bg-slate-800 text-white text-xs">
             <th className="p-2 text-left">Cátedra</th>
             <th className="p-2 text-center w-20">Inscr.</th>
-            <th className="p-2 text-center w-24">Sugerencia</th>
+            <th className="p-2 text-center w-24">Criterio</th>
             <th className="p-2 text-center w-14">Doc.</th>
-            <th className="p-2 text-left" style={{width:'130px'}}>Sugerencia docente</th>
+            <th className="p-2 text-left" style={{width:'180px'}}>Docente / Sugerencia</th>
             <th className="p-2 text-center" style={{width:'160px'}}>Decisión (multi-sede)</th>
             <th className="p-2 text-left" style={{width:'120px'}}>Notas</th>
           </tr></thead>
           <tbody>
-            {catsConInfo.map(cat => (
-              <tr key={cat.id} className={`border-b hover:bg-slate-50 ${!cat.decision_apertura && cat.sugerencia === 'ABRIR' ? 'bg-yellow-50' : ''}`}>
+            {catsConInfo.map(cat => {
+              const rowBg = cat.tieneDocente ? 'bg-emerald-50' : cat.tieneSugerencia ? 'bg-blue-50' : (cat.sugerencia === 'ABRIR' ? 'bg-red-50' : '');
+              return (
+              <tr key={cat.id} className={`border-b hover:bg-slate-100 ${rowBg}`}>
                 <td className="p-2"><span className="font-mono text-[10px] bg-slate-800 text-white px-1 rounded mr-1">{cat.codigo}</span><span className="text-xs">{cat.nombre}</span></td>
                 <td className="p-2 text-center"><span className="text-lg font-bold text-cyan-600">{cat.inscriptos || 0}</span></td>
                 <td className="p-2 text-center"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.sugerencia==='ABRIR'?'bg-emerald-100 text-emerald-700':cat.sugerencia==='ASINCRÓNICA'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-400'}`}>{cat.sugerencia}</span></td>
                 <td className="p-2 text-center font-bold">{cat.docs_sug_calc || ''}</td>
                 <td className="p-2 text-xs">
-                  {(() => {
-                    const sug = sugerencias?.[cat.codigo];
-                    if (sug?.docente_actual) return <span className="text-emerald-600 font-medium">{sug.docente_actual}</span>;
-                    if (sug?.sugerencia_docente) return <span className="text-blue-600 italic">{sug.sugerencia_docente}</span>;
-                    if (cat.sugerencia === 'ABRIR') return <span className="text-red-400">Sin sugerencia</span>;
-                    return '';
-                  })()}
+                  {cat.tieneDocente ? (
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span><span className="text-emerald-700 font-bold">{cat.sugInfo?.docente_actual}</span></span>
+                  ) : cat.tieneSugerencia ? (
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"></span><span className="text-blue-600 italic font-medium">{cat.sugInfo?.sugerencia_docente}</span><span className="text-[9px] text-blue-400">(sugerido)</span></span>
+                  ) : cat.sugerencia === 'ABRIR' ? (
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block"></span><span className="text-red-400">Sin docente disponible</span></span>
+                  ) : ''}
                 </td>
                 <td className="p-2"><DecisionInput catedra={cat} /></td>
                 <td className="p-2"><NotasInput item={cat} endpoint="catedras" /></td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{catsConInfo.length} cátedras — {totalDecididas} con decisión</p>
+      <p className="text-sm text-slate-500 mt-3 text-center">{catsConInfo.length} cátedras — {totalDecididas} con docente asignado — {totalPendAbrir} pendientes</p>
     </div>
   );
 }
@@ -1237,7 +1256,7 @@ function SugerenciasArmadoView({ cuatrimestre }) {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">🤖 Sugerencias de Armado de Horarios</h2>
+        <h2 className="text-2xl font-bold text-slate-800">🤖 Sugerencia de Horarios por Carrera</h2>
         <p className="text-slate-500 text-sm">Pre-armado automático cruzando cátedras abiertas, disponibilidad docente y cátedras de referencia.</p>
       </div>
 
