@@ -1451,19 +1451,20 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
     # Clear existing plan
     try: db.execute(text("DELETE FROM plan_carrera")); db.commit()
     except: db.rollback()
+    # PHASE 1: Collect all records first, then deduplicate
+    all_records = []  # [(sede, carrera, anno, codigo, nombre, dtm, htm, dtn, htn)]
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         sede = sheet_name.strip()
-        # First pass: collect all rows with their raw data
-        raw_rows = []
-        for row in ws.iter_rows(values_only=True):
-            raw_rows.append(list(row))
-        # Second pass: detect carreras and build blocks
+        raw_rows = [list(r) for r in ws.iter_rows(values_only=True)]
         carrera_act = ''
-        # Collect catedras in blocks between carrera headers, then assign año
-        current_block = []  # [(codigo, nombre, dia_tm, hora_tm, dia_tn, hora_tn)]
         current_anno = ''
-        pending_cats = []  # cats before first año label in a block
+        pending_cats = []  # cats before first año label
+        def flush_pending(anno_to_use):
+            nonlocal pending_cats
+            for pc in pending_cats:
+                all_records.append((sede, carrera_act, anno_to_use, pc[0], pc[1], pc[2], pc[3], pc[4], pc[5]))
+            pending_cats = []
         for vals in raw_rows:
             if len(vals) < 5: continue
             b = str(vals[1] or '').strip()
@@ -1474,84 +1475,49 @@ async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depe
             for txt in [b, c]:
                 t_up = txt.upper()
                 if ('TECNICO' in t_up or 'TECNICATURA' in t_up) and len(txt) > 15:
-                    # Save previous block before switching carrera
-                    if pending_cats and carrera_act:
-                        for pc in pending_cats:
-                            try:
-                                db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
-                                    VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
-                                    {"s":sede,"ca":carrera_act,"an":current_anno,"co":pc[0],"no":pc[1],"dtm":pc[2],"htm":pc[3],"dtn":pc[4],"htn":pc[5]})
-                                total += 1
-                            except: pass
-                    pending_cats = []
+                    flush_pending(current_anno)
                     carrera_act = txt.strip()
                     current_anno = ''
-            # Detect año - check column C for year patterns
             c_up = c.upper()
-            # Reset año when hitting separators between year blocks
             if 'INSCRIPCION' in c_up or 'INSCRIPCIÓN' in c_up:
-                current_anno = ''  # Next cátedras belong to a new year block
+                current_anno = ''
                 continue
             if ('1ER' in c_up or '2DO' in c_up or '3ER' in c_up or '4TO' in c_up) and 'AÑO' in c_up:
-                # Before switching año, flush pending cats with THIS año
                 new_anno = c.strip()
-                if pending_cats:
-                    for pc in pending_cats:
-                        try:
-                            db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
-                                VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
-                                {"s":sede,"ca":carrera_act,"an":new_anno,"co":pc[0],"no":pc[1],"dtm":pc[2],"htm":pc[3],"dtn":pc[4],"htn":pc[5]})
-                            total += 1
-                        except: pass
-                    pending_cats = []
+                flush_pending(new_anno)
                 current_anno = new_anno
-                # Also check if this row has a catedra code in column D
-                try:
-                    cod_num = int(float(d))
-                    if cod_num > 0 and e:
-                        cod = f'c.{cod_num}'
-                        dia_tm = str(vals[6] or '').strip() if len(vals) > 6 else ''
-                        hora_tm = str(vals[7] or '').strip() if len(vals) > 7 else ''
-                        dia_tn = str(vals[9] or '').strip() if len(vals) > 9 else ''
-                        hora_tn = str(vals[10] or '').strip() if len(vals) > 10 else ''
-                        try:
-                            db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
-                                VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
-                                {"s":sede,"ca":carrera_act,"an":current_anno,"co":cod,"no":e.strip(),"dtm":dia_tm,"htm":hora_tm,"dtn":dia_tn,"htn":hora_tn})
-                            total += 1
-                        except: pass
-                except: pass
-                continue
+            # Extract horarios
+            dia_tm = str(vals[6] or '').strip() if len(vals) > 6 else ''
+            hora_tm = str(vals[7] or '').strip() if len(vals) > 7 else ''
+            dia_tn = str(vals[9] or '').strip() if len(vals) > 9 else ''
+            hora_tn = str(vals[10] or '').strip() if len(vals) > 10 else ''
             # Detect catedra code
             try:
                 cod_num = int(float(d))
                 if cod_num > 0 and e and carrera_act:
                     cod = f'c.{cod_num}'
-                    dia_tm = str(vals[6] or '').strip() if len(vals) > 6 else ''
-                    hora_tm = str(vals[7] or '').strip() if len(vals) > 7 else ''
-                    dia_tn = str(vals[9] or '').strip() if len(vals) > 9 else ''
-                    hora_tn = str(vals[10] or '').strip() if len(vals) > 10 else ''
                     if current_anno:
-                        # We already have a year, insert directly
-                        try:
-                            db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
-                                VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
-                                {"s":sede,"ca":carrera_act,"an":current_anno,"co":cod,"no":e.strip(),"dtm":dia_tm,"htm":hora_tm,"dtn":dia_tn,"htn":hora_tn})
-                            total += 1
-                        except: pass
+                        all_records.append((sede, carrera_act, current_anno, cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
                     else:
-                        # No year yet — hold in pending, will be assigned when we find the year label
                         pending_cats.append((cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
             except: pass
-        # Flush any remaining pending cats
-        if pending_cats and carrera_act:
-            for pc in pending_cats:
-                try:
-                    db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
-                        VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
-                        {"s":sede,"ca":carrera_act,"an":current_anno or "AÑO","co":pc[0],"no":pc[1],"dtm":pc[2],"htm":pc[3],"dtn":pc[4],"htn":pc[5]})
-                    total += 1
-                except: pass
+        flush_pending(current_anno or 'AÑO')
+    # PHASE 2: Deduplicate — one code per carrera per sede
+    seen = set()
+    unique_records = []
+    for rec in all_records:
+        key = (rec[0], rec[1], rec[3])  # (sede, carrera, codigo)
+        if key in seen: continue
+        seen.add(key)
+        unique_records.append(rec)
+    # PHASE 3: Insert
+    for rec in unique_records:
+        try:
+            db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
+                VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
+                {"s":rec[0],"ca":rec[1],"an":rec[2],"co":rec[3],"no":rec[4],"dtm":rec[5],"htm":rec[6],"dtn":rec[7],"htn":rec[8]})
+            total += 1
+        except: pass
     db.commit()
     wb.close()
     return {"importados": total, "hojas": wb.sheetnames}
