@@ -2004,12 +2004,14 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
     import io, re
     content = await file.read()
     wb = load_workbook(io.BytesIO(content))
-    # 1) Build plan: carrera_upper → {anno → set of codes}
+    # 1) Build plan: (sede, carrera_upper) → {anno → set of codes}
     from sqlalchemy import text
     plan = {}; cat_names_db = {}
     try:
         for r in db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall():
-            key = r[1].upper().strip()
+            sede_plan = r[0].upper().strip()
+            carrera_up = r[1].upper().strip()
+            key = (sede_plan, carrera_up)
             if key not in plan: plan[key] = {}
             if r[2] not in plan[key]: plan[key][r[2]] = set()
             plan[key][r[2]].add(r[3])
@@ -2027,20 +2029,38 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
         if not ins.alumno: continue
         dni_raw = (ins.alumno.dni or '').strip()
         if not dni_raw: continue
-        # Normalize: remove .0, leading zeros, etc
         dni = dni_raw.replace('.0','').lstrip('0') or dni_raw
         if dni not in dni_to_codes: dni_to_codes[dni] = set()
         if ins.catedra: dni_to_codes[dni].add(ins.catedra.codigo)
-        # Also store with original for fallback
         if dni_raw not in dni_to_codes: dni_to_codes[dni_raw] = dni_to_codes[dni]
-    # 3) Find plan key helper
-    def find_plan_key(carrera_norm):
+    # 3) Sede normalization for plan matching
+    def norm_sede_plan(sede_str, curso_str):
+        """Determine which plan sede to use based on student's sede and curso."""
+        s = sede_str.upper() if sede_str else ''
+        c = curso_str.upper() if curso_str else ''
+        # CIED/Online students → use CIED plan
+        if 'CIED' in c or 'ONLINE' in c or 'VIRTUAL SINCR' in c or 'DIEGEP' in c:
+            return 'CIED'
+        if 'AVELL' in s: return 'AVELLANEDA'
+        if 'CABAL' in s or 'CABALI' in s: return 'CABALLITO'
+        if 'VICENTE' in s or 'VTE' in s: return 'VICENTE LOPEZ'
+        if 'LINIE' in s: return 'CABALLITO'  # Liniers uses Caballito plan
+        return 'CIED'  # Default fallback
+    # 4) Find plan key helper
+    def find_plan_key(sede_norm, carrera_norm):
         if not carrera_norm: return None
         ck = carrera_norm.upper().strip()
-        if ck in plan: return ck
-        for key in plan:
-            if ck in key or key in ck: return key
-            if ck[:25] == key[:25]: return key
+        # Exact match
+        key = (sede_norm, ck)
+        if key in plan: return key
+        # Fuzzy match on carrera
+        for (s, c) in plan:
+            if s == sede_norm and (ck in c or c in ck or ck[:25] == c[:25]):
+                return (s, c)
+        # Fallback: try any sede
+        for (s, c) in plan:
+            if ck in c or c in ck or ck[:25] == c[:25]:
+                return (s, c)
         return None
     # 4) Process control file
     results = []; stats = {'total': 0, 'ok': 0, 'faltan': 0, 'sobran': 0, 'sin_plan': 0, 'sin_insc': 0, 'doble': 0}
@@ -2065,7 +2085,8 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
             if is_doble: stats['doble'] += 1
             anno = _calc_anno(fecha, inicio)
             carrera_norm = _extract_carrera(curso)
-            plan_key = find_plan_key(carrera_norm)
+            sede_norm = norm_sede_plan(sede, curso)
+            plan_key = find_plan_key(sede_norm, carrera_norm)
             # Get what they SHOULD take (excluding Prácticas Profesionalizantes)
             should_codes = set()
             if plan_key and anno in plan.get(plan_key, {}):
@@ -2102,7 +2123,7 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
                     stats['sobran'] += 1
             results.append({
                 'dni': dni, 'nombre': nombre, 'sede': sede, 'curso': curso[:55],
-                'anno': anno, 'carrera_plan': (plan_key or carrera_norm or '?')[:45],
+                'anno': anno, 'carrera_plan': (f"{plan_key[0]} → {plan_key[1]}" if plan_key else (carrera_norm or '?'))[:55],
                 'estado': estado, 'is_doble': is_doble,
                 'debe_cursar': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(should_codes)],
                 'inscripto_a': [f"{c} ({cat_names_db.get(c, '')})" for c in sorted(actual_codes)],
@@ -2128,7 +2149,8 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
     plan = {}; cat_names_db = {}
     try:
         for r in db.execute(text("SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera")).fetchall():
-            key = r[1].upper().strip()
+            sede_plan = r[0].upper().strip(); carrera_up = r[1].upper().strip()
+            key = (sede_plan, carrera_up)
             if key not in plan: plan[key] = {}
             if r[2] not in plan[key]: plan[key][r[2]] = set()
             plan[key][r[2]].add(r[3])
@@ -2146,13 +2168,20 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
         if dni not in dni_to_codes: dni_to_codes[dni] = set()
         if ins.catedra: dni_to_codes[dni].add(ins.catedra.codigo)
         if dni_raw not in dni_to_codes: dni_to_codes[dni_raw] = dni_to_codes[dni]
-    def find_plan_key(cn):
+    def _norm_sede_exp(sede_str, curso_str):
+        s = (sede_str or '').upper(); c = (curso_str or '').upper()
+        if 'CIED' in c or 'ONLINE' in c or 'VIRTUAL SINCR' in c or 'DIEGEP' in c: return 'CIED'
+        if 'AVELL' in s: return 'AVELLANEDA'
+        if 'CABAL' in s or 'CABALI' in s: return 'CABALLITO'
+        if 'VICENTE' in s or 'VTE' in s: return 'VICENTE LOPEZ'
+        return 'CIED'
+    def _find_pk(sede_n, cn):
         if not cn: return None
         ck = cn.upper().strip()
-        if ck in plan: return ck
-        for k in plan:
-            if ck in k or k in ck: return k
-            if ck[:25] == k[:25]: return k
+        for (s, c) in plan:
+            if s == sede_n and (ck in c or c in ck or ck[:25] == c[:25]): return (s, c)
+        for (s, c) in plan:
+            if ck in c or c in ck or ck[:25] == c[:25]: return (s, c)
         return None
     # Process
     rows_out = []
@@ -2170,7 +2199,8 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
             if not nombre or not curso or curso == 'None': continue
             anno = _calc_anno(fecha, inicio)
             carrera_norm = _extract_carrera(curso)
-            plan_key = find_plan_key(carrera_norm)
+            sede_n = _norm_sede_exp(sede, curso)
+            plan_key = _find_pk(sede_n, carrera_norm)
             should = set()
             if plan_key and anno in plan.get(plan_key, {}):
                 for cod in plan[plan_key][anno]:
