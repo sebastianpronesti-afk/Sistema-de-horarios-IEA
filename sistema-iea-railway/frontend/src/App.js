@@ -62,7 +62,8 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
-    { id: 'docentes_dia', icon: '📋', label: 'Docentes x Día' },
+    { id: 'docentes_dia', icon: '📋', label: 'Horarios x Día' },
+    { id: 'sugerencias', icon: '🤖', label: 'Sugerencias Armado' },
     { id: 'calendario', icon: '📅', label: 'Calendario' },
     { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
     { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
@@ -75,7 +76,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v15.0</p>
+        <p className="text-slate-500 text-sm">Sistema v16.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -637,6 +638,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
 // ==================== v12.0: DECISIONES - Módulo central ====================
 function DecisionesView({ catedras, cuatrimestre, recargar }) {
   const [criterio, setCriterio] = useState(null);
+  const [sugerencias, setSugerencias] = useState(null);
   const [loading, setLoading] = useState(true);
   const [filtro, setFiltro] = useState('todas');
   const [marcando, setMarcando] = useState(false);
@@ -645,7 +647,23 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
       setLoading(true);
       try {
         const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-        setCriterio(await apiFetch(`/api/catedras/criterio-apertura${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`));
+        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        setCriterio(await apiFetch(`/api/catedras/criterio-apertura${qp}`));
+        try {
+          const sug = await apiFetch(`/api/sugerencias-armado${qp}`);
+          // Flatten all suggestions into a code→suggestion map
+          const sugMap = {};
+          for (const sede of Object.values(sug.sedes || {})) {
+            for (const carrera of Object.values(sede)) {
+              for (const cats of Object.values(carrera)) {
+                for (const cat of cats) {
+                  if (!sugMap[cat.codigo] || cat.sugerencia_docente) sugMap[cat.codigo] = cat;
+                }
+              }
+            }
+          }
+          setSugerencias(sugMap);
+        } catch (e) { console.error(e); }
       } catch (e) { console.error(e); }
       setLoading(false);
     };
@@ -716,6 +734,7 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
             <th className="p-2 text-center w-20">Inscr.</th>
             <th className="p-2 text-center w-24">Sugerencia</th>
             <th className="p-2 text-center w-14">Doc.</th>
+            <th className="p-2 text-left" style={{width:'130px'}}>Sugerencia docente</th>
             <th className="p-2 text-center" style={{width:'160px'}}>Decisión (multi-sede)</th>
             <th className="p-2 text-left" style={{width:'120px'}}>Notas</th>
           </tr></thead>
@@ -726,6 +745,15 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
                 <td className="p-2 text-center"><span className="text-lg font-bold text-cyan-600">{cat.inscriptos || 0}</span></td>
                 <td className="p-2 text-center"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.sugerencia==='ABRIR'?'bg-emerald-100 text-emerald-700':cat.sugerencia==='ASINCRÓNICA'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-400'}`}>{cat.sugerencia}</span></td>
                 <td className="p-2 text-center font-bold">{cat.docs_sug_calc || ''}</td>
+                <td className="p-2 text-xs">
+                  {(() => {
+                    const sug = sugerencias?.[cat.codigo];
+                    if (sug?.docente_actual) return <span className="text-emerald-600 font-medium">{sug.docente_actual}</span>;
+                    if (sug?.sugerencia_docente) return <span className="text-blue-600 italic">{sug.sugerencia_docente}</span>;
+                    if (cat.sugerencia === 'ABRIR') return <span className="text-red-400">Sin sugerencia</span>;
+                    return '';
+                  })()}
+                </td>
                 <td className="p-2"><DecisionInput catedra={cat} /></td>
                 <td className="p-2"><NotasInput item={cat} endpoint="catedras" /></td>
               </tr>
@@ -929,6 +957,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           sociedad_cfpea: d.sociedad_cfpea || false,
           sociedad_isftea: d.sociedad_isftea || false,
           notas: d.notas || '',
+          especialidad: d.especialidad || '',
+          catedras_referencia: d.catedras_referencia || '',
         };
       }
     });
@@ -945,6 +975,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
         sociedad_cfpea: d.sociedad_cfpea || false,
         sociedad_isftea: d.sociedad_isftea || false,
         notas: d.notas || '',
+        especialidad: d.especialidad || '',
+        catedras_referencia: d.catedras_referencia || '',
       };
     }
   });
@@ -1004,7 +1036,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-3 gap-3 mb-4">
+      <div className="grid grid-cols-4 gap-3 mb-4">
+        <div className="bg-slate-800 rounded-xl p-3 text-white"><p className="text-xs opacity-70">Total docentes</p><p className="text-2xl font-bold">{docentes.length}</p></div>
         <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Total horas</p><p className="text-2xl font-bold">{stats.horas_total}h</p></div>
         <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas CFPEA SRL</p><p className="text-2xl font-bold text-blue-600">{stats.horas_cfpea}h</p></div>
         <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas ISFTEA SRL</p><p className="text-2xl font-bold text-emerald-600">{stats.horas_isftea}h</p></div>
@@ -1032,7 +1065,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
             <th className="text-left p-4 text-sm font-semibold">Docente</th>
             <th className="text-center p-4 text-sm font-semibold">Tipo</th>
             <th className="text-center p-4 text-sm font-semibold">Sedes</th>
-            <th className="text-center p-2 text-xs font-semibold" colSpan="7">Horas · Materias por sede · CFPEA · ISFTEA · Notas</th>
+            <th className="text-center p-2 text-xs font-semibold" colSpan="7">Horas · Materias por sede · CFPEA · ISFTEA · Notas · Especialidad · Cát. ref.</th>
+            <th className="text-center p-2 text-xs font-semibold">Disponib.</th>
             <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
             <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
           </tr></thead>
@@ -1058,6 +1092,14 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                   </td>
                   <td className="p-1" colSpan="7">
                     <DocenteEditRow docId={d.id} editStore={editStore} />
+                  </td>
+                  <td className="p-2 text-center text-xs">
+                    <span className={`px-2 py-1 rounded ${d.disponibilidad_resumen === 'Sin asignar' ? 'bg-slate-100 text-slate-400' : 'bg-emerald-100 text-emerald-700'}`}>
+                      {d.disponibilidad_resumen || 'Sin asignar'}
+                    </span>
+                    {d.disponibilidad_franjas?.length > 0 && (
+                      <div className="mt-1 text-[9px] text-slate-400">{d.disponibilidad_franjas.slice(0,3).join(', ')}{d.disponibilidad_franjas.length > 3 ? '...' : ''}</div>
+                    )}
                   </td>
                   <td className="p-4">
                     {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
@@ -1151,6 +1193,138 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
 }
 
 // ==================== CALENDARIO VIEW ====================
+// ==================== v16.0: SUGERENCIAS DE ARMADO DE HORARIOS ====================
+function SugerenciasArmadoView({ cuatrimestre }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [sedeActiva, setSedeActiva] = useState('');
+  const [carreraAbierta, setCarreraAbierta] = useState({});
+
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        setData(await apiFetch(`/api/sugerencias-armado${qp}`));
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+
+  useEffect(() => {
+    if (data?.sedes) {
+      const keys = Object.keys(data.sedes);
+      if (keys.length > 0 && !sedeActiva) setSedeActiva(keys[0]);
+    }
+  }, [data]);
+
+  if (loading) return <div className="p-8 text-center">⏳ Analizando cátedras, docentes y disponibilidad...</div>;
+
+  const sedes = data?.sedes || {};
+  const sedeKeys = Object.keys(sedes);
+  const st = data?.stats || {};
+
+  const ESTADO_CONFIG = {
+    asignado: { bg: 'bg-emerald-50', border: 'border-emerald-200', badge: 'bg-emerald-500', label: '✅ Con docente' },
+    sugerido: { bg: 'bg-blue-50', border: 'border-blue-200', badge: 'bg-blue-500', label: '🤖 Sugerido' },
+    sin_sugerencia: { bg: 'bg-red-50', border: 'border-red-200', badge: 'bg-red-500', label: '❌ Sin sugerencia' },
+    asincronica: { bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-500', label: '🎥 Asincrónica' },
+    sin_alumnos: { bg: 'bg-slate-50', border: '', badge: 'bg-slate-300', label: '—' },
+  };
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🤖 Sugerencias de Armado de Horarios</h2>
+        <p className="text-slate-500 text-sm">Pre-armado automático cruzando cátedras abiertas, disponibilidad docente y cátedras de referencia.</p>
+      </div>
+
+      <div className="grid grid-cols-5 gap-3 mb-6">
+        <div className="bg-slate-800 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.total||0}</p><p className="text-xs opacity-70">Total cátedras</p></div>
+        <div className="bg-emerald-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.con_docente||0}</p><p className="text-xs opacity-80">✅ Con docente</p></div>
+        <div className="bg-blue-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.sugerido||0}</p><p className="text-xs opacity-80">🤖 Sugerido</p></div>
+        <div className="bg-red-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.sin_sugerencia||0}</p><p className="text-xs opacity-80">❌ Sin sugerencia</p></div>
+        <div className="bg-purple-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.asincronica||0}</p><p className="text-xs opacity-80">🎥 Asincrónicas</p></div>
+      </div>
+
+      <div className="flex gap-2 mb-6 flex-wrap">
+        {sedeKeys.map(s => (
+          <button key={s} onClick={() => setSedeActiva(s)} className={`px-4 py-2 rounded-lg text-sm font-medium ${sedeActiva === s ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>{s}</button>
+        ))}
+      </div>
+
+      {sedeActiva && sedes[sedeActiva] ? Object.entries(sedes[sedeActiva]).map(([carrera, annos]) => {
+        const key = `${sedeActiva}-${carrera}`;
+        const abierta = carreraAbierta[key] !== false;
+        const allCats = Object.values(annos).flat();
+        const conDoc = allCats.filter(c => c.estado === 'asignado').length;
+        const sugeridos = allCats.filter(c => c.estado === 'sugerido').length;
+        const sinSug = allCats.filter(c => c.estado === 'sin_sugerencia').length;
+        return (
+          <div key={key} className="mb-3">
+            <div onClick={() => setCarreraAbierta(prev => ({...prev, [key]: !prev[key]}))} className="flex items-center gap-3 p-3 bg-slate-800 text-white rounded-t-xl cursor-pointer hover:bg-slate-700">
+              <span className="text-lg">{abierta ? '▼' : '▶'}</span>
+              <span className="font-bold flex-1">{carrera}</span>
+              <span className="text-xs bg-slate-600 px-2 py-1 rounded">{allCats.length} cát.</span>
+              {conDoc > 0 && <span className="text-xs bg-emerald-500 px-2 py-1 rounded">{conDoc} ✅</span>}
+              {sugeridos > 0 && <span className="text-xs bg-blue-500 px-2 py-1 rounded">{sugeridos} 🤖</span>}
+              {sinSug > 0 && <span className="text-xs bg-red-500 px-2 py-1 rounded">{sinSug} ❌</span>}
+            </div>
+            {abierta && (
+              <div className="bg-white border border-t-0 rounded-b-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead><tr className="bg-slate-100 text-slate-600">
+                    <th className="p-2 text-left">Año</th>
+                    <th className="p-2 text-left">Cátedra</th>
+                    <th className="p-2 text-center w-14">Inscr.</th>
+                    <th className="p-2 text-center w-20">Criterio</th>
+                    <th className="p-2 text-center">Estado</th>
+                    <th className="p-2 text-left">Docente actual</th>
+                    <th className="p-2 text-left">Sugerencia docente</th>
+                    <th className="p-2 text-left">Horarios</th>
+                  </tr></thead>
+                  <tbody>
+                    {Object.entries(annos).map(([anno, cats]) => cats.map((cat, idx) => {
+                      const cfg = ESTADO_CONFIG[cat.estado] || ESTADO_CONFIG.sin_alumnos;
+                      return (
+                        <tr key={`${anno}-${cat.codigo}-${idx}`} className={`border-b ${cfg.bg}`}>
+                          <td className="p-2 text-slate-500">{idx === 0 ? anno : ''}</td>
+                          <td className="p-2">
+                            <span className="font-mono bg-slate-800 text-white px-1 rounded text-[9px] mr-1">{cat.codigo}</span>
+                            {cat.nombre?.substring(0, 30)}
+                          </td>
+                          <td className="p-2 text-center font-bold text-cyan-600">{cat.inscriptos || ''}</td>
+                          <td className="p-2 text-center">
+                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${cat.criterio === 'ABRIR' ? 'bg-emerald-100 text-emerald-700' : cat.criterio === 'ASINCRÓNICA' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-400'}`}>{cat.criterio}</span>
+                          </td>
+                          <td className="p-2 text-center">
+                            <span className={`px-1.5 py-0.5 rounded text-white text-[9px] font-bold ${cfg.badge}`}>{cfg.label}</span>
+                          </td>
+                          <td className="p-2">
+                            {cat.docente_actual ? <span className="text-emerald-700 font-medium">{cat.docente_actual}</span> : ''}
+                          </td>
+                          <td className="p-2">
+                            {cat.sugerencia_docente ? <span className="text-blue-600 font-medium italic">{cat.sugerencia_docente}</span> : cat.estado === 'sin_sugerencia' ? <span className="text-red-400">Sin docente disponible</span> : ''}
+                          </td>
+                          <td className="p-2 text-[10px] text-slate-500">
+                            {cat.horarios?.map((h, i) => <span key={i} className="bg-slate-100 px-1 rounded mr-1">{h}</span>)}
+                          </td>
+                        </tr>
+                      );
+                    }))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      }) : <p className="text-slate-400 text-center p-8">Seleccioná una sede</p>}
+    </div>
+  );
+}
+
 // ==================== v15.0: DOCENTES POR DÍA Y TURNO ====================
 function DocentesDiaView({ catedras }) {
   const allAsig = useMemo(() => catedras.flatMap(c => (c.asignaciones || []).filter(a => a.dia && a.dia !== 'Pend.' && a.hora_inicio && a.hora_inicio !== 'Pend.').map(a => ({
@@ -2301,6 +2475,8 @@ function DocenteEditRow({ docId, editStore, onSave }) {
         sociedad_cfpea: !!data.sociedad_cfpea,
         sociedad_isftea: !!data.sociedad_isftea,
         notas: data.notas || '',
+        especialidad: data.especialidad || '',
+        catedras_referencia: data.catedras_referencia || '',
       };
       const res = await fetch(`${API_URL}/api/docentes/${docId}`, {
         method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
@@ -2334,6 +2510,16 @@ function DocenteEditRow({ docId, editStore, onSave }) {
       <div className="flex-1 min-w-[80px]">
         <input type="text" placeholder="Notas..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
           value={vals.notas ?? ''} onChange={e => setAndUpdate('notas', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+      </div>
+      <div className="min-w-[70px]">
+        <label className="text-[8px] text-slate-400 block">Especialidad</label>
+        <input type="text" placeholder="Área..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
+          value={vals.especialidad ?? ''} onChange={e => setAndUpdate('especialidad', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+      </div>
+      <div className="min-w-[80px]">
+        <label className="text-[8px] text-slate-400 block">Cát. ref.</label>
+        <input type="text" placeholder="c.1, c.3..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
+          value={vals.catedras_referencia ?? ''} onChange={e => setAndUpdate('catedras_referencia', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
       </div>
       <button onClick={guardar} disabled={saving}
         className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap ${saved ? 'bg-emerald-500 text-white' : dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'}`}>
@@ -2644,6 +2830,7 @@ export default function App() {
         {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
+        {activeView === 'sugerencias' && <SugerenciasArmadoView cuatrimestre={cuatrimestre} />}
         {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
         {activeView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
