@@ -1828,60 +1828,105 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
     return {"sedes": sedes_result, "plan_importado": True, "total_registros": len(rows)}
 
 
-# ===== v14.0: Solapamientos entre carreras =====
+# ===== v15.0: Solapamientos entre carreras (lógica correcta) =====
 @app.get("/api/solapamientos-carreras")
 def get_solapamientos_carreras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
     # 1) Get plan_carrera
     try: plan = db.execute(text("SELECT sede, carrera, anno, codigo_catedra FROM plan_carrera")).fetchall()
-    except: return {"conflictos": [], "total": 0}
-    if not plan: return {"conflictos": [], "total": 0, "sin_plan": True}
-    # 2) Build carrera_anno → [codigos] per sede
-    carrera_cats = {}  # (sede, carrera, anno) → [codigo]
+    except: return {"presencial": [], "cied": [], "docentes": [], "total": 0}
+    if not plan: return {"presencial": [], "cied": [], "docentes": [], "total": 0, "sin_plan": True}
+    carrera_cats = {}
     for r in plan:
         key = (r[0], r[1], r[2])
         if key not in carrera_cats: carrera_cats[key] = []
         if r[3] not in carrera_cats[key]: carrera_cats[key].append(r[3])
-    # 3) Get current asignaciones with dia+hora
+    # 2) Get asignaciones
     asig_q = db.query(Asignacion).filter(Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None))
     if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = asig_q.all()
-    # Build code → [(dia, hora, sede, docente, catedra_nombre)]
-    code_schedule = {}
+    # Build: code → {sede_name → set of (dia, hora)} and code → all slots
+    code_sede_slots = {}; code_all_slots = {}; code_names = {}; code_docentes = {}
+    docente_schedule = {}
     for a in asigs:
         if not a.catedra or not a.dia or a.dia == 'Pend.' or not a.hora_inicio or a.hora_inicio == 'Pend.': continue
         cod = a.catedra.codigo
-        if cod not in code_schedule: code_schedule[cod] = []
-        code_schedule[cod].append({
-            "dia": a.dia, "hora": a.hora_inicio,
-            "sede": a.sede.nombre if a.sede else "Remoto",
-            "docente": f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None,
-            "nombre": a.catedra.nombre,
-        })
-    # 4) For each carrera+anno, check if any 2 cátedras share same dia+hora
-    conflictos = []
+        sede_n = a.sede.nombre if a.sede else 'Remoto'
+        doc_name = f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None
+        code_names[cod] = a.catedra.nombre
+        slot = (a.dia, a.hora_inicio)
+        if cod not in code_sede_slots: code_sede_slots[cod] = {}
+        if sede_n not in code_sede_slots[cod]: code_sede_slots[cod][sede_n] = set()
+        code_sede_slots[cod][sede_n].add(slot)
+        if cod not in code_all_slots: code_all_slots[cod] = set()
+        code_all_slots[cod].add(slot)
+        # Track docente per (cod, dia, hora)
+        if doc_name:
+            if cod not in code_docentes: code_docentes[cod] = {}
+            code_docentes[cod][(a.dia, a.hora_inicio)] = doc_name
+            # Docente schedule for type 2
+            if doc_name not in docente_schedule: docente_schedule[doc_name] = []
+            docente_schedule[doc_name].append({"dia": a.dia, "hora": a.hora_inicio, "cod": cod, "nombre": a.catedra.nombre, "sede": sede_n})
+    # Helper to get docente for a (cod, dia, hora)
+    def get_doc(cod, dia, hora):
+        return (code_docentes.get(cod) or {}).get((dia, hora))
+    # === TIPO 1: PRESENCIALES (por sede) ===
+    conf_presencial = []
     for (sede_p, carrera, anno), codigos in carrera_cats.items():
-        # Build a slot map: (dia, hora) → [{codigo, nombre, docente}]
-        slots = {}
+        if not anno or sede_p.upper() == 'CIED': continue
+        cat_slots = {}
         for cod in codigos:
-            for sch in code_schedule.get(cod, []):
-                key = (sch['dia'].upper().strip(), sch['hora'].strip())
-                if key not in slots: slots[key] = []
-                slots[key].append({"codigo": cod, "nombre": sch['nombre'], "docente": sch['docente'], "sede_asig": sch['sede']})
-        # Find slots with >1 DIFFERENT cátedra
+            for s_name, slots in (code_sede_slots.get(cod) or {}).items():
+                if s_name.upper().replace(' ','')[:4] == sede_p.upper().replace(' ','')[:4]:
+                    if cod not in cat_slots: cat_slots[cod] = set()
+                    cat_slots[cod].update(slots)
+        cods = list(cat_slots.keys())
+        for i in range(len(cods)):
+            for j in range(i+1, len(cods)):
+                overlap = cat_slots[cods[i]] & cat_slots[cods[j]]
+                for (dia, hora) in overlap:
+                    conf_presencial.append({"sede_plan": sede_p, "carrera": carrera, "anno": anno,
+                        "dia": dia, "hora": hora,
+                        "catedras_en_conflicto": [
+                            {"codigo": cods[i], "nombre": code_names.get(cods[i],''), "docente": get_doc(cods[i], dia, hora)},
+                            {"codigo": cods[j], "nombre": code_names.get(cods[j],''), "docente": get_doc(cods[j], dia, hora)}],
+                        "tipo": "presencial"})
+    # === TIPO 1b: CIED (conflicto solo si NO hay combinación posible) ===
+    conf_cied = []
+    for (sede_p, carrera, anno), codigos in carrera_cats.items():
+        if not anno or sede_p.upper() != 'CIED': continue
+        cat_slots = {cod: code_all_slots.get(cod, set()) for cod in codigos if code_all_slots.get(cod)}
+        cods = list(cat_slots.keys())
+        for i in range(len(cods)):
+            for j in range(i+1, len(cods)):
+                can_avoid = any(sa != sb for sa in cat_slots[cods[i]] for sb in cat_slots[cods[j]])
+                if not can_avoid and cat_slots[cods[i]] & cat_slots[cods[j]]:
+                    dia, hora = list(cat_slots[cods[i]] & cat_slots[cods[j]])[0]
+                    conf_cied.append({"sede_plan": "CIED", "carrera": carrera, "anno": anno,
+                        "dia": dia, "hora": hora,
+                        "catedras_en_conflicto": [
+                            {"codigo": cods[i], "nombre": code_names.get(cods[i],''), "docente": get_doc(cods[i], dia, hora)},
+                            {"codigo": cods[j], "nombre": code_names.get(cods[j],''), "docente": get_doc(cods[j], dia, hora)}],
+                        "tipo": "cied"})
+    # === TIPO 2: DOCENTES (mismo docente, distinta cátedra, mismo dia+hora) ===
+    conf_docentes = []
+    for doc_name, schedule in docente_schedule.items():
+        slots = {}
+        for s in schedule:
+            key = (s['dia'], s['hora'])
+            if key not in slots: slots[key] = []
+            slots[key].append(s)
         for (dia, hora), items in slots.items():
-            codigos_unicos = list(set(it['codigo'] for it in items))
-            if len(codigos_unicos) < 2: continue
-            # This is a conflict within the same carrera+anno
-            conflictos.append({
-                "sede_plan": sede_p, "carrera": carrera, "anno": anno,
-                "dia": dia, "hora": hora,
-                "catedras_en_conflicto": [{"codigo": it['codigo'], "nombre": it['nombre'], "docente": it['docente']} for it in items],
-                "sugerencia": f"Mover una de estas cátedras a otro día/hora para que los alumnos de {anno} de {carrera} puedan cursar ambas.",
-            })
-    # Sort by sede, carrera, anno
-    conflictos.sort(key=lambda x: (x['sede_plan'], x['carrera'], x['anno'], x['dia'], x['hora']))
-    return {"conflictos": conflictos, "total": len(conflictos)}
+            cods_unicos = list(set(it['cod'] for it in items))
+            if len(cods_unicos) < 2: continue
+            conf_docentes.append({"docente": doc_name, "dia": dia, "hora": hora,
+                "asignaciones": [{"codigo": it['cod'], "nombre": it['nombre'], "sede": it['sede']} for it in items],
+                "tipo": "docente"})
+    conf_presencial.sort(key=lambda x: (x['sede_plan'], x['carrera'], x['anno']))
+    conf_docentes.sort(key=lambda x: (x['docente'], x['dia']))
+    total = len(conf_presencial) + len(conf_cied) + len(conf_docentes)
+    return {"presencial": conf_presencial, "cied": conf_cied, "docentes": conf_docentes, "total": total,
+        "total_presencial": len(conf_presencial), "total_cied": len(conf_cied), "total_docentes": len(conf_docentes)}
 
 
 # ===== v10.0: Exportar COMPLETO =====
