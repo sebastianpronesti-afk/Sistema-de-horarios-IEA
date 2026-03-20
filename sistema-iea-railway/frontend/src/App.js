@@ -2383,6 +2383,30 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         </button>
       </div>
 
+      <div className="bg-white rounded-xl border p-6 mb-6 border-violet-200">
+        <h3 className="font-semibold mb-2">🎯 Cátedras de Referencia por Docente</h3>
+        <p className="text-sm text-slate-500 mb-3">Define qué cátedras puede dictar cada docente. Se usa para las sugerencias automáticas de armado de horarios.</p>
+        <div className="flex gap-3">
+          <button onClick={() => subirArchivo('/api/importar/catedras-referencia', 'Cát. Referencia')}
+            disabled={uploading === 'Cát. Referencia'}
+            className="flex-1 py-2.5 rounded-lg font-medium disabled:opacity-50 bg-violet-600 text-white hover:bg-violet-700">
+            {uploading === 'Cát. Referencia' ? '⏳...' : '📤 Importar desde Excel de designaciones'}
+          </button>
+          <button onClick={async () => {
+            setUploading('Auto-ref');
+            try {
+              const r = await fetch(`${API_URL}/api/docentes/auto-referencia?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST' });
+              const data = await r.json();
+              setResultado({ ok: true, data, label: 'Auto-asignar referencias' }); recargar();
+            } catch (e) { alert(e.message); }
+            setUploading(null);
+          }} disabled={uploading === 'Auto-ref'}
+            className="flex-1 py-2.5 rounded-lg font-medium disabled:opacity-50 bg-violet-100 text-violet-700 border border-violet-300 hover:bg-violet-200">
+            {uploading === 'Auto-ref' ? '⏳...' : '🔄 Auto-asignar desde asignaciones actuales'}
+          </button>
+        </div>
+      </div>
+
       <div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
         <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
         <p className="text-sm text-slate-500 mb-1">BCE: alumnos del secundario acelerado. Se asignan como <strong>Virtual</strong> a la sede del curso.</p>
