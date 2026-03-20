@@ -16,7 +16,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="15.0")
+app = FastAPI(title="Sistema Horarios IEA", version="16.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -176,6 +176,14 @@ def run_migration(db):
                     db.execute(text("ALTER TABLE docentes ADD COLUMN notas VARCHAR"))
                     db.commit()
                 except Exception: db.rollback()
+            # v16.0: especialidad y catedras de referencia
+            for col_new in ['especialidad', 'catedras_referencia']:
+                if col_new not in cols:
+                    try:
+                        db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_new} VARCHAR"))
+                        db.commit()
+                        resultado.append(f"✅ Columna {col_new} en docentes")
+                    except Exception: db.rollback()
         # --- Crear tabla docente_disponibilidad (v5.0) ---
         if 'docente_disponibilidad' not in tables:
             try:
@@ -800,7 +808,15 @@ def calcular_tipo_modalidad(docente, db):
 
 @app.get("/api/docentes")
 def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
-    docentes = db.query(Docente).order_by(Docente.apellido).all()
+    from sqlalchemy import text
+    docentes = db.query(Docente).order_by(Docente.apellido, Docente.nombre).all()
+    # Pre-load disponibilidad
+    disp_map = {}
+    try:
+        for r in db.execute(text("SELECT docente_id, dia, hora, disponible FROM docente_disponibilidad WHERE disponible = TRUE")).fetchall():
+            if r[0] not in disp_map: disp_map[r[0]] = []
+            disp_map[r[0]].append(f"{r[1]} {r[2]}")
+    except: pass
     result = []
     for d in docentes:
         try:
@@ -825,12 +841,19 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             mat_av = getattr(d, 'materias_av', 0) or 0
             mat_cab = getattr(d, 'materias_cab', 0) or 0
             mat_vl = getattr(d, 'materias_vl', 0) or 0
+            # v16.0: availability summary
+            disp_list = disp_map.get(d.id, [])
+            disp_resumen = f"{len(disp_list)} franjas" if disp_list else "Sin asignar"
             result.append({
                 "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
                 "email": d.email, "tipo_modalidad": tipo,
                 "horas_asignadas": horas, "notas": getattr(d, 'notas', None),
                 "sociedad_cfpea": cfpea, "sociedad_isftea": isftea,
                 "materias_av": mat_av, "materias_cab": mat_cab, "materias_vl": mat_vl,
+                "especialidad": getattr(d, 'especialidad', None),
+                "catedras_referencia": getattr(d, 'catedras_referencia', None),
+                "disponibilidad_resumen": disp_resumen,
+                "disponibilidad_franjas": disp_list[:6],
                 "sedes": sedes_data, "asignaciones": asigs_data,
             })
         except Exception:
@@ -838,6 +861,8 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "email": d.email, "tipo_modalidad": "SIN_ASIGNACIONES",
                 "horas_asignadas": 0, "sociedad_cfpea": False, "sociedad_isftea": False,
                 "materias_av": 0, "materias_cab": 0, "materias_vl": 0,
+                "especialidad": None, "catedras_referencia": None,
+                "disponibilidad_resumen": "Sin asignar", "disponibilidad_franjas": [],
                 "sedes": [], "asignaciones": []})
     return result
 
@@ -873,6 +898,11 @@ def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db
     if "notas" in data:
         try: db.execute(text("UPDATE docentes SET notas = :val WHERE id = :id"), {"val": data["notas"], "id": docente_id})
         except: pass
+    # v16.0: especialidad y catedras_referencia
+    for fld in ['especialidad', 'catedras_referencia']:
+        if fld in data:
+            try: db.execute(text(f"UPDATE docentes SET {fld} = :val WHERE id = :id"), {"val": data[fld], "id": docente_id})
+            except: pass
     db.commit()
     return {"ok": True}
 
@@ -1592,12 +1622,14 @@ DOCENTE_TYPO_MAP = {
     'TOMATI': 'TOMATTI', 'MARIA LAURA PAVEL': 'PAVEL',
     'YANELA CAPUCHETTI': 'CAPUCHETTI', 'YANELA CAPUCCHETI': 'CAPUCHETTI',
     'DIEGO MARTINEZ': 'MARTINEZ', 'PEREZ LUCAS': 'PEREZ',
-    'ROSCHMAN': 'GONZALEZ LARES ROSCHMAN', 'PALERMO': 'PALMERO LLANOS',
+    'ROSCHMAN': 'GONZALEZ LARES ROSCHMAN',
     'GONZALEZ R': 'GONZALEZ', 'GASTON GONZALEZ': 'GONZALEZ',
     'GONZALEZ ARIEL': 'GONZALEZ', 'FERNANDEZ L': 'FERNANDEZ',
     'RODRIGUEZ S': 'RODRIGUEZ', 'HERRERA S.': 'HERRERA', 'HERRERA S': 'HERRERA',
     'LOPEZ G': 'LOPEZ GHIGLIERI', 'AGUSTINA ACOSTA': 'ACOSTA',
-    'ACOSTA AGUSTINA': 'ACOSTA', 'KAREN PAMELA FLORENTIN': 'FLORENTIN',
+    'ACOSTA AGUSTINA': 'ACOSTA',
+    # NOT mapping: PALERMO ≠ PALMERO LLANOS (different people)
+    # NOT mapping: KAREN PAMELA FLORENTIN → goes to Caren Pamela, not Isaul
 }
 
 def _parse_horarios_excel(file_content, db, cuatrimestre_id):
@@ -1826,6 +1858,122 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
             "docente": docente_actual, "tiene_docente": tiene_docente,
         })
     return {"sedes": sedes_result, "plan_importado": True, "total_registros": len(rows)}
+
+
+# ===== v16.0: Motor de sugerencias de armado de horarios =====
+@app.get("/api/sugerencias-armado")
+def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # 1) Get plan_carrera entries
+    q = "SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera"
+    if sede: q += f" WHERE sede = '{sede}'"
+    q += " ORDER BY sede, carrera, anno"
+    try: plan = db.execute(text(q)).fetchall()
+    except: return {"sedes": {}, "stats": {}}
+    if not plan: return {"sedes": {}, "stats": {}}
+    # 2) Get inscriptos count
+    total_q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: total_q += f" WHERE cuatrimestre_id = {cuatrimestre_id}"
+    total_q += " GROUP BY catedra_id"
+    total_map = {}
+    try:
+        for r in db.execute(text(total_q)).fetchall(): total_map[r[0]] = r[1]
+    except: pass
+    # 3) Catedra map
+    cat_map = {c.codigo: {"id": c.id, "nombre": c.nombre} for c in db.query(Catedra).all()}
+    # 4) Current asignaciones
+    asig_q = db.query(Asignacion)
+    if cuatrimestre_id: asig_q = asig_q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = asig_q.all()
+    asig_map = {}  # catedra_id → [{docente, dia, hora, sede}]
+    docente_busy = {}  # docente_id → set of (dia, hora)
+    for a in asigs:
+        if a.catedra_id not in asig_map: asig_map[a.catedra_id] = []
+        asig_map[a.catedra_id].append({
+            "docente_id": a.docente_id,
+            "docente": f"{a.docente.nombre} {a.docente.apellido}" if a.docente else None,
+            "dia": a.dia, "hora": a.hora_inicio,
+            "sede": a.sede.nombre if a.sede else None,
+        })
+        if a.docente_id and a.dia and a.hora_inicio:
+            if a.docente_id not in docente_busy: docente_busy[a.docente_id] = set()
+            docente_busy[a.docente_id].add((a.dia, a.hora_inicio))
+    # 5) Docentes with availability and references
+    docentes = db.query(Docente).all()
+    disp_map = {}
+    try:
+        for r in db.execute(text("SELECT docente_id, dia, hora FROM docente_disponibilidad WHERE disponible = TRUE")).fetchall():
+            if r[0] not in disp_map: disp_map[r[0]] = set()
+            disp_map[r[0]].add((r[1], r[2]))
+    except: pass
+    # Build docente lookup for suggestions
+    doc_info = {}
+    for d in docentes:
+        refs = (getattr(d, 'catedras_referencia', '') or '').strip()
+        ref_codes = [r.strip() for r in refs.split(',') if r.strip()] if refs else []
+        avail = disp_map.get(d.id, set())
+        busy = docente_busy.get(d.id, set())
+        free = avail - busy  # Available and not already assigned
+        doc_info[d.id] = {
+            "id": d.id, "nombre": f"{d.nombre} {d.apellido}",
+            "ref_codes": ref_codes, "free_slots": free,
+            "sedes": [ds.sede.nombre for ds in (d.sedes or []) if ds.sede],
+        }
+    # 6) Build result per sede → carrera → anno → catedras with suggestions
+    sedes_result = {}
+    stats = {"total": 0, "con_docente": 0, "sugerido": 0, "sin_sugerencia": 0, "asincronica": 0}
+    for r in plan:
+        sede_n, carrera, anno, cod, nombre_plan = r[0], r[1], r[2], r[3], r[4]
+        cat_info = cat_map.get(cod)
+        cat_id = cat_info["id"] if cat_info else None
+        insc = total_map.get(cat_id, 0) if cat_id else 0
+        criterio = "ABRIR" if insc >= 10 else ("ASINCRÓNICA" if insc > 0 else "SIN ALUMNOS")
+        # Current assignments
+        current_asigs = asig_map.get(cat_id, []) if cat_id else []
+        tiene_docente = any(a['docente'] for a in current_asigs)
+        docente_actual = ', '.join(set(a['docente'] for a in current_asigs if a['docente'])) or None
+        horarios_actuales = [f"{a['dia']} {a['hora']}" for a in current_asigs if a['dia']] if current_asigs else []
+        # Determine status and suggestion
+        estado = "asignado"  # green
+        sugerencia_docente = None
+        if criterio == "ABRIR" and tiene_docente:
+            estado = "asignado"
+            stats["con_docente"] += 1
+        elif criterio == "ABRIR" and not tiene_docente:
+            # Find suggestion
+            candidatos = []
+            for did, dinfo in doc_info.items():
+                # Check if docente has this cátedra as reference
+                if cod in dinfo["ref_codes"] or not dinfo["ref_codes"]:
+                    if dinfo["free_slots"]:
+                        score = 10 if cod in dinfo["ref_codes"] else 1
+                        # Bonus if docente's sede matches
+                        if any(s[:4].upper() == sede_n[:4].upper() for s in dinfo["sedes"]): score += 5
+                        candidatos.append({"id": did, "nombre": dinfo["nombre"], "score": score,
+                            "free": len(dinfo["free_slots"]), "slots": list(dinfo["free_slots"])[:3]})
+            candidatos.sort(key=lambda x: -x["score"])
+            if candidatos:
+                estado = "sugerido"  # blue
+                sugerencia_docente = candidatos[0]["nombre"]
+                stats["sugerido"] += 1
+            else:
+                estado = "sin_sugerencia"  # red
+                stats["sin_sugerencia"] += 1
+        elif criterio == "ASINCRÓNICA":
+            estado = "asincronica"
+            stats["asincronica"] += 1
+        else:
+            estado = "sin_alumnos"
+        stats["total"] += 1
+        if sede_n not in sedes_result: sedes_result[sede_n] = {}
+        if carrera not in sedes_result[sede_n]: sedes_result[sede_n][carrera] = {}
+        if anno not in sedes_result[sede_n][carrera]: sedes_result[sede_n][carrera][anno] = []
+        sedes_result[sede_n][carrera][anno].append({
+            "codigo": cod, "nombre": nombre_plan, "inscriptos": insc, "criterio": criterio,
+            "estado": estado, "docente_actual": docente_actual, "sugerencia_docente": sugerencia_docente,
+            "horarios": horarios_actuales,
+        })
+    return {"sedes": sedes_result, "stats": stats}
 
 
 # ===== v15.0: Solapamientos entre carreras (lógica correcta) =====
