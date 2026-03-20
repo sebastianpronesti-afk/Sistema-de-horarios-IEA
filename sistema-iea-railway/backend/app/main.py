@@ -1270,49 +1270,53 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
     total = 0; errores = []
     for ws in wb.worksheets:
         for row in ws.iter_rows(min_row=2, values_only=True):
-            vals = list(row)
-            if len(vals) < 5: continue
-            alumno_id = str(vals[0] or '').strip()
-            alumno_nombre = str(vals[1] or '').strip()
-            dni = str(vals[2] or '').strip()
-            materia = str(vals[3] or '').strip()
-            curso = str(vals[4] or '').strip()
-            if not alumno_nombre or not materia: continue
-            # Parse cátedra code from materia
-            cod_match = re.search(r'c\.(\d+)', materia)
-            if not cod_match: continue
-            codigo = f"c.{cod_match.group(1)}"
-            cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-            if not cat: continue
-            # Determine if BEA or BCE
-            es_bea = 'BEA' in curso.upper() or 'BEA' in materia.upper()
-            # Sede: BEA always Caballito, BCE from course parenthesis
-            if es_bea:
-                sede_ref = 'Caballito'
-            else:
-                sede_match = re.search(r'\(([^)]+)\)', curso)
-                sede_ref = normalizar_sede(sede_match.group(1).strip()) if sede_match else 'Online - Interior'
-            # All BCE/BEA are virtual, no turno
-            al = db.query(Alumno).filter(Alumno.nombre == alumno_nombre, Alumno.dni == dni).first()
-            if not al:
-                al = Alumno(nombre=alumno_nombre, dni=dni)
-                db.add(al); db.flush()
-            # Check existing inscription
-            existing = db.query(Inscripcion).filter(
-                Inscripcion.alumno_id == al.id, Inscripcion.catedra_id == cat.id,
-                Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
-            if existing:
-                existing.turno = 'Virtual'
-                existing.modalidad_alumno = 'virtual'
-                existing.sede_referencia = sede_ref
-                existing.curso_nombre = curso
-            else:
-                insc = Inscripcion(
-                    alumno_id=al.id, catedra_id=cat.id, cuatrimestre_id=cuatrimestre_id,
-                    turno='Virtual', modalidad_alumno='virtual',
-                    sede_referencia=sede_ref, curso_nombre=curso)
-                db.add(insc)
-            total += 1
+            try:
+                vals = list(row)
+                if len(vals) < 4: continue
+                # Flexible column reading: try ID, ALUMNO, DNI, MATERIA, CURSO
+                alumno_nombre = str(vals[1] or '').strip() if len(vals) > 1 else ''
+                dni = str(vals[2] or '').strip() if len(vals) > 2 else ''
+                materia = str(vals[3] or '').strip() if len(vals) > 3 else ''
+                curso = str(vals[4] or '').strip() if len(vals) > 4 else ''
+                if not alumno_nombre or not materia: continue
+                # Parse cátedra code - try multiple patterns
+                cod_match = re.search(r'c\.(\d+)', materia)
+                if not cod_match:
+                    cod_match = re.search(r'c\.(\d+)', curso)
+                if not cod_match:
+                    # Try to find just a number at the start
+                    cod_match = re.search(r'^(\d+)', str(vals[0] or '').strip())
+                if not cod_match: continue
+                codigo = f"c.{cod_match.group(1)}"
+                cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+                if not cat: continue
+                es_bea = 'BEA' in curso.upper() or 'BEA' in materia.upper()
+                if es_bea:
+                    sede_ref = 'Caballito'
+                else:
+                    sede_match = re.search(r'\(([^)]+)\)', curso)
+                    sede_ref = normalizar_sede(sede_match.group(1).strip()) if sede_match else 'Online - Interior'
+                al = db.query(Alumno).filter(Alumno.nombre == alumno_nombre, Alumno.dni == dni).first()
+                if not al:
+                    al = Alumno(nombre=alumno_nombre, dni=dni)
+                    db.add(al); db.flush()
+                existing = db.query(Inscripcion).filter(
+                    Inscripcion.alumno_id == al.id, Inscripcion.catedra_id == cat.id,
+                    Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
+                if existing:
+                    existing.turno = 'Virtual'
+                    existing.modalidad_alumno = 'virtual'
+                    existing.sede_referencia = sede_ref
+                    existing.curso_nombre = curso
+                else:
+                    insc = Inscripcion(
+                        alumno_id=al.id, catedra_id=cat.id, cuatrimestre_id=cuatrimestre_id,
+                        turno='Virtual', modalidad_alumno='virtual',
+                        sede_referencia=sede_ref, curso_nombre=curso)
+                    db.add(insc)
+                total += 1
+            except Exception as e:
+                errores.append(str(e)[:100])
     db.commit()
     wb.close()
     return {"importados": total, "tipo": "BCE/BEA", "errores": errores[:10]}
