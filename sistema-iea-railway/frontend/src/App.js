@@ -69,7 +69,6 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'control_insc', icon: '✅', label: 'Control Inscripciones' },
-    { id: 'control_insc', icon: '🔍', label: 'Control Inscripciones' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
     { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
@@ -1228,9 +1227,11 @@ function ControlInscripcionesView({ cuatrimestre }) {
       setLoading(true);
       try {
         const form = new FormData(); form.append('file', file);
-        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '1';
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '0';
         const res = await fetch(`${API_URL}/api/control-inscripciones?cuatrimestre_id=${cuatId}`, { method: 'POST', body: form });
-        setData(await res.json());
+        const result = await res.json();
+        if (result._debug) console.log('Control debug:', result._debug);
+        setData(result);
       } catch (e) { alert('Error: ' + e.message); }
       setLoading(false);
     }; input.click();
@@ -1337,6 +1338,16 @@ function ControlInscripcionesView({ cuatrimestre }) {
             </table>
           </div>
           <p className="text-sm text-slate-500 mt-3 text-center">Mostrando {Math.min(filtered.length, 200)} de {filtered.length} alumnos{data.total_results > 500 ? ` (de ${data.total_results} totales)` : ''}</p>
+          {data._debug && st.total === 0 && (
+            <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm">
+              <p className="font-bold text-amber-800">⚠️ No se procesaron alumnos. Verificá:</p>
+              <p className="text-amber-700 mt-1">Plan de carreras cargado: {data._debug.plan_carreras} carreras</p>
+              <p className="text-amber-700">Inscripciones en el sistema: {data._debug.inscripciones_db} (DNIs únicos: {data._debug.dnis_con_inscripciones})</p>
+              <p className="text-amber-700">Cuatrimestre ID: {data._debug.cuatrimestre_id || 'Todos'}</p>
+              {data._debug.inscripciones_db === 0 && <p className="text-red-600 mt-2 font-bold">→ No hay inscripciones cargadas. Importá primero los archivos de alumnos inscriptos.</p>}
+              {data._debug.plan_carreras === 0 && <p className="text-red-600 mt-2 font-bold">→ No hay plan de carreras. Importá primero el molde Horarios.xlsx.</p>}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -3010,7 +3021,6 @@ export default function App() {
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
         {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
