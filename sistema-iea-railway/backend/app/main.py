@@ -1807,11 +1807,14 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
             if not cat: no_cat.append(f"{codigo} {materia}"); continue
             sede_nombre = normalizar_sede(sede_raw) or sede_raw or ''
             sede_obj = None
+            def _strip_accents(s):
+                import unicodedata
+                return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
             for sn, so in all_sedes.items():
-                if sn.lower().replace(' ','') == sede_nombre.lower().replace(' ',''): sede_obj = so; break
+                if _strip_accents(sn.lower()).replace(' ','') == _strip_accents(sede_nombre.lower()).replace(' ',''): sede_obj = so; break
             if not sede_obj:
                 for sn, so in all_sedes.items():
-                    if sede_nombre.lower()[:4] in sn.lower(): sede_obj = so; break
+                    if _strip_accents(sede_nombre.lower())[:4] in _strip_accents(sn.lower()): sede_obj = so; break
             docente_obj = None; doc_display = ''
             if doc_raw and not doc_raw.lower().startswith('ver '):
                 doc_clean = doc_raw.upper().strip()
@@ -2658,7 +2661,7 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     # ========== HOJA: Listado Total Docentes (ordenado por sede) ==========
     docentes_db = db.query(Docente).order_by(Docente.apellido).all()
     ws_ld = wb.create_sheet("Listado Docentes")
-    ws_ld.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Sedes","Cátedras asignadas","Modalidad","Día","Hora"])
+    ws_ld.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Sedes","Cátedras asignadas","Cant.","Horarios",""])
     for cell in ws_ld[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="334155"); cell.alignment = Alignment(horizontal="center")
     idx = 1
@@ -2669,22 +2672,14 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     for doc in sorted(docentes_db, key=sede_sort_key):
         sds = ', '.join([s.sede.nombre for s in (doc.sedes or []) if s.sede]) or 'Sin sede'
         doc_asigs = [a for a in asigs if a.docente_id == doc.id]
-        if doc_asigs:
-            for a in doc_asigs:
-                ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
-                    getattr(doc, 'horas_asignadas', 0) or '',
-                    "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
-                    "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
-                    sds, f"{a.catedra.codigo} {a.catedra.nombre}" if a.catedra else "",
-                    a.modalidad or '', a.dia or "Pend.", a.hora_inicio or "Pend."])
-                idx += 1
-        else:
-            ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
-                getattr(doc, 'horas_asignadas', 0) or '',
-                "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
-                "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
-                sds, "SIN MATERIA ASIGNADA", '', '', ''])
-            idx += 1
+        cats_list = ', '.join([f"{a.catedra.codigo} {a.catedra.nombre[:20]}" for a in doc_asigs if a.catedra]) or 'SIN MATERIA ASIGNADA'
+        horarios = ', '.join([f"{a.dia or '?'} {a.hora_inicio or '?'}" for a in doc_asigs]) or ''
+        ws_ld.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
+            getattr(doc, 'horas_asignadas', 0) or '',
+            "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
+            "Sí" if getattr(doc, 'sociedad_isftea', False) else "",
+            sds, cats_list, len(doc_asigs), horarios, ''])
+        idx += 1
     for col, w in [('A',4),('B',28),('C',12),('D',24),('E',7),('F',7),('G',8),('H',20),('I',34),('J',13),('K',10),('L',7)]:
         ws_ld.column_dimensions[col].width = w
 
@@ -2693,9 +2688,12 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     ws_dtm.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Cátedra","Sede","Día","Hora"])
     for cell in ws_dtm[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="D97706"); cell.alignment = Alignment(horizontal="center")
+    def _is_tm(a):
+        try: return a.hora_inicio and int(a.hora_inicio.split(':')[0]) < 14
+        except: return False
     idx = 1
     for doc in docentes_db:
-        for a in [a for a in asigs if a.docente_id == doc.id and a.modalidad and 'tm' in a.modalidad]:
+        for a in [a for a in asigs if a.docente_id == doc.id and _is_tm(a)]:
             ws_dtm.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
                 getattr(doc, 'horas_asignadas', 0) or '',
                 "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
@@ -2711,9 +2709,12 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
     ws_dtn.append(["#","Docente","DNI","Email","Horas","CFPEA","ISFTEA","Cátedra","Sede","Día","Hora"])
     for cell in ws_dtn[1]:
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="4338CA"); cell.alignment = Alignment(horizontal="center")
+    def _is_tn(a):
+        try: return a.hora_inicio and int(a.hora_inicio.split(':')[0]) >= 14
+        except: return False
     idx = 1
     for doc in docentes_db:
-        for a in [a for a in asigs if a.docente_id == doc.id and a.modalidad and ('tn' in a.modalidad or a.modalidad == 'presencial')]:
+        for a in [a for a in asigs if a.docente_id == doc.id and _is_tn(a)]:
             ws_dtn.append([idx, f"{doc.nombre} {doc.apellido}", doc.dni, doc.email or '',
                 getattr(doc, 'horas_asignadas', 0) or '',
                 "Sí" if getattr(doc, 'sociedad_cfpea', False) else "",
