@@ -1764,7 +1764,7 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
     """Parse horarios Excel and return structured data without applying changes."""
     from openpyxl import load_workbook
     import io
-    wb = load_workbook(io.BytesIO(file_content), data_only=True)
+    wb = load_workbook(io.BytesIO(file_content))
     all_cats = {c.codigo: c for c in db.query(Catedra).all()}
     all_docs = db.query(Docente).all()
     doc_by_apellido = {}
@@ -1775,6 +1775,9 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
         if full: doc_by_apellido[full] = d
         full2 = f"{(d.nombre or '')} {(d.apellido or '')}".upper().strip()
         if full2: doc_by_apellido[full2] = d
+        # Also match by full name as typed (e.g. "Luciano Salinas")
+        full3 = f"{(d.nombre or '')} {(d.apellido or '')}".strip()
+        if full3: doc_by_apellido[full3.upper()] = d
     all_sedes = {s.nombre: s for s in db.query(Sede).all()}
     dia_map = {'LUNES':'Lunes','MARTES':'Martes','MIERCOLES':'Miércoles','MIÉRCOLES':'Miércoles',
         'JUEVES':'Jueves','VIERNES':'Viernes','SABADO':'Sábado','SÁBADO':'Sábado'}
@@ -1855,12 +1858,16 @@ async def horarios_preview(file: UploadFile = File(...), cuatrimestre_id: int = 
             "links_meet": con_meet,
             "docentes_a_crear": doc_to_create,
             "catedras_no_encontradas": no_cat[:20],
+            "_debug": {"total_catedras_db": len(db.query(Catedra).all()), "total_docentes_db": len(db.query(Docente).all()), "no_cat_count": len(no_cat)},
             "preview": [{"cat": r['cat_codigo'], "nombre": r['cat_nombre'][:30], "dia": r['dia'],
                 "hora": r['hora'], "sede": r['sede_nombre'], "docente": r['docente_display'] or '—',
                 "estado": "✅" if r['docente_id'] else ("🆕 Crear" if r['doc_raw'] else "—")} for r in results[:50]],
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error procesando archivo: {str(e)[:300]}")
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()[-500:],
+            "asignaciones_actuales_a_borrar": 0, "asignaciones_nuevas": 0, "con_docente_existente": 0,
+            "docentes_a_crear": [], "catedras_no_encontradas": [], "preview": []}
 
 # ===== v15.0: Apply horarios import (after preview) =====
 @app.post("/api/importar/horarios-aplicar")
