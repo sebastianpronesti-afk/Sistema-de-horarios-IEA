@@ -69,6 +69,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
     { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
     { id: 'control_insc', icon: '✅', label: 'Control Inscripciones' },
+    { id: 'edi_alumnos', icon: '🔀', label: 'EDI por Cátedra' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
     { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
@@ -1213,6 +1214,92 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
 }
 
 // ==================== CALENDARIO VIEW ====================
+// ==================== v16.0: EDI POR CÁTEDRA ====================
+function EdiAlumnosView({ cuatrimestre }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [abiertos, setAbiertos] = useState({});
+
+  useEffect(() => {
+    const cargar = async () => {
+      setLoading(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+        const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
+        setData(await apiFetch(`/api/edi-inscripciones${qp}`));
+      } catch (e) { console.error(e); }
+      setLoading(false);
+    };
+    cargar();
+  }, [cuatrimestre]);
+
+  if (loading) return <div className="p-8 text-center">⏳ Cargando EDIs...</div>;
+
+  const cats = data?.por_catedra ? Object.entries(data.por_catedra) : [];
+
+  return (
+    <div className="p-8">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800">🔀 Alumnos inscriptos a EDI por Cátedra</h2>
+        <p className="text-slate-500 text-sm mt-1">Alumnos cuya inscripción dice "EDI" y fueron contabilizados dentro de la cátedra principal del archivo de inscripción.</p>
+      </div>
+
+      <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 mb-6">
+        <p className="text-violet-800 font-bold text-lg">{data?.total || 0} inscripciones EDI en {cats.length} cátedras</p>
+        <p className="text-violet-600 text-sm mt-1">Estos alumnos eligieron un Espacio de Definición Institucional y se contabilizaron como inscriptos de la cátedra correspondiente.</p>
+      </div>
+
+      {cats.length === 0 ? (
+        <div className="bg-slate-50 border rounded-xl p-8 text-center">
+          <p className="text-4xl mb-2">📭</p>
+          <p className="text-slate-500">No se encontraron inscripciones EDI. Se detectan al importar alumnos (archivos que contengan registros con "EDI" en la materia).</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {cats.map(([key, cat]) => {
+            const isOpen = abiertos[key] !== false;
+            return (
+              <div key={key} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+                <div onClick={() => setAbiertos(p => ({...p, [key]: !isOpen}))}
+                  className="flex items-center gap-3 p-4 cursor-pointer hover:bg-slate-50">
+                  <span className="text-lg">{isOpen ? '▼' : '▶'}</span>
+                  <span className="font-mono bg-violet-600 text-white px-2 py-0.5 rounded text-sm">{cat.codigo}</span>
+                  <span className="font-bold flex-1">{cat.nombre}</span>
+                  <span className="bg-violet-100 text-violet-700 px-3 py-1 rounded-full text-sm font-bold">{cat.total} EDI</span>
+                </div>
+                {isOpen && (
+                  <table className="w-full text-sm border-t">
+                    <thead><tr className="bg-violet-50 text-violet-800 text-xs">
+                      <th className="p-2 text-left">Alumno</th>
+                      <th className="p-2 text-left">DNI</th>
+                      <th className="p-2 text-left">Materia EDI original</th>
+                      <th className="p-2 text-left">Curso</th>
+                      <th className="p-2 text-center">Sede</th>
+                      <th className="p-2 text-center">Turno</th>
+                    </tr></thead>
+                    <tbody>
+                      {cat.alumnos.map((a, i) => (
+                        <tr key={i} className="border-b hover:bg-violet-50">
+                          <td className="p-2 font-medium">{a.nombre}</td>
+                          <td className="p-2 font-mono text-xs">{a.dni}</td>
+                          <td className="p-2 text-violet-600 italic text-xs">{a.edi_materia || '—'}</td>
+                          <td className="p-2 text-xs text-slate-500">{a.curso}</td>
+                          <td className="p-2 text-center text-xs">{a.sede || '—'}</td>
+                          <td className="p-2 text-center text-xs">{a.turno || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ==================== v16.0: CONTROL DE INSCRIPCIONES ====================
 function ControlInscripcionesView({ cuatrimestre }) {
   const [data, setData] = useState(null);
@@ -3033,6 +3120,7 @@ export default function App() {
         {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
+        {activeView === 'edi_alumnos' && <EdiAlumnosView cuatrimestre={cuatrimestre} />}
         {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
       </main>
