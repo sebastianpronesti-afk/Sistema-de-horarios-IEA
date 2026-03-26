@@ -1764,7 +1764,7 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
     """Parse horarios Excel and return structured data without applying changes."""
     from openpyxl import load_workbook
     import io
-    wb = load_workbook(io.BytesIO(file_content))
+    wb = load_workbook(io.BytesIO(file_content), data_only=True)
     all_cats = {c.codigo: c for c in db.query(Catedra).all()}
     all_docs = db.query(Docente).all()
     doc_by_apellido = {}
@@ -1838,27 +1838,29 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
 # ===== v15.0: Preview horarios import =====
 @app.post("/api/importar/horarios-preview")
 async def horarios_preview(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
-    content = await file.read()
-    results, no_cat, doc_to_create = _parse_horarios_excel(content, db, cuatrimestre_id)
-    # Count current asignaciones that would be deleted
-    current_count = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).count()
-    con_doc = len([r for r in results if r['docente_id']])
-    sin_doc = len([r for r in results if not r['docente_id'] and not r['doc_raw']])
-    doc_new = len([r for r in results if not r['docente_id'] and r['doc_raw']])
-    con_meet = len([r for r in results if r.get('meet_link')])
-    return {
-        "asignaciones_actuales_a_borrar": current_count,
-        "asignaciones_nuevas": len(results),
-        "con_docente_existente": con_doc,
-        "sin_docente": sin_doc,
-        "con_docente_nuevo_a_crear": doc_new,
-        "links_meet": con_meet,
-        "docentes_a_crear": doc_to_create,
-        "catedras_no_encontradas": no_cat[:20],
-        "preview": [{"cat": r['cat_codigo'], "nombre": r['cat_nombre'][:30], "dia": r['dia'],
-            "hora": r['hora'], "sede": r['sede_nombre'], "docente": r['docente_display'] or '—',
-            "estado": "✅" if r['docente_id'] else ("🆕 Crear" if r['doc_raw'] else "—")} for r in results[:50]],
-    }
+    try:
+        content = await file.read()
+        results, no_cat, doc_to_create = _parse_horarios_excel(content, db, cuatrimestre_id)
+        current_count = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).count()
+        con_doc = len([r for r in results if r['docente_id']])
+        sin_doc = len([r for r in results if not r['docente_id'] and not r['doc_raw']])
+        doc_new = len([r for r in results if not r['docente_id'] and r['doc_raw']])
+        con_meet = len([r for r in results if r.get('meet_link')])
+        return {
+            "asignaciones_actuales_a_borrar": current_count,
+            "asignaciones_nuevas": len(results),
+            "con_docente_existente": con_doc,
+            "sin_docente": sin_doc,
+            "con_docente_nuevo_a_crear": doc_new,
+            "links_meet": con_meet,
+            "docentes_a_crear": doc_to_create,
+            "catedras_no_encontradas": no_cat[:20],
+            "preview": [{"cat": r['cat_codigo'], "nombre": r['cat_nombre'][:30], "dia": r['dia'],
+                "hora": r['hora'], "sede": r['sede_nombre'], "docente": r['docente_display'] or '—',
+                "estado": "✅" if r['docente_id'] else ("🆕 Crear" if r['doc_raw'] else "—")} for r in results[:50]],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error procesando archivo: {str(e)[:300]}")
 
 # ===== v15.0: Apply horarios import (after preview) =====
 @app.post("/api/importar/horarios-aplicar")
