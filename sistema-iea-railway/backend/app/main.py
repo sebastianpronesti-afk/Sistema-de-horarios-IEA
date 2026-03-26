@@ -1764,7 +1764,7 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
     """Parse horarios Excel and return structured data without applying changes."""
     from openpyxl import load_workbook
     import io
-    wb = load_workbook(io.BytesIO(file_content), read_only=True)
+    wb = load_workbook(io.BytesIO(file_content))
     all_cats = {c.codigo: c for c in db.query(Catedra).all()}
     all_docs = db.query(Docente).all()
     doc_by_apellido = {}
