@@ -1805,7 +1805,7 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
                 except: pass
             cat = all_cats.get(codigo)
             if not cat: no_cat.append(f"{codigo} {materia}"); continue
-            sede_nombre = normalizar_sede(sede_raw)
+            sede_nombre = normalizar_sede(sede_raw) or sede_raw or ''
             sede_obj = None
             for sn, so in all_sedes.items():
                 if sn.lower().replace(' ','') == sede_nombre.lower().replace(' ',''): sede_obj = so; break
