@@ -2568,6 +2568,8 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
                 const form = new FormData(); form.append('file', file);
                 const res = await fetch(`${API_URL}/api/importar/horarios-preview?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
                 const data = await res.json();
+                console.log('Preview response:', data);
+                if (data.detail || data.error) { alert('Error: ' + (data.detail || data.error)); setUploading(null); return; }
                 setHorariosPreview({ data, file });
               } catch (e) { alert('Error: ' + e.message); }
               setUploading(null);
@@ -2580,10 +2582,19 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           <div>
             <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-3">
               <p className="font-bold text-emerald-800 text-lg mb-2">Vista previa de cambios</p>
+              {horariosPreview.data.error && (
+                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
+                  <p className="font-bold text-red-800">⚠️ Error: {horariosPreview.data.error}</p>
+                  {horariosPreview.data.traceback && <pre className="text-[9px] text-red-600 mt-1 overflow-auto max-h-24">{horariosPreview.data.traceback}</pre>}
+                </div>
+              )}
+              {horariosPreview.data._debug && (
+                <p className="text-[10px] text-slate-400 mb-2">DB: {horariosPreview.data._debug.total_catedras_db} cátedras, {horariosPreview.data._debug.total_docentes_db} docentes | No encontradas: {horariosPreview.data._debug.no_cat_count}</p>
+              )}
               <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-red-600">{horariosPreview.data.asignaciones_actuales_a_borrar}</p><p className="text-xs text-slate-500">Se borran</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-emerald-600">{horariosPreview.data.asignaciones_nuevas}</p><p className="text-xs text-slate-500">Se crean</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-blue-600">{horariosPreview.data.con_docente_existente}</p><p className="text-xs text-slate-500">Con docente</p></div>
+                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-red-600">{horariosPreview.data.asignaciones_actuales_a_borrar ?? 0}</p><p className="text-xs text-slate-500">Se borran</p></div>
+                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-emerald-600">{horariosPreview.data.asignaciones_nuevas ?? 0}</p><p className="text-xs text-slate-500">Se crean</p></div>
+                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-blue-600">{horariosPreview.data.con_docente_existente ?? 0}</p><p className="text-xs text-slate-500">Con docente</p></div>
               </div>
               {horariosPreview.data.docentes_a_crear?.length > 0 && (
                 <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
