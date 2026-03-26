@@ -139,6 +139,8 @@ def run_migration(db):
                 ('modalidad_alumno', 'VARCHAR'),
                 ('sede_referencia', 'VARCHAR'),
                 ('curso_nombre', 'VARCHAR'),
+                ('es_edi', 'BOOLEAN DEFAULT FALSE'),
+                ('edi_materia', 'VARCHAR'),
             ]:
                 if col not in cols:
                     try:
@@ -1175,10 +1177,22 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
     try:
         content = await file.read()
         wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-        creados = 0; inscripciones = 0; actualizados = 0; errores = []
+        creados = 0; inscripciones = 0; actualizados = 0; errores = []; edi_total = 0
         stats = {'virtual': 0, 'presencial': 0, 'turnos': {}, 'sedes': {}}
         for ws in wb:
-            for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            # v16.0: Collect all rows, find dominant code per sheet for EDI matching
+            all_rows = list(ws.iter_rows(min_row=2, values_only=True))
+            sheet_codes = {}
+            for pre_row in all_rows:
+                pv = [str(c).strip() if c is not None else "" for c in pre_row]
+                if len(pv) < 4: continue
+                pm = re.match(r'^(c\.\d+)', pv[3], re.IGNORECASE)
+                if pm:
+                    pc = pm.group(1)
+                    sheet_codes[pc] = sheet_codes.get(pc, 0) + 1
+            dominant_code = max(sheet_codes, key=sheet_codes.get) if sheet_codes else None
+            edi_count = 0
+            for row_num, row in enumerate(all_rows, start=2):
                 vals = [str(c).strip() if c is not None else "" for c in row]
                 if len(vals) < 4: continue
                 alumno_texto = vals[1]
@@ -1196,8 +1210,17 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
                 nombre = ' '.join(partes[:-1]) if len(partes) >= 2 else nombre_completo
                 apellido = partes[-1] if len(partes) >= 2 else ""
                 m_cod = re.match(r'^(c\.\d+)', materia_texto, re.IGNORECASE)
-                if not m_cod: continue
-                codigo = m_cod.group(1)
+                is_edi = False; edi_mat = None
+                if not m_cod:
+                    # v16.0: If it says EDI, use the dominant cátedra code of this sheet
+                    if 'EDI' in materia_texto.upper() and dominant_code:
+                        codigo = dominant_code
+                        is_edi = True; edi_mat = materia_texto[:100]
+                        edi_count += 1
+                    else:
+                        continue
+                else:
+                    codigo = m_cod.group(1)
                 catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
                 if not catedra: continue
                 # v5.0: Clasificar por curso
@@ -1217,17 +1240,16 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
                     db.add(insc); db.flush()
                     try:
                         db.execute(text(
-                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
-                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "id": insc.id})
+                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso, es_edi = :edi, edi_materia = :edim WHERE id = :id"
+                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "edi": is_edi, "edim": edi_mat, "id": insc.id})
                     except Exception:
                         pass
                     inscripciones += 1
                 else:
-                    # SIEMPRE sobreescribir clasificación (no COALESCE)
                     try:
                         db.execute(text(
-                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
-                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "id": existe.id})
+                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso, es_edi = :edi, edi_materia = :edim WHERE id = :id"
+                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "edi": is_edi, "edim": edi_mat, "id": existe.id})
                         actualizados += 1
                     except Exception:
                         pass
@@ -1235,10 +1257,12 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
                 stats[modalidad_alumno] = stats.get(modalidad_alumno, 0) + 1
                 if turno: stats['turnos'][turno] = stats['turnos'].get(turno, 0) + 1
                 if sede_ref: stats['sedes'][sede_ref] = stats['sedes'].get(sede_ref, 0) + 1
+            edi_total += edi_count
         db.commit(); wb.close()
         return {
             "alumnos_nuevos": creados, "inscripciones_nuevas": inscripciones,
             "inscripciones_actualizadas": actualizados,
+            "edi_contabilizados": edi_total,
             "virtuales": stats.get('virtual', 0), "presenciales": stats.get('presencial', 0),
             "por_turno": stats['turnos'], "por_sede": stats['sedes'],
             "errores": errores[:20]
@@ -1246,6 +1270,30 @@ async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+
+
+# ===== v16.0: EDI Inscripciones — listar alumnos EDI por cátedra =====
+@app.get("/api/edi-inscripciones")
+def get_edi_inscripciones(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    q = "SELECT i.id, i.catedra_id, i.edi_materia, i.curso_nombre, i.sede_referencia, i.turno, a.nombre, a.apellido, a.dni, c.codigo, c.nombre as cat_nombre FROM inscripciones i JOIN alumnos a ON i.alumno_id = a.id JOIN catedras c ON i.catedra_id = c.id WHERE i.es_edi = TRUE"
+    if cuatrimestre_id: q += f" AND i.cuatrimestre_id = {cuatrimestre_id}"
+    q += " ORDER BY c.codigo, a.apellido, a.nombre"
+    try: rows = db.execute(text(q)).fetchall()
+    except: return {"por_catedra": {}, "total": 0}
+    # Group by cátedra
+    por_cat = {}
+    for r in rows:
+        cod = r[9]; cat_nombre = r[10]
+        key = f"{cod} ({cat_nombre})"
+        if key not in por_cat: por_cat[key] = {"codigo": cod, "nombre": cat_nombre, "alumnos": [], "total": 0}
+        por_cat[key]["alumnos"].append({
+            "nombre": f"{r[6]} {r[7]}", "dni": r[8],
+            "edi_materia": r[2], "curso": (r[3] or '')[:50],
+            "sede": r[4], "turno": r[5],
+        })
+        por_cat[key]["total"] += 1
+    return {"por_catedra": por_cat, "total": len(rows)}
 
 
 # ==================== SOLAPAMIENTOS ====================
