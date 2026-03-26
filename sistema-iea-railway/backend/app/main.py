@@ -1792,6 +1792,7 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
             hora_raw = str(vals[3] or '').strip()
             sede_raw = str(vals[4] or '').strip()
             doc_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
+            meet_link = str(vals[6] or '').strip() if len(vals) > 6 else ''
             if not dia_raw or not hora_raw: continue
             dia = dia_map.get(dia_raw.upper().strip(), dia_raw.strip().title())
             hora = hora_raw.replace('.', ':').replace(' HS','').replace(' hs','').replace('HS','').strip()
@@ -1829,7 +1830,7 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
                 'dia': dia, 'hora': hora, 'sede_id': sede_obj.id if sede_obj else None,
                 'sede_nombre': sede_nombre, 'docente_id': docente_obj.id if docente_obj else None,
                 'docente_display': doc_display, 'modalidad': modalidad,
-                'doc_raw': doc_raw,
+                'doc_raw': doc_raw, 'meet_link': meet_link if meet_link.startswith('http') else '',
             })
     wb.close()
     return results, list(set(no_cat)), sorted(list(doc_to_create))
@@ -1844,12 +1845,14 @@ async def horarios_preview(file: UploadFile = File(...), cuatrimestre_id: int = 
     con_doc = len([r for r in results if r['docente_id']])
     sin_doc = len([r for r in results if not r['docente_id'] and not r['doc_raw']])
     doc_new = len([r for r in results if not r['docente_id'] and r['doc_raw']])
+    con_meet = len([r for r in results if r.get('meet_link')])
     return {
         "asignaciones_actuales_a_borrar": current_count,
         "asignaciones_nuevas": len(results),
         "con_docente_existente": con_doc,
         "sin_docente": sin_doc,
         "con_docente_nuevo_a_crear": doc_new,
+        "links_meet": con_meet,
         "docentes_a_crear": doc_to_create,
         "catedras_no_encontradas": no_cat[:20],
         "preview": [{"cat": r['cat_codigo'], "nombre": r['cat_nombre'][:30], "dia": r['dia'],
@@ -1886,8 +1889,9 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
     except Exception as e:
         db.rollback()
         return {"error": f"Error borrando asignaciones: {str(e)}"}
-    # 3) Create new asignaciones
-    creados = 0
+    # 3) Create new asignaciones + update meet links
+    creados = 0; meet_updated = 0
+    from sqlalchemy import text as sql_text
     for r in results:
         doc_id = r['docente_id']
         if not doc_id and r['doc_raw']:
@@ -1899,6 +1903,13 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
             sede_id=r['sede_id'], modalidad=r['modalidad'])
         db.add(asig)
         creados += 1
+        # v16.0: Update meet link on cátedra if provided
+        if r.get('meet_link'):
+            try:
+                db.execute(sql_text("UPDATE catedras SET link_meet = :link WHERE id = :id"),
+                    {"link": r['meet_link'], "id": r['cat_id']})
+                meet_updated += 1
+            except: pass
     try:
         db.commit()
     except Exception as e:
@@ -1907,6 +1918,7 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
     return {
         "asignaciones_borradas": deleted,
         "asignaciones_creadas": creados,
+        "links_meet_actualizados": meet_updated,
         "docentes_creados": nuevos_docs,
         "docentes_nuevos": doc_to_create,
         "catedras_no_encontradas": no_cat[:20],
