@@ -28,6 +28,63 @@ app.add_middleware(
 
 # ==================== HELPERS ====================
 
+# v17.0: Áreas de especialidad predefinidas (selector múltiple, sin escritura libre)
+AREAS_ESPECIALIDAD = [
+    {"id": "contable", "nombre": "Contable y Administrativa", "color": "#2E75B6"},
+    {"id": "economicas", "nombre": "Económicas y Finanzas", "color": "#1E8449"},
+    {"id": "comercio", "nombre": "Comercio Exterior y Aduana", "color": "#B7950B"},
+    {"id": "juridica", "nombre": "Jurídica y Legal", "color": "#6C3483"},
+    {"id": "salud", "nombre": "Salud y Acompañamiento", "color": "#C0392B"},
+    {"id": "pedagogica", "nombre": "Pedagógica y Educación", "color": "#D35400"},
+    {"id": "psicosocial", "nombre": "Psicología y Ciencias Sociales", "color": "#AF7AC5"},
+    {"id": "duras", "nombre": "Ciencias Duras (Mat/Fís/Quím)", "color": "#34495E"},
+    {"id": "tecnologia", "nombre": "Tecnología, Datos e IA", "color": "#16A085"},
+    {"id": "idiomas", "nombre": "Idiomas", "color": "#E67E22"},
+    {"id": "comunicacion", "nombre": "Comunicación, Marketing y Publicidad", "color": "#CB4335"},
+    {"id": "turismo", "nombre": "Turismo y Hotelería", "color": "#2980B9"},
+    {"id": "eventos", "nombre": "Eventos y Producción", "color": "#8E44AD"},
+    {"id": "logistica", "nombre": "Logística y Transporte", "color": "#7D6608"},
+    {"id": "higiene", "nombre": "Higiene y Seguridad", "color": "#943126"},
+    {"id": "agropecuaria", "nombre": "Agropecuaria y Ambiente", "color": "#196F3D"},
+    {"id": "rrhh", "nombre": "Recursos Humanos", "color": "#5D6D7E"},
+]
+AREAS_VALIDAS = {a["id"] for a in AREAS_ESPECIALIDAD}
+
+def sql_set(db, tabla, campo, valor, id_registro):
+    """Ejecuta un UPDATE aislado. Si falla hace rollback para no abortar la transacción.
+    Devuelve True si guardó. Reemplaza el patrón try/except:pass que rompía todo lo siguiente."""
+    from sqlalchemy import text
+    try:
+        db.execute(text(f"UPDATE {tabla} SET {campo} = :val WHERE id = :id"),
+                   {"val": valor, "id": id_registro})
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+
+def hora_a_minutos(h):
+    """'09:30' -> 570. Devuelve None si no parsea."""
+    if not h: return None
+    try:
+        partes = str(h).strip().replace('.', ':').split(':')
+        return int(partes[0]) * 60 + (int(partes[1][:2]) if len(partes) > 1 else 0)
+    except Exception:
+        return None
+
+def minutos_a_hora(m):
+    if m is None: return None
+    return f"{int(m)//60:02d}:{int(m)%60:02d}"
+
+def rangos_se_pisan(ini_a, fin_a, ini_b, fin_b, dur_default=90):
+    """Compara dos franjas horarias reales. Si no hay hora_fin usa duración por defecto."""
+    a1 = hora_a_minutos(ini_a); b1 = hora_a_minutos(ini_b)
+    if a1 is None or b1 is None: return False
+    a2 = hora_a_minutos(fin_a) or (a1 + dur_default)
+    b2 = hora_a_minutos(fin_b) or (b1 + dur_default)
+    return a1 < b2 and b1 < a2
+
+
 def sort_key_codigo(codigo):
     m = re.match(r'c\.(\d+)', codigo or '', re.IGNORECASE)
     return int(m.group(1)) if m else 9999
@@ -185,6 +242,46 @@ def run_migration(db):
                         db.execute(text(f"ALTER TABLE docentes ADD COLUMN {col_new} VARCHAR"))
                         db.commit()
                         resultado.append(f"✅ Columna {col_new} en docentes")
+                    except Exception: db.rollback()
+            # v17.0: especialidades (multi-select) + activo
+            if 'especialidades' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE docentes ADD COLUMN especialidades VARCHAR"))
+                    db.commit(); resultado.append("✅ docentes.especialidades")
+                except Exception: db.rollback()
+            if 'activo' not in cols:
+                try:
+                    db.execute(text("ALTER TABLE docentes ADD COLUMN activo BOOLEAN DEFAULT TRUE"))
+                    db.commit(); resultado.append("✅ docentes.activo")
+                except Exception: db.rollback()
+            # v17.0: DNI deja de ser obligatorio
+            try:
+                db.execute(text("ALTER TABLE docentes ALTER COLUMN dni DROP NOT NULL"))
+                db.commit(); resultado.append("✅ docentes.dni ahora opcional")
+            except Exception: db.rollback()
+        # --- v17.0: tabla catedra_dictado (se dicta != se abre) ---
+        if 'catedra_dictado' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS catedra_dictado (
+                        id SERIAL PRIMARY KEY,
+                        catedra_id INTEGER REFERENCES catedras(id) ON DELETE CASCADE,
+                        cuatrimestre_id INTEGER NOT NULL,
+                        se_dicta BOOLEAN DEFAULT TRUE,
+                        decision_forzada VARCHAR,
+                        motivo_forzado VARCHAR,
+                        UNIQUE (catedra_id, cuatrimestre_id)
+                    )
+                """))
+                db.commit(); resultado.append("✅ tabla catedra_dictado")
+            except Exception: db.rollback()
+        else:
+            cols_cd = [c['name'] for c in inspector.get_columns('catedra_dictado')]
+            for col_cd, tipo_cd in [('decision_forzada', 'VARCHAR'), ('motivo_forzado', 'VARCHAR')]:
+                if col_cd not in cols_cd:
+                    try:
+                        db.execute(text(f"ALTER TABLE catedra_dictado ADD COLUMN {col_cd} {tipo_cd}"))
+                        db.commit()
                     except Exception: db.rollback()
         # --- Crear tabla docente_disponibilidad (v5.0) ---
         if 'docente_disponibilidad' not in tables:
@@ -438,6 +535,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                         "sede_id": a.sede_id,
                         "sede_nombre": a.sede.nombre if a.sede else None,
                         "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
+                        "docente_id": a.docente_id,
                         "docente": {"id": a.docente.id, "nombre": f"{a.docente.nombre} {a.docente.apellido}"} if a.docente else None,
                     })
             except Exception:
@@ -620,6 +718,260 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
         })
     result.sort(key=lambda x: sort_key_codigo(x['codigo']))
     return result
+
+# ===== v17.0: DICTADO DE CÁTEDRAS (se dicta != se abre) =====
+# "Se dicta"  = la cátedra funciona este cuatrimestre (puede ser con video pregrabado).
+# "Se abre"   = además tiene docente asignado en vivo.
+# Toda cátedra abierta se dicta, pero no toda cátedra dictada se abre.
+
+def _mapa_dictado(db, cuatrimestre_id):
+    from sqlalchemy import text
+    mapa = {}
+    try:
+        rows = db.execute(text(
+            "SELECT catedra_id, se_dicta, decision_forzada, motivo_forzado "
+            "FROM catedra_dictado WHERE cuatrimestre_id = :c"), {"c": cuatrimestre_id}).fetchall()
+        for r in rows:
+            mapa[r[0]] = {"se_dicta": bool(r[1]), "decision_forzada": r[2], "motivo_forzado": r[3]}
+    except Exception:
+        db.rollback()
+    return mapa
+
+def _inscriptos_por_catedra(db, cuatrimestre_id):
+    from sqlalchemy import text
+    q = "SELECT catedra_id, COUNT(*) FROM inscripciones"
+    if cuatrimestre_id: q += f" WHERE cuatrimestre_id = {int(cuatrimestre_id)}"
+    q += " GROUP BY catedra_id"
+    mapa = {}
+    try:
+        for r in db.execute(text(q)).fetchall(): mapa[r[0]] = r[1]
+    except Exception:
+        db.rollback()
+    return mapa
+
+def _estado_catedra(total, tiene_docente, se_dicta, forzada):
+    """Devuelve (estado, sugerido). Estado real considera el forzado manual."""
+    if total >= 10: sugerido = "ABRIR"
+    elif total >= 1: sugerido = "ASINCRONICA"
+    else: sugerido = "SIN_ALUMNOS"
+    if not se_dicta: return "NO_SE_DICTA", sugerido
+    if forzada: return forzada, sugerido
+    if tiene_docente: return "ABIERTA", sugerido
+    return "ASINCRONICA" if total >= 1 else "SIN_ALUMNOS", sugerido
+
+@app.get("/api/catedras/dictado")
+def get_catedras_dictado(cuatrimestre_id: int = None, solo_dictadas: bool = False,
+                         buscar: str = None, db: Session = Depends(get_db)):
+    """Listado para el selector masivo del Paso 1."""
+    if not cuatrimestre_id:
+        cu = db.query(Cuatrimestre).first()
+        cuatrimestre_id = cu.id if cu else 1
+    dictado = _mapa_dictado(db, cuatrimestre_id)
+    inscriptos = _inscriptos_por_catedra(db, cuatrimestre_id)
+    asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).all()
+    docentes_por_cat = {}
+    for a in asigs:
+        if a.docente_id:
+            docentes_por_cat.setdefault(a.catedra_id, []).append(
+                f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "")
+    cats = db.query(Catedra).all()
+    if buscar:
+        b = buscar.lower().strip()
+        cats = [c for c in cats if b in (c.codigo or '').lower() or b in (c.nombre or '').lower()]
+    resultado = []
+    for cat in sorted(cats, key=lambda c: sort_key_codigo(c.codigo)):
+        info = dictado.get(cat.id, {})
+        se_dicta = info.get("se_dicta", False)
+        if solo_dictadas and not se_dicta: continue
+        total = inscriptos.get(cat.id, 0)
+        docs = docentes_por_cat.get(cat.id, [])
+        estado, sugerido = _estado_catedra(total, len(docs) > 0, se_dicta, info.get("decision_forzada"))
+        resultado.append({
+            "catedra_id": cat.id, "codigo": cat.codigo, "nombre": cat.nombre,
+            "se_dicta": se_dicta, "inscriptos": total,
+            "docentes": docs, "tiene_docente": len(docs) > 0,
+            "estado": estado, "sugerido": sugerido,
+            "decision_forzada": info.get("decision_forzada"),
+            "motivo_forzado": info.get("motivo_forzado"),
+        })
+    return {
+        "cuatrimestre_id": cuatrimestre_id,
+        "total_catedras": len(resultado),
+        "se_dictan": len([r for r in resultado if r["se_dicta"]]),
+        "abiertas": len([r for r in resultado if r["se_dicta"] and r["tiene_docente"]]),
+        "asincronicas": len([r for r in resultado if r["se_dicta"] and not r["tiene_docente"]]),
+        "catedras": resultado,
+    }
+
+@app.post("/api/catedras/dictado")
+def set_catedras_dictado(data: dict, db: Session = Depends(get_db)):
+    """Selector masivo. data: {cuatrimestre_id, catedra_ids: [], se_dicta: bool}
+    Si viene 'reemplazar_todo': las que no estén en la lista quedan en NO se dicta."""
+    from sqlalchemy import text
+    cuatrimestre_id = data.get("cuatrimestre_id")
+    if not cuatrimestre_id: raise HTTPException(status_code=400, detail="Falta cuatrimestre_id")
+    ids = data.get("catedra_ids") or []
+    se_dicta = bool(data.get("se_dicta", True))
+    reemplazar = bool(data.get("reemplazar_todo", False))
+    afectadas = 0
+    try:
+        if reemplazar:
+            db.execute(text("UPDATE catedra_dictado SET se_dicta = FALSE WHERE cuatrimestre_id = :c"),
+                       {"c": cuatrimestre_id})
+        for cid in ids:
+            db.execute(text("""
+                INSERT INTO catedra_dictado (catedra_id, cuatrimestre_id, se_dicta)
+                VALUES (:cat, :cuat, :sd)
+                ON CONFLICT (catedra_id, cuatrimestre_id)
+                DO UPDATE SET se_dicta = EXCLUDED.se_dicta
+            """), {"cat": cid, "cuat": cuatrimestre_id, "sd": se_dicta})
+            afectadas += 1
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error guardando dictado: {str(e)[:200]}")
+    return {"ok": True, "afectadas": afectadas, "se_dicta": se_dicta}
+
+@app.post("/api/catedras/dictado/forzar")
+def forzar_decision_catedra(data: dict, db: Session = Depends(get_db)):
+    """Permite ir en contra de lo que sugiere el criterio automático.
+    decision: 'ABRIR' | 'ASINCRONICA' | 'SIN_ALUMNOS' | null (volver a automático)."""
+    from sqlalchemy import text
+    cuatrimestre_id = data.get("cuatrimestre_id")
+    catedra_id = data.get("catedra_id")
+    decision = data.get("decision")
+    motivo = data.get("motivo")
+    if not cuatrimestre_id or not catedra_id:
+        raise HTTPException(status_code=400, detail="Faltan cuatrimestre_id o catedra_id")
+    if decision not in (None, "", "ABRIR", "ASINCRONICA", "SIN_ALUMNOS"):
+        raise HTTPException(status_code=400, detail="Decisión inválida")
+    try:
+        db.execute(text("""
+            INSERT INTO catedra_dictado (catedra_id, cuatrimestre_id, se_dicta, decision_forzada, motivo_forzado)
+            VALUES (:cat, :cuat, TRUE, :dec, :mot)
+            ON CONFLICT (catedra_id, cuatrimestre_id)
+            DO UPDATE SET decision_forzada = EXCLUDED.decision_forzada,
+                          motivo_forzado = EXCLUDED.motivo_forzado
+        """), {"cat": catedra_id, "cuat": cuatrimestre_id,
+               "dec": decision or None, "mot": motivo or None})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)[:200]}")
+    return {"ok": True, "decision": decision or "automatico"}
+
+@app.post("/api/catedras/dictado/desde-inscripciones")
+def dictado_desde_inscripciones(data: dict, db: Session = Depends(get_db)):
+    """Atajo: marca como 'se dicta' toda cátedra que tenga al menos 1 inscripto."""
+    from sqlalchemy import text
+    cuatrimestre_id = data.get("cuatrimestre_id")
+    if not cuatrimestre_id: raise HTTPException(status_code=400, detail="Falta cuatrimestre_id")
+    minimo = int(data.get("minimo", 1))
+    inscriptos = _inscriptos_por_catedra(db, cuatrimestre_id)
+    ids = [cid for cid, n in inscriptos.items() if n >= minimo]
+    try:
+        for cid in ids:
+            db.execute(text("""
+                INSERT INTO catedra_dictado (catedra_id, cuatrimestre_id, se_dicta)
+                VALUES (:cat, :cuat, TRUE)
+                ON CONFLICT (catedra_id, cuatrimestre_id) DO UPDATE SET se_dicta = TRUE
+            """), {"cat": cid, "cuat": cuatrimestre_id})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)[:200]}")
+    return {"ok": True, "marcadas": len(ids), "minimo": minimo}
+
+# ===== v17.0: Administrar el molde de horarios por carrera =====
+@app.get("/api/plan-carrera/resumen")
+def resumen_plan_carrera(db: Session = Depends(get_db)):
+    """Lista las carreras cargadas en el molde, para poder borrarlas selectivamente."""
+    from sqlalchemy import text
+    try:
+        rows = db.execute(text(
+            "SELECT sede, carrera, COUNT(*) FROM plan_carrera GROUP BY sede, carrera ORDER BY sede, carrera"
+        )).fetchall()
+    except Exception:
+        db.rollback()
+        return {"plan_importado": False, "entradas": [], "total": 0}
+    entradas = [{"sede": r[0], "carrera": r[1], "catedras": r[2]} for r in rows]
+    return {"plan_importado": len(entradas) > 0, "entradas": entradas,
+            "total": sum(e["catedras"] for e in entradas)}
+
+@app.delete("/api/plan-carrera")
+def borrar_plan_carrera(sede: str = None, carrera: str = None, todo: bool = False,
+                        db: Session = Depends(get_db)):
+    """Borra el molde completo (todo=true) o sólo una carrera/sede puntual."""
+    from sqlalchemy import text
+    try:
+        if todo:
+            res = db.execute(text("DELETE FROM plan_carrera"))
+        elif sede and carrera:
+            res = db.execute(text("DELETE FROM plan_carrera WHERE sede = :s AND carrera = :c"),
+                             {"s": sede, "c": carrera})
+        elif sede:
+            res = db.execute(text("DELETE FROM plan_carrera WHERE sede = :s"), {"s": sede})
+        elif carrera:
+            res = db.execute(text("DELETE FROM plan_carrera WHERE carrera = :c"), {"c": carrera})
+        else:
+            raise HTTPException(status_code=400, detail="Indicá qué borrar (sede, carrera o todo=true)")
+        db.commit()
+        return {"ok": True, "borradas": res.rowcount if res.rowcount is not None else 0}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error borrando molde: {str(e)[:200]}")
+
+# ===== v17.0: Asignar docente directo desde "Necesitan Docente" =====
+@app.post("/api/catedras/{catedra_id}/asignar-docente")
+def asignar_docente_rapido(catedra_id: int, data: dict, db: Session = Depends(get_db)):
+    """Asigna un docente a la cátedra sin salir de la pantalla.
+    Si hay una asignación con horario y sin docente, la completa. Si no, crea una nueva."""
+    from sqlalchemy import text
+    docente_id = data.get("docente_id")
+    cuatrimestre_id = data.get("cuatrimestre_id")
+    if not cuatrimestre_id: raise HTTPException(status_code=400, detail="Falta cuatrimestre_id")
+    cat = db.query(Catedra).filter(Catedra.id == catedra_id).first()
+    if not cat: raise HTTPException(status_code=404, detail="Cátedra no encontrada")
+    doc = db.query(Docente).filter(Docente.id == docente_id).first() if docente_id else None
+    if docente_id and not doc: raise HTTPException(status_code=404, detail="Docente no encontrado")
+
+    asignacion_id = data.get("asignacion_id")
+    if asignacion_id:
+        asig = db.query(Asignacion).filter(Asignacion.id == asignacion_id).first()
+    else:
+        asig = db.query(Asignacion).filter(
+            Asignacion.catedra_id == catedra_id,
+            Asignacion.cuatrimestre_id == cuatrimestre_id,
+            Asignacion.docente_id.is_(None)).first()
+    creada = False
+    if not asig:
+        asig = Asignacion(catedra_id=catedra_id, cuatrimestre_id=cuatrimestre_id,
+                          modalidad='presencial_virtual')
+        db.add(asig); creada = True
+    asig.docente_id = docente_id
+    for campo in ("dia", "hora_inicio", "sede_id"):
+        if data.get(campo) is not None: setattr(asig, campo, data[campo])
+    try:
+        db.commit(); db.refresh(asig)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error: {str(e)[:200]}")
+    if data.get("hora_fin"):
+        sql_set(db, "asignaciones", "hora_fin", data["hora_fin"], asig.id)
+    # Al tener docente, la cátedra se dicta y queda abierta
+    try:
+        db.execute(text("""
+            INSERT INTO catedra_dictado (catedra_id, cuatrimestre_id, se_dicta)
+            VALUES (:cat, :cuat, TRUE)
+            ON CONFLICT (catedra_id, cuatrimestre_id) DO UPDATE SET se_dicta = TRUE
+        """), {"cat": catedra_id, "cuat": cuatrimestre_id})
+        db.commit()
+    except Exception: db.rollback()
+    if docente_id: sql_set(db, "catedras", "decision_apertura", "ABRIR", catedra_id)
+    return {"ok": True, "asignacion_id": asig.id, "creada": creada,
+            "docente": f"{doc.nombre} {doc.apellido}" if doc else None}
 
 # ===== v8.0: Criterio de apertura simplificado =====
 @app.get("/api/catedras/criterio-apertura")
@@ -809,9 +1161,24 @@ def calcular_tipo_modalidad(docente, db):
     return "REMOTO"
 
 @app.get("/api/docentes")
-def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+def get_docentes(cuatrimestre_id: int = None, orden: str = "apellido",
+                 solo_activos_cuatri: bool = False, db: Session = Depends(get_db)):
+    """orden: 'apellido' (Apellido, Nombre) o 'nombre'.
+    solo_activos_cuatri: sólo docentes con asignaciones en el cuatrimestre indicado."""
     from sqlalchemy import text
-    docentes = db.query(Docente).order_by(Docente.apellido, Docente.nombre).all()
+    if orden == "nombre":
+        docentes = db.query(Docente).order_by(Docente.nombre, Docente.apellido).all()
+    else:
+        docentes = db.query(Docente).order_by(Docente.apellido, Docente.nombre).all()
+    # Set de docentes con actividad en el cuatrimestre
+    activos_cuatri = set()
+    if cuatrimestre_id:
+        for (did,) in db.query(Asignacion.docente_id).filter(
+                Asignacion.cuatrimestre_id == cuatrimestre_id,
+                Asignacion.docente_id.isnot(None)).distinct().all():
+            activos_cuatri.add(did)
+    if solo_activos_cuatri and cuatrimestre_id:
+        docentes = [d for d in docentes if d.id in activos_cuatri]
     # Pre-load disponibilidad
     disp_map = {}
     try:
@@ -854,6 +1221,10 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "materias_av": mat_av, "materias_cab": mat_cab, "materias_vl": mat_vl,
                 "especialidad": getattr(d, 'especialidad', None),
                 "catedras_referencia": getattr(d, 'catedras_referencia', None),
+                "especialidades": [x for x in (getattr(d, 'especialidades', None) or '').split(',') if x],
+                "activo": getattr(d, 'activo', True) if getattr(d, 'activo', None) is not None else True,
+                "activo_cuatrimestre": d.id in activos_cuatri,
+                "nombre_completo": f"{d.apellido or ''}, {d.nombre or ''}".strip(' ,'),
                 "disponibilidad_resumen": disp_resumen,
                 "disponibilidad_franjas": disp_list[:6],
                 "sedes": sedes_data, "asignaciones": asigs_data,
@@ -864,49 +1235,87 @@ def get_docentes(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                 "horas_asignadas": 0, "sociedad_cfpea": False, "sociedad_isftea": False,
                 "materias_av": 0, "materias_cab": 0, "materias_vl": 0,
                 "especialidad": None, "catedras_referencia": None,
+                "especialidades": [], "activo": True, "activo_cuatrimestre": d.id in activos_cuatri,
+                "nombre_completo": f"{d.apellido or ''}, {d.nombre or ''}".strip(' ,'),
                 "disponibilidad_resumen": "Sin asignar", "disponibilidad_franjas": [],
                 "sedes": [], "asignaciones": []})
     return result
 
 @app.post("/api/docentes")
 def crear_docente(data: dict, db: Session = Depends(get_db)):
-    dni = data.get("dni", "").strip()
-    if not dni or len(dni) < 7: raise HTTPException(status_code=400, detail="DNI inválido")
-    if db.query(Docente).filter(Docente.dni == dni).first():
-        raise HTTPException(status_code=400, detail="DNI ya existe")
-    d = Docente(dni=dni, nombre=data.get("nombre", ""), apellido=data.get("apellido", ""), email=data.get("email"))
+    """v17.0: el DNI dejó de ser obligatorio. Sólo se exige nombre o apellido."""
+    dni = (data.get("dni") or "").strip() or None
+    nombre = (data.get("nombre") or "").strip()
+    apellido = (data.get("apellido") or "").strip()
+    if not nombre and not apellido:
+        raise HTTPException(status_code=400, detail="Indicá al menos nombre o apellido")
+    if dni and db.query(Docente).filter(Docente.dni == dni).first():
+        raise HTTPException(status_code=400, detail="Ese DNI ya está cargado en otro docente")
+    d = Docente(dni=dni, nombre=nombre, apellido=apellido, email=data.get("email"))
     db.add(d); db.commit()
+    if data.get("especialidades"):
+        crudo = data["especialidades"]
+        if isinstance(crudo, str): crudo = [x.strip() for x in crudo.split(',')]
+        elegidas = [x for x in crudo if x in AREAS_VALIDAS]
+        if elegidas: sql_set(db, "docentes", "especialidades", ','.join(elegidas), d.id)
     return {"id": d.id, "ok": True}
+
+@app.get("/api/areas-especialidad")
+def get_areas_especialidad():
+    """Catálogo fijo de áreas. El frontend arma el selector múltiple con esto."""
+    return AREAS_ESPECIALIDAD
 
 @app.put("/api/docentes/{docente_id}")
 def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db)):
+    """v17.0: reescrito. Cada campo se guarda de forma aislada con commit propio,
+    así un fallo en uno no aborta la transacción y anula todos los demás (bug histórico)."""
     d = db.query(Docente).filter(Docente.id == docente_id).first()
     if not d: raise HTTPException(status_code=404, detail="No encontrado")
+    guardados = []; fallidos = []
+
+    # Campos del modelo ORM
     for field in ["nombre", "apellido", "email", "dni"]:
-        if field in data and data[field]:
-            setattr(d, field, data[field])
-    # v9.0: all numeric and boolean fields via SQL
-    from sqlalchemy import text
+        if field in data:
+            valor = data[field]
+            if field == "dni":
+                valor = (str(valor).strip() or None) if valor is not None else None
+            setattr(d, field, valor)
+    try:
+        db.commit(); guardados.append("datos_basicos")
+    except Exception:
+        db.rollback(); fallidos.append("datos_basicos")
+
+    # Numéricos: tolera "" y None sin romper
     for fld in ['horas_asignadas', 'materias_av', 'materias_cab', 'materias_vl']:
         if fld in data:
-            try: db.execute(text(f"UPDATE docentes SET {fld} = {int(data[fld])} WHERE id = {docente_id}"))
-            except: pass
-    for fld in ['sociedad_cfpea', 'sociedad_isftea']:
-        if fld in data:
+            crudo = data[fld]
             try:
-                val = 'TRUE' if data[fld] else 'FALSE'
-                db.execute(text(f"UPDATE docentes SET {fld} = {val} WHERE id = {docente_id}"))
-            except: pass
-    if "notas" in data:
-        try: db.execute(text("UPDATE docentes SET notas = :val WHERE id = :id"), {"val": data["notas"], "id": docente_id})
-        except: pass
-    # v16.0: especialidad y catedras_referencia
-    for fld in ['especialidad', 'catedras_referencia']:
+                num = 0 if crudo in (None, "", "null") else int(float(crudo))
+            except Exception:
+                num = 0
+            (guardados if sql_set(db, "docentes", fld, num, docente_id) else fallidos).append(fld)
+
+    # Booleanos
+    for fld in ['sociedad_cfpea', 'sociedad_isftea', 'activo']:
         if fld in data:
-            try: db.execute(text(f"UPDATE docentes SET {fld} = :val WHERE id = :id"), {"val": data[fld], "id": docente_id})
-            except: pass
-    db.commit()
-    return {"ok": True}
+            (guardados if sql_set(db, "docentes", fld, bool(data[fld]), docente_id) else fallidos).append(fld)
+
+    # Texto libre
+    for fld in ['notas', 'especialidad', 'catedras_referencia']:
+        if fld in data:
+            valor = data[fld] if data[fld] not in (None, "") else None
+            (guardados if sql_set(db, "docentes", fld, valor, docente_id) else fallidos).append(fld)
+
+    # v17.0: especialidades como lista de IDs validados contra el catálogo
+    if 'especialidades' in data:
+        crudo = data['especialidades']
+        if isinstance(crudo, str):
+            crudo = [x.strip() for x in crudo.split(',') if x.strip()]
+        elegidas = [x for x in (crudo or []) if x in AREAS_VALIDAS]
+        valor = ','.join(elegidas) if elegidas else None
+        (guardados if sql_set(db, "docentes", "especialidades", valor, docente_id) else fallidos).append("especialidades")
+
+    return {"ok": len(fallidos) == 0, "guardados": guardados, "fallidos": fallidos}
 
 @app.delete("/api/docentes/{docente_id}")
 def eliminar_docente(docente_id: int, db: Session = Depends(get_db)):
@@ -1306,6 +1715,8 @@ def verificar_solapamiento_catedra(catedra_id, dia, hora_inicio, cuatrimestre_id
 
 @app.get("/api/horarios/solapamientos")
 def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    """v17.0: compara franjas reales (inicio–fin), no sólo la hora de inicio.
+    Así detecta que 18:00-19:30 se pisa con 18:30-20:00."""
     try:
         q = db.query(Asignacion).filter(Asignacion.dia.isnot(None), Asignacion.hora_inicio.isnot(None), Asignacion.modalidad != 'asincronica')
         if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -1313,16 +1724,25 @@ def get_solapamientos(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         solapamientos = []; checked = set()
         for i, a1 in enumerate(asigs):
             for a2 in asigs[i+1:]:
-                if a1.dia != a2.dia or a1.hora_inicio != a2.hora_inicio: continue
+                if a1.dia != a2.dia: continue
+                f1 = getattr(a1, 'hora_fin', None); f2 = getattr(a2, 'hora_fin', None)
+                if not rangos_se_pisan(a1.hora_inicio, f1, a2.hora_inicio, f2): continue
                 pair = tuple(sorted([a1.id, a2.id]))
                 if pair in checked: continue
                 checked.add(pair)
                 cat1 = a1.catedra; cat2 = a2.catedra
+                franja1 = f"{a1.hora_inicio}{'-' + f1 if f1 else ''}"
+                franja2 = f"{a2.hora_inicio}{'-' + f2 if f2 else ''}"
+                detalle = franja1 if franja1 == franja2 else f"{franja1} vs {franja2}"
                 if a1.catedra_id == a2.catedra_id:
-                    solapamientos.append({"tipo": "CATEDRA", "severidad": "CRITICO", "mensaje": f"Cátedra {cat1.codigo if cat1 else '?'} tiene dos clases {a1.dia} {a1.hora_inicio}.", "dia": a1.dia, "hora": a1.hora_inicio})
+                    solapamientos.append({"tipo": "CATEDRA", "severidad": "CRITICO",
+                        "mensaje": f"Cátedra {cat1.codigo if cat1 else '?'} tiene dos clases {a1.dia} {detalle}.",
+                        "dia": a1.dia, "hora": a1.hora_inicio})
                 elif a1.docente_id and a1.docente_id == a2.docente_id:
                     doc = a1.docente
-                    solapamientos.append({"tipo": "DOCENTE", "severidad": "ALTO", "mensaje": f"{doc.nombre} {doc.apellido} tiene {cat1.codigo} y {cat2.codigo} el {a1.dia} {a1.hora_inicio}.", "dia": a1.dia, "hora": a1.hora_inicio})
+                    solapamientos.append({"tipo": "DOCENTE", "severidad": "ALTO",
+                        "mensaje": f"{doc.nombre} {doc.apellido} tiene {cat1.codigo if cat1 else '?'} y {cat2.codigo if cat2 else '?'} el {a1.dia} {detalle}.",
+                        "dia": a1.dia, "hora": a1.hora_inicio})
         return solapamientos
     except Exception: return []
 
@@ -1340,11 +1760,12 @@ def get_estadisticas_docentes(cuatrimestre_id: int = None, db: Session = Depends
 # ===== v15.0: Importar alumnos BCE/BEA =====
 @app.post("/api/importar/alumnos-bce-bea")
 async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
-    """BCE/BEA: todos virtuales, sin turno. BEA siempre a Caballito Virtual. BCE a la sede del alumno + Virtual."""
+    """BCE/BEA: todos virtuales. Turno='Virtual'. BEA siempre a Caballito. BCE a la sede del alumno."""
     from openpyxl import load_workbook
+    from sqlalchemy import text
     import io
     content = await file.read()
-    wb = load_workbook(io.BytesIO(content), read_only=True)
+    wb = load_workbook(io.BytesIO(content), data_only=True)
     total = 0; errores = []; no_encontradas = set()
     # Pre-load all catedras for name matching
     all_cats = {c.nombre.lower().strip(): c for c in db.query(Catedra).all()}
@@ -1395,16 +1816,23 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
                     al_nombre = re.sub(r'\s*\(.*\)', '', alumno_nombre).strip()
                     al = Alumno(nombre=al_nombre, dni=dni)
                     db.add(al); db.flush()
-                # Upsert inscription
+                # v17.0 FIX: turno/modalidad/sede son columnas creadas por SQL directo y NO existen
+                # en el modelo ORM. Pasarlas al constructor hacía fallar cada fila en silencio.
+                # Ahora se crea la fila mínima y se completan los campos con UPDATE, igual que
+                # el importador principal de inscriptos.
+                turno_bce = 'Virtual'
                 existing = db.query(Inscripcion).filter(
                     Inscripcion.alumno_id == al.id, Inscripcion.catedra_id == cat.id,
                     Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
-                if existing:
-                    existing.turno = 'Virtual'; existing.modalidad_alumno = 'virtual'
-                    existing.sede_referencia = sede_ref; existing.curso_nombre = curso
-                else:
-                    db.add(Inscripcion(alumno_id=al.id, catedra_id=cat.id, cuatrimestre_id=cuatrimestre_id,
-                        turno='Virtual', modalidad_alumno='virtual', sede_referencia=sede_ref, curso_nombre=curso))
+                if not existing:
+                    existing = Inscripcion(alumno_id=al.id, catedra_id=cat.id,
+                                           cuatrimestre_id=cuatrimestre_id)
+                    db.add(existing); db.flush()
+                db.execute(text(
+                    "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, "
+                    "sede_referencia = :sede, curso_nombre = :curso WHERE id = :id"
+                ), {"turno": turno_bce, "mod": "virtual", "sede": sede_ref,
+                    "curso": curso[:200] if curso else None, "id": existing.id})
                 total += 1
             except Exception as e:
                 errores.append(str(e)[:100])
@@ -1466,44 +1894,53 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     # Cobertura
     cobertura = round((con_docente / max(1, con_docente + sin_docente)) * 100) if asigs else 0
     docs_con_asig = len(set(a.docente_id for a in asigs if a.docente_id))
-    # Pasos
+    # v17.0: estado del dictado
+    dictado = _mapa_dictado(db, cuatrimestre_id) if cuatrimestre_id else {}
+    se_dictan = len([1 for v in dictado.values() if v.get("se_dicta")])
+    cats_con_horario = len(set(a.catedra_id for a in asigs if a.dia and a.hora_inicio))
+    cats_abiertas_doc = len(set(a.catedra_id for a in asigs if a.docente_id))
+    cats_asincronicas = max(0, se_dictan - cats_abiertas_doc)
+    # v17.0: Pasos alineados al flujo real de trabajo del equipo
     pasos = [
-        {"num": 1, "titulo": "Cargar datos base", "desc": "Cátedras, docentes y cursos",
-         "completo": total_cats > 0 and total_docs > 0,
-         "detalle": f"{total_cats} cátedras, {total_docs} docentes, {total_cursos} cursos",
-         "seccion": "importar"},
-        {"num": 2, "titulo": "Importar inscriptos", "desc": "Subir archivos de alumnos por materia",
+        {"num": 1, "titulo": "Marcar qué cátedras se dictan",
+         "desc": "Selector masivo. Incluye las asincrónicas: se dictan aunque no tengan docente.",
+         "completo": se_dictan > 0,
+         "parcial": False,
+         "detalle": (f"{se_dictan} cátedras marcadas para dictarse"
+                     if se_dictan else "Todavía no se marcó ninguna cátedra"),
+         "seccion": "dictado"},
+        {"num": 2, "titulo": "Importar alumnos inscriptos",
+         "desc": "Para saber cuántos alumnos tiene cada cátedra.",
          "completo": total_insc > 0 and sin_clasificar == 0,
          "parcial": total_insc > 0 and sin_clasificar > 0,
          "detalle": f"{total_insc} inscripciones ({clasificados} clasificadas" + (f", {sin_clasificar} sin clasificar)" if sin_clasificar > 0 else ")"),
          "seccion": "importar"},
-        {"num": 3, "titulo": "Decidir qué abrir", "desc": "≥10 inscriptos total = abrir con docente (1 cada 100). 1-9 = asincrónica (pregrabada). 0 = no abrir.",
-         "completo": decisiones_pendientes == 0 and cats_con_inscriptos > 0,
-         "parcial": decisiones_tomadas > 0 and decisiones_pendientes > 0,
-         "detalle": f"{decisiones_tomadas} decididas, {decisiones_pendientes} pendientes de {cats_con_inscriptos}",
-         "seccion": "decisiones"},
-        {"num": 4, "titulo": "Cargar disponibilidad", "desc": "Horarios disponibles de cada docente",
-         "completo": docs_con_dispo >= total_docs * 0.8 if total_docs > 0 else False,
-         "parcial": docs_con_dispo > 0,
-         "detalle": f"{docs_con_dispo} de {total_docs} docentes con disponibilidad cargada",
-         "seccion": "disponibilidad"},
-        {"num": 5, "titulo": "Asignar docentes", "desc": "Vincular docentes a cátedras con día y horario",
-         "completo": sin_docente == 0 and con_docente > 0,
-         "parcial": con_docente > 0,
-         "detalle": f"{con_docente} asignados, {sin_docente} sin docente",
-         "seccion": "catedras"},
-        {"num": 6, "titulo": "Verificar solapamientos", "desc": "Revisar que no haya conflictos de horarios",
-         "completo": solaps == 0 and con_docente > 0,
-         "parcial": False,
-         "detalle": f"{solaps} solapamientos detectados" if solaps > 0 else "Sin solapamientos",
-         "seccion": "solapamientos"},
-        {"num": 7, "titulo": "Exportar y distribuir", "desc": "Descargar el Excel completo",
+        {"num": 3, "titulo": "Exportar la planilla de trabajo",
+         "desc": "Excel con inscriptos por cátedra. El equipo asigna docentes y horarios ahí.",
          "completo": False, "parcial": False,
-         "detalle": "Listo para exportar cuando los pasos anteriores estén completos",
+         "detalle": (f"Listo para exportar: {se_dictan} cátedras con sus inscriptos"
+                     if se_dictan and total_insc else "Completá los pasos 1 y 2 primero"),
+         "seccion": "exportar"},
+        {"num": 4, "titulo": "Reimportar la planilla completada",
+         "desc": "El sistema detecta solapamientos y deja todo asignado.",
+         "completo": cats_con_horario > 0 and solaps == 0,
+         "parcial": cats_con_horario > 0,
+         "detalle": (f"{cats_con_horario} cátedras con horario cargado"
+                     + (f" · {solaps} solapamientos a revisar" if solaps else " · sin solapamientos")
+                     if cats_con_horario else "Todavía no se importó la planilla"),
+         "seccion": "importar"},
+        {"num": 5, "titulo": "Revisar y distribuir",
+         "desc": "Verificar solapamientos, completar faltantes y exportar el archivo final.",
+         "completo": cats_con_horario > 0 and solaps == 0 and sin_docente == 0,
+         "parcial": cats_con_horario > 0,
+         "detalle": (f"{cats_abiertas_doc} abiertas con docente · {cats_asincronicas} asincrónicas"
+                     + (f" · {sin_docente} sin resolver" if sin_docente else "")),
          "seccion": "exportar"},
     ]
     return {
         "cobertura_pct": cobertura, "pasos": pasos,
+        "se_dictan": se_dictan, "catedras_abiertas_docente": cats_abiertas_doc,
+        "catedras_asincronicas": cats_asincronicas,
         "total_catedras": total_cats, "catedras_abiertas": cats_abiertas,
         "con_docente": con_docente, "sin_docente": sin_docente,
         "total_inscripciones": total_insc, "solapamientos": solaps,
@@ -1781,9 +2218,44 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
     all_sedes = {s.nombre: s for s in db.query(Sede).all()}
     dia_map = {'LUNES':'Lunes','MARTES':'Martes','MIERCOLES':'Miércoles','MIÉRCOLES':'Miércoles',
         'JUEVES':'Jueves','VIERNES':'Viernes','SABADO':'Sábado','SÁBADO':'Sábado'}
+    def _limpiar_hora(h):
+        h = str(h or '').replace('.', ':').replace(' HS', '').replace(' hs', '').replace('HS', '').strip()
+        if h and ':' in h:
+            partes = h.split(':')
+            try: h = f"{int(partes[0]):02d}:{partes[1].strip()[:2]}"
+            except Exception: pass
+        return h
+
+    def _parece_hora(v):
+        return bool(re.match(r'^\s*\d{1,2}[:.]\d{2}', str(v or '').strip()))
+
     results = []; no_cat = []; no_doc = set(); doc_to_create = set()
     for ws in wb.worksheets:
-        for row in ws.iter_rows(values_only=True):
+        if ws.title.strip().lower() in ('instructivo', 'instrucciones'): continue
+        filas = list(ws.iter_rows(values_only=True))
+        # v17.0: autodetección de formato.
+        # Formato CLÁSICO:  A=cod B=materia C=dia D=hora E=sede F=docente G=meet
+        # Formato PLANILLA: A=cod B=materia C=dia D=hora_ini E=hora_fin F=sede G=docente H=meet
+        formato_planilla = False
+        for f in filas[:6]:
+            textos = [str(x or '').upper().strip() for x in list(f)[:9]]
+            if any('HORA FIN' in t for t in textos):
+                formato_planilla = True; break
+        if not formato_planilla:
+            # Heurística: si la columna E parece una hora en varias filas de datos, es planilla
+            hits = 0; muestras = 0
+            for f in filas:
+                v = list(f)
+                if len(v) < 6: continue
+                try:
+                    if int(float(str(v[0] or ''))) <= 0: continue
+                except Exception: continue
+                muestras += 1
+                if _parece_hora(v[4]): hits += 1
+                if muestras >= 12: break
+            if muestras and hits >= max(2, muestras // 2): formato_planilla = True
+
+        for row in filas:
             vals = list(row)
             if len(vals) < 5: continue
             try: cod_num = int(float(str(vals[0] or '')))
@@ -1793,16 +2265,21 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
             materia = str(vals[1] or '').strip()
             dia_raw = str(vals[2] or '').strip()
             hora_raw = str(vals[3] or '').strip()
-            sede_raw = str(vals[4] or '').strip()
-            doc_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
-            meet_link = str(vals[6] or '').strip() if len(vals) > 6 else ''
+            if formato_planilla:
+                hora_fin_raw = str(vals[4] or '').strip() if len(vals) > 4 else ''
+                sede_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
+                doc_raw = str(vals[6] or '').strip() if len(vals) > 6 else ''
+                meet_link = str(vals[7] or '').strip() if len(vals) > 7 else ''
+            else:
+                hora_fin_raw = ''
+                sede_raw = str(vals[4] or '').strip()
+                doc_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
+                meet_link = str(vals[6] or '').strip() if len(vals) > 6 else ''
+            if doc_raw.lower() in ('none', 'nan'): doc_raw = ''
+            hora_fin = _limpiar_hora(hora_fin_raw) if hora_fin_raw else ''
             if not dia_raw or not hora_raw: continue
             dia = dia_map.get(dia_raw.upper().strip(), dia_raw.strip().title())
-            hora = hora_raw.replace('.', ':').replace(' HS','').replace(' hs','').replace('HS','').strip()
-            if hora and ':' in hora:
-                parts = hora.split(':')
-                try: hora = f"{int(parts[0]):02d}:{parts[1].strip()[:2]}"
-                except: pass
+            hora = _limpiar_hora(hora_raw)
             cat = all_cats.get(codigo)
             if not cat: no_cat.append(f"{codigo} {materia}"); continue
             sede_nombre = normalizar_sede(sede_raw) or sede_raw or ''
@@ -1833,7 +2310,8 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
             modalidad = 'remoto' if sede_nombre in ['Online - Interior', 'ONLINE'] else 'presencial_virtual'
             results.append({
                 'cat_id': cat.id, 'cat_codigo': codigo, 'cat_nombre': cat.nombre,
-                'dia': dia, 'hora': hora, 'sede_id': sede_obj.id if sede_obj else None,
+                'dia': dia, 'hora': hora, 'hora_fin': hora_fin,
+                'sede_id': sede_obj.id if sede_obj else None,
                 'sede_nombre': sede_nombre, 'docente_id': docente_obj.id if docente_obj else None,
                 'docente_display': doc_display, 'modalidad': modalidad,
                 'doc_raw': doc_raw, 'meet_link': meet_link if meet_link.startswith('http') else '',
@@ -1888,9 +2366,8 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
         else:
             apellido = parts[0].strip().title()
             nombre = ''
-        # Use placeholder DNI to avoid unique constraint
-        placeholder_dni = f"PEND-{doc_name.upper().replace(' ','')[:15]}"
-        new_doc = Docente(nombre=nombre, apellido=apellido, dni=placeholder_dni)
+        # v17.0: el DNI ya es opcional, se crea sin placeholder
+        new_doc = Docente(nombre=nombre, apellido=apellido, dni=None)
         db.add(new_doc); db.flush()
         doc_created_map[doc_name.upper()] = new_doc
         nuevos_docs += 1
@@ -1914,6 +2391,13 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
             cuatrimestre_id=cuatrimestre_id, dia=r['dia'], hora_inicio=r['hora'],
             sede_id=r['sede_id'], modalidad=r['modalidad'])
         db.add(asig)
+        db.flush()
+        # v17.0: hora_fin va por SQL (columna creada por migración, no está en el modelo)
+        if r.get('hora_fin'):
+            try:
+                db.execute(sql_text("UPDATE asignaciones SET hora_fin = :hf WHERE id = :id"),
+                           {"hf": r['hora_fin'], "id": asig.id})
+            except Exception: pass
         creados += 1
         # v16.0: Update meet link on cátedra if provided
         if r.get('meet_link'):
@@ -1927,10 +2411,37 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
     except Exception as e:
         db.rollback()
         return {"error": f"Error guardando: {str(e)[:200]}"}
+
+    # v17.0: al importar la planilla ya queda todo resuelto.
+    # Toda cátedra que aparece en el archivo SE DICTA; si trae docente además queda ABIERTA,
+    # y si no trae docente queda como ASINCRÓNICA (video pregrabado). Ya no queda "pendiente".
+    cats_en_archivo = {r['cat_id'] for r in results}
+    cats_con_docente = {r['cat_id'] for r in results if r['docente_id'] or r['doc_raw']}
+    dictadas = 0; decididas = 0
+    for cat_id in cats_en_archivo:
+        try:
+            db.execute(sql_text("""
+                INSERT INTO catedra_dictado (catedra_id, cuatrimestre_id, se_dicta)
+                VALUES (:cat, :cuat, TRUE)
+                ON CONFLICT (catedra_id, cuatrimestre_id) DO UPDATE SET se_dicta = TRUE
+            """), {"cat": cat_id, "cuat": cuatrimestre_id})
+            dictadas += 1
+        except Exception:
+            db.rollback()
+        decision = 'ABRIR' if cat_id in cats_con_docente else 'ASINCRONICA'
+        if sql_set(db, "catedras", "decision_apertura", decision, cat_id):
+            decididas += 1
+    try: db.commit()
+    except Exception: db.rollback()
+
     return {
         "asignaciones_borradas": deleted,
         "asignaciones_creadas": creados,
         "links_meet_actualizados": meet_updated,
+        "catedras_marcadas_se_dicta": dictadas,
+        "decisiones_resueltas": decididas,
+        "catedras_abiertas": len(cats_con_docente),
+        "catedras_asincronicas": len(cats_en_archivo - cats_con_docente),
         "docentes_creados": nuevos_docs,
         "docentes_nuevos": doc_to_create,
         "catedras_no_encontradas": no_cat[:20],
@@ -2536,8 +3047,148 @@ def get_solapamientos_carreras(cuatrimestre_id: int = None, db: Session = Depend
 
 
 # ===== v10.0: Exportar COMPLETO =====
+@app.get("/api/exportar/planilla-trabajo")
+def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool = True,
+                              sede: str = None, db: Session = Depends(get_db)):
+    """PASO 3 del flujo. Excel con las cátedras que se dictan y sus inscriptos desglosados.
+    Las últimas columnas van vacías para que el equipo las complete y reimporte el archivo
+    en 'Importar Horarios y Designaciones' (mismo formato de columnas)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from sqlalchemy import text
+    if not cuatrimestre_id:
+        cu = db.query(Cuatrimestre).first()
+        cuatrimestre_id = cu.id if cu else 1
+
+    dictado = _mapa_dictado(db, cuatrimestre_id)
+    # Desglose de inscriptos por turno/sede
+    desglose = {}
+    try:
+        q = ("SELECT catedra_id, turno, modalidad_alumno, sede_referencia, COUNT(*) "
+             "FROM inscripciones WHERE cuatrimestre_id = :c GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia")
+        for cid, turno, mod, sede, cnt in db.execute(text(q), {"c": cuatrimestre_id}).fetchall():
+            d = desglose.setdefault(cid, {"total": 0, "tm": 0, "tn": 0, "cied": 0,
+                                          "av": 0, "cab": 0, "vl": 0})
+            d["total"] += cnt
+            if mod == 'virtual': d["cied"] += cnt
+            else:
+                sl = (sede or '').lower()
+                if 'avellaneda' in sl: d["av"] += cnt
+                elif 'caballito' in sl: d["cab"] += cnt
+                elif 'vicente' in sl: d["vl"] += cnt
+            if turno == 'Mañana': d["tm"] += cnt
+            elif turno == 'Noche': d["tn"] += cnt
+    except Exception:
+        db.rollback()
+
+    # Docentes ya asignados (si ya se importó una vuelta)
+    asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).all()
+    asig_por_cat = {}
+    for a in asigs:
+        if a.dia or a.docente_id:
+            asig_por_cat.setdefault(a.catedra_id, []).append(a)
+
+    wb = Workbook(); ws = wb.active; ws.title = "Planilla de trabajo"
+    hdr_fill = PatternFill("solid", fgColor="1E3A5F")
+    info_fill = PatternFill("solid", fgColor="EAF2F8")
+    edit_fill = PatternFill("solid", fgColor="FFF9E6")
+    thin = Side(style="thin", color="BBBBBB")
+    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    headers = ["CODIGO", "MATERIA", "DIA", "HORA INICIO", "HORA FIN", "SEDE", "DOCENTE",
+               "LINK MEET", "— INSCRIPTOS —", "TOTAL", "TM", "TN", "CIED",
+               "AVELL", "CABA", "VTE LOPEZ", "SUGERENCIA"]
+    ws.append(headers)
+    for i, _ in enumerate(headers, 1):
+        c = ws.cell(row=1, column=i)
+        c.fill = hdr_fill; c.font = Font(bold=True, color="FFFFFF", size=10)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = borde
+
+    cats = sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo))
+    # v17.0: filtro por sede para que varias personas trabajen en paralelo sin pisarse
+    clave_sede = None
+    if sede:
+        s = sede.lower()
+        if 'avell' in s: clave_sede = 'av'
+        elif 'cabal' in s: clave_sede = 'cab'
+        elif 'vicente' in s or 'vte' in s: clave_sede = 'vl'
+        elif 'cied' in s or 'online' in s: clave_sede = 'cied'
+    fila = 2; escritas = 0
+    for cat in cats:
+        info = dictado.get(cat.id, {})
+        if solo_dictadas and not info.get("se_dicta"): continue
+        d = desglose.get(cat.id, {"total": 0, "tm": 0, "tn": 0, "cied": 0, "av": 0, "cab": 0, "vl": 0})
+        if clave_sede and d.get(clave_sede, 0) < 1: continue
+        total = d["total"]
+        sugerencia = "ABRIR (con docente)" if total >= 10 else ("ASINCRÓNICA (pregrabada)" if total >= 1 else "SIN ALUMNOS")
+        existentes = asig_por_cat.get(cat.id, [])
+        filas_cat = existentes if existentes else [None]
+        for a in filas_cat:
+            try: num = int(cat.codigo.replace('c.', ''))
+            except Exception: num = cat.codigo
+            ws.append([
+                num, cat.nombre,
+                (a.dia if a else "") or "",
+                (a.hora_inicio if a else "") or "",
+                (getattr(a, 'hora_fin', None) if a else "") or "",
+                (a.sede.nombre if a and a.sede else "") or "",
+                (f"{a.docente.nombre} {a.docente.apellido}" if a and a.docente else ""),
+                getattr(cat, 'link_meet', None) or "",
+                "", total, d["tm"], d["tn"], d["cied"], d["av"], d["cab"], d["vl"], sugerencia,
+            ])
+            for col in range(1, len(headers) + 1):
+                c = ws.cell(row=fila, column=col)
+                c.border = borde
+                if col <= 8: c.fill = edit_fill
+                else: c.fill = info_fill
+            fila += 1; escritas += 1
+
+    anchos = [9, 38, 12, 13, 12, 15, 28, 34, 4, 9, 7, 7, 8, 8, 8, 11, 22]
+    for i, w in enumerate(anchos, 1):
+        ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
+    ws.freeze_panes = "C2"
+
+    # Hoja de instrucciones
+    ws2 = wb.create_sheet("Instructivo")
+    for linea in [
+        [f"PLANILLA DE TRABAJO — Armado de horarios{' — ' + sede if sede else ''}"],
+        [""],
+        ["Columnas AMARILLAS (A-H): las completa el equipo."],
+        ["Columnas CELESTES (I-Q): sólo informativas, las calcula el sistema. No hace falta tocarlas."],
+        [""],
+        ["Cómo completar:"],
+        ["CODIGO", "Ya viene cargado. Es el número de cátedra sin el prefijo c."],
+        ["DIA", "LUNES / MARTES / MIERCOLES / JUEVES / VIERNES / SABADO"],
+        ["HORA INICIO", "Formato 08:00 — se admiten medias horas (08:30, 09:30, etc.)"],
+        ["HORA FIN", "Formato 09:30. Si se deja vacío el sistema asume 1h30 de duración."],
+        ["SEDE", "Avellaneda / Caballito / Vte Lopez / CIED"],
+        ["DOCENTE", "Nombre tal como figura en la sección Docentes."],
+        ["", "IMPORTANTE: si se deja VACÍO, la cátedra se dicta igual pero como ASINCRÓNICA"],
+        ["", "(video pregrabado, sin docente en vivo). Eso es válido y esperado."],
+        ["LINK MEET", "Opcional. Si se completa, queda vinculado a la cátedra."],
+        [""],
+        ["Una vez completada, subir este mismo archivo en:"],
+        ["Importar → Importar Horarios y Designaciones"],
+        [""],
+        ["El sistema va a mostrar una vista previa con los solapamientos detectados"],
+        ["antes de aplicar los cambios."],
+    ]:
+        ws2.append(linea)
+    ws2.column_dimensions['A'].width = 22
+    ws2.column_dimensions['B'].width = 80
+    ws2.cell(row=1, column=1).font = Font(bold=True, size=14, color="1E3A5F")
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return StreamingResponse(buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=planilla_trabajo{'_' + sede.replace(' ','_') if sede else ''}.xlsx"})
+
+
 @app.get("/api/exportar/horarios")
-def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Session = Depends(get_db)):
+    """modulos: lista separada por comas de hojas a incluir. Si viene vacío exporta todo.
+    Ver /api/exportar/modulos para los identificadores disponibles."""
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill, Font, Alignment
     from sqlalchemy import text
@@ -3001,11 +3652,68 @@ def exportar_horarios(cuatrimestre_id: int = None, db: Session = Depends(get_db)
         for col, w in [('A',4),('B',16),('C',40),('D',12),('E',12),('F',10),('G',50),('H',30),('I',60)]:
             ws_sc.column_dimensions[col].width = w
 
+    # ========== v17.0: exportar sólo los módulos pedidos ==========
+    if modulos:
+        pedidos = {m.strip().lower() for m in modulos.split(',') if m.strip()}
+        # Cada módulo se corresponde con una o varias hojas (por nombre o prefijo)
+        mapa_modulos = {
+            'general': ['Totalidad General'],
+            'sedes': ['__SEDE__'],
+            'docentes': ['Listado Docentes'],
+            'docentes_tm': ['Docentes TM'],
+            'docentes_tn': ['Docentes TN'],
+            'cursos': ['Inscriptos por Curso'],
+            'necesitan_docente': ['Necesitan Docente'],
+            'apertura': ['Abrir cátedra', 'Cátedra asincrónica', 'Cátedra sin alumnos'],
+            'solapamientos': ['Solapamientos', 'Solapamientos Carreras'],
+            'decision': ['Criterio de Decisión'],
+            'borrador': ['Borrador Horarios'],
+            'horarios_dia': ['__DIA__'],
+            'plan_carrera': ['__PLAN__'],
+        }
+        nombres_sede = {s.nombre[:31] for s in db.query(Sede).all()}
+        conservar = set()
+        for m in pedidos:
+            for etiqueta in mapa_modulos.get(m, []):
+                if etiqueta == '__SEDE__': conservar |= nombres_sede
+                elif etiqueta == '__DIA__':
+                    conservar |= {d for d in ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado']}
+                elif etiqueta == '__PLAN__':
+                    conservar |= {n for n in wb.sheetnames if n.startswith('Plan ')}
+                else: conservar.add(etiqueta)
+        for nombre_hoja in list(wb.sheetnames):
+            if nombre_hoja not in conservar:
+                del wb[nombre_hoja]
+        if not wb.sheetnames:
+            ws_vacio = wb.create_sheet("Sin datos")
+            ws_vacio.append(["No hay hojas para los módulos seleccionados."])
+
     output = io.BytesIO(); wb.save(output); output.seek(0)
     from datetime import datetime
     ahora = datetime.now().strftime("%d-%m-%Y_%H_%M_hs")
-    nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}_{ahora}.xlsx"
+    sufijo = f"_{modulos.replace(',', '-')[:40]}" if modulos else ""
+    nombre = f"IEA_Horarios{'_Cuat' + str(cuatrimestre_id) if cuatrimestre_id else ''}{sufijo}_{ahora}.xlsx"
     return StreamingResponse(output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f"attachment; filename={nombre}"})
+
+
+@app.get("/api/exportar/modulos")
+def listar_modulos_exportables():
+    """Catálogo para armar el selector de exportación parcial."""
+    return [
+        {"id": "general", "nombre": "Totalidad General", "icono": "📊"},
+        {"id": "sedes", "nombre": "Una hoja por sede", "icono": "🏫"},
+        {"id": "docentes", "nombre": "Listado de Docentes", "icono": "👨‍🏫"},
+        {"id": "docentes_tm", "nombre": "Docentes Turno Mañana", "icono": "🌅"},
+        {"id": "docentes_tn", "nombre": "Docentes Turno Noche", "icono": "🌙"},
+        {"id": "cursos", "nombre": "Inscriptos por Curso", "icono": "📋"},
+        {"id": "necesitan_docente", "nombre": "Necesitan Docente", "icono": "🔴"},
+        {"id": "apertura", "nombre": "Apertura (abrir / asincrónica / sin alumnos)", "icono": "🚦"},
+        {"id": "solapamientos", "nombre": "Solapamientos", "icono": "⚠️"},
+        {"id": "decision", "nombre": "Criterio de Decisión", "icono": "🎯"},
+        {"id": "borrador", "nombre": "Borrador de Horarios", "icono": "📝"},
+        {"id": "horarios_dia", "nombre": "Horarios por Día", "icono": "📅"},
+        {"id": "plan_carrera", "nombre": "Plan por Carrera y Sede", "icono": "🎓"},
+    ]
 
 if __name__ == "__main__":
     import uvicorn
