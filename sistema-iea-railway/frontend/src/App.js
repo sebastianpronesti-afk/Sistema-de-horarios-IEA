@@ -29,8 +29,32 @@ const TIPO_DOCENTE_CONFIG = {
 };
 
 const DIAS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-const HORAS = ['07:00','08:00','09:00','10:00','11:00','12:00','13:00','14:00','17:00','18:00','19:00','20:00','21:00','22:00','23:00'];
+// v17.0: franjas cada 30 minutos
+const HORAS = ['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30',
+               '12:00','12:30','13:00','13:30','14:00','14:30',
+               '17:00','17:30','18:00','18:30','19:00','19:30','20:00','20:30','21:00','21:30',
+               '22:00','22:30','23:00'];
+// Franjas "en punto" para vistas compactas donde 30' sería demasiado denso
+const HORAS_HORA = HORAS.filter(h => h.endsWith(':00'));
 const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
+
+function minutosDeHora(h) {
+  if (!h) return null;
+  const p = String(h).replace('.', ':').split(':');
+  const hh = parseInt(p[0]); const mm = p.length > 1 ? parseInt(p[1].slice(0, 2)) : 0;
+  if (isNaN(hh)) return null;
+  return hh * 60 + (isNaN(mm) ? 0 : mm);
+}
+function horaDeMinutos(m) {
+  if (m === null || m === undefined) return '';
+  const hh = Math.floor(m / 60), mm = m % 60;
+  return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
+}
+// Sugiere hora de fin 1h30 después del inicio
+function finSugerido(inicio) {
+  const m = minutosDeHora(inicio);
+  return m === null ? '' : horaDeMinutos(m + 90);
+}
 
 function sortByCodigo(a, b) {
   const na = parseInt((a.codigo || '').replace(/[^0-9]/g, '')) || 9999;
@@ -50,10 +74,75 @@ async function apiFetch(endpoint, options = {}) {
   return res.json();
 }
 
+// ==================== v17.0: BUSCADOR DE DOCENTES ====================
+// Reemplaza el <select> largo. Filtra mientras se escribe: con ~200 docentes
+// buscar uno por uno en la lista desplegable era demasiado lento.
+function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar docente...', soloActivos = false }) {
+  const [texto, setTexto] = useState('');
+  const [abierto, setAbierto] = useState(false);
+
+  const elegido = docentes.find(d => String(d.id) === String(valor));
+  const lista = useMemo(() => {
+    let l = [...docentes];
+    if (soloActivos) l = l.filter(d => d.activo_cuatrimestre);
+    if (texto) {
+      const b = texto.toLowerCase();
+      l = l.filter(d =>
+        `${d.apellido || ''} ${d.nombre || ''}`.toLowerCase().includes(b) ||
+        `${d.nombre || ''} ${d.apellido || ''}`.toLowerCase().includes(b) ||
+        (d.especialidades || []).some(e => e.includes(b)));
+    }
+    l.sort((a, b) => `${a.apellido || ''} ${a.nombre || ''}`
+      .localeCompare(`${b.apellido || ''} ${b.nombre || ''}`, 'es'));
+    return l.slice(0, 60);
+  }, [docentes, texto, soloActivos]);
+
+  return (
+    <div className="relative">
+      <button type="button" onClick={() => { setAbierto(v => !v); setTexto(''); }}
+        className="w-full border rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50 flex justify-between items-center">
+        <span className={elegido ? '' : 'text-slate-400'}>
+          {elegido ? `${elegido.apellido || ''}${elegido.apellido && elegido.nombre ? ', ' : ''}${elegido.nombre || ''}` : 'Sin asignar'}
+        </span>
+        <span className="text-slate-400 text-xs">▾</span>
+      </button>
+      {abierto && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setAbierto(false)} />
+          <div className="absolute z-20 mt-1 w-full bg-white border rounded-lg shadow-xl">
+            <div className="p-2 border-b">
+              <input autoFocus type="text" placeholder={placeholder} value={texto}
+                onChange={e => setTexto(e.target.value)}
+                className="w-full px-2 py-1.5 border rounded text-sm" />
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              <button onClick={() => { onChange(''); setAbierto(false); }}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 text-slate-400 italic border-b">
+                Sin asignar (queda asincrónica)
+              </button>
+              {lista.length === 0 && <p className="px-3 py-3 text-sm text-slate-400">Sin resultados</p>}
+              {lista.map(d => (
+                <button key={d.id} onClick={() => { onChange(String(d.id)); setAbierto(false); }}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${String(d.id) === String(valor) ? 'bg-blue-100 font-bold' : ''}`}>
+                  <span>{d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}</span>
+                  {d.activo_cuatrimestre && <span className="ml-2 text-[9px] text-emerald-600">●activo</span>}
+                  {d.disponibilidad_resumen && d.disponibilidad_resumen !== 'Sin asignar' &&
+                    <span className="ml-2 text-[9px] text-slate-400">{d.disponibilidad_resumen}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ==================== SIDEBAR ====================
 function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount, solapCarrerasCount }) {
   const menuItems = [
     { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
+    { id: 'dictado', icon: '✔️', label: 'Cátedras que se dictan', highlight: true },
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
@@ -162,6 +251,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
     sede_id: asignacion.sede_id?.toString() || '',
     dia: asignacion.dia || '',
     hora_inicio: asignacion.hora_inicio || '',
+    hora_fin: asignacion.hora_fin || '',
     recibe_alumnos_presenciales: asignacion.recibe_alumnos_presenciales || false,
   });
   const [error, setError] = useState('');
@@ -191,10 +281,10 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
         <p className="text-slate-600 mb-4">{catCodigo} - {catNombre}</p>
         <div className="space-y-3">
           <div><label className="text-sm text-slate-600 font-medium">Docente:</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
-              <option value="">Sin asignar</option>
-              {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
-            </select></div>
+            <div className="mt-1">
+              <BuscadorDocente docentes={docentes} valor={form.docente_id}
+                onChange={v => setForm({...form, docente_id: v})} />
+            </div></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="text-sm text-slate-600">Modalidad:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.modalidad} onChange={e => setForm({...form, modalidad: e.target.value})}>
@@ -206,14 +296,22 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
                 {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
               </select></div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div><label className="text-sm text-slate-600">Día:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dia} onChange={e => setForm({...form, dia: e.target.value})}>
                 <option value="">Sin definir</option>
                 {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
               </select></div>
-            <div><label className="text-sm text-slate-600">Hora:</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio} onChange={e => setForm({...form, hora_inicio: e.target.value})}>
+            <div><label className="text-sm text-slate-600">Comienza:</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio}
+                onChange={e => setForm({...form, hora_inicio: e.target.value,
+                  hora_fin: form.hora_fin || finSugerido(e.target.value)})}>
+                <option value="">Sin definir</option>
+                {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
+              </select></div>
+            <div><label className="text-sm text-slate-600">Termina:</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_fin || ''}
+                onChange={e => setForm({...form, hora_fin: e.target.value})}>
                 <option value="">Sin definir</option>
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
@@ -238,7 +336,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
 // ==================== MODAL ASIGNAR CÁTEDRA ====================
 function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
   const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
-  const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', recibe_alumnos_presenciales: false });
+  const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', hora_fin: '', recibe_alumnos_presenciales: false });
   const [error, setError] = useState('');
   const crear = async () => {
     setError('');
@@ -271,10 +369,10 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
               {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
             </select></div>
           <div><label className="text-sm text-slate-600">Docente (opcional):</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.docente_id} onChange={e => setForm({...form, docente_id: e.target.value})}>
-              <option value="">Sin asignar (pendiente)</option>
-              {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre} {d.apellido}</option>)}
-            </select></div>
+            <div className="mt-1">
+              <BuscadorDocente docentes={docentes} valor={form.docente_id}
+                onChange={v => setForm({...form, docente_id: v})} />
+            </div></div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className="text-sm text-slate-600">Modalidad:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.modalidad} onChange={e => setForm({...form, modalidad: e.target.value})}>
@@ -286,14 +384,22 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
                 {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
               </select></div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div><label className="text-sm text-slate-600">Día (opcional):</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dia} onChange={e => setForm({...form, dia: e.target.value})}>
                 <option value="">Pendiente de confirmar</option>
                 {DIAS.map(d => <option key={d} value={d}>{d}</option>)}
               </select></div>
-            <div><label className="text-sm text-slate-600">Hora (opcional):</label>
-              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio} onChange={e => setForm({...form, hora_inicio: e.target.value})}>
+            <div><label className="text-sm text-slate-600">Comienza:</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio}
+                onChange={e => setForm({...form, hora_inicio: e.target.value,
+                  hora_fin: form.hora_fin || finSugerido(e.target.value)})}>
+                <option value="">Pendiente de confirmar</option>
+                {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
+              </select></div>
+            <div><label className="text-sm text-slate-600">Termina:</label>
+              <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_fin || ''}
+                onChange={e => setForm({...form, hora_fin: e.target.value})}>
                 <option value="">Pendiente de confirmar</option>
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
@@ -416,10 +522,10 @@ function DashboardView({ cuatrimestre, setActiveView }) {
       {/* Resumen rápido abajo */}
       <div className="grid grid-cols-4 gap-3 mt-8">
         {[
-          {val: data.abrir, label: 'A abrir', color: 'text-emerald-600', bg: 'bg-emerald-50'},
-          {val: data.asincronicas, label: 'Asincrónicas', color: 'text-purple-600', bg: 'bg-purple-50'},
+          {val: data.se_dictan ?? 0, label: 'Se dictan', color: 'text-blue-600', bg: 'bg-blue-50'},
+          {val: data.catedras_abiertas_docente ?? 0, label: 'Abiertas (con docente)', color: 'text-emerald-600', bg: 'bg-emerald-50'},
+          {val: data.catedras_asincronicas ?? 0, label: 'Asincrónicas', color: 'text-purple-600', bg: 'bg-purple-50'},
           {val: data.sin_alumnos, label: 'Sin alumnos', color: 'text-slate-400', bg: 'bg-slate-50'},
-          {val: data.docs_sugeridos, label: 'Docentes sugeridos', color: 'text-blue-600', bg: 'bg-blue-50'},
         ].map((s, i) => (
           <div key={i} className={`${s.bg} rounded-xl p-3 text-center`}>
             <p className={`text-2xl font-extrabold ${s.color}`}>{s.val}</p>
@@ -427,27 +533,46 @@ function DashboardView({ cuatrimestre, setActiveView }) {
           </div>
         ))}
       </div>
+      <p className="text-xs text-slate-400 text-center mt-3">
+        Una cátedra <b>se dicta</b> aunque no tenga docente (video pregrabado). <b>Se abre</b> cuando además tiene docente asignado.
+      </p>
     </div>
   );
 }
 
 // ==================== CÁTEDRAS VIEW (con mejoras 5, 7, 9) ====================
 function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, recargar }) {
-  const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false });
+  const [filtros, setFiltros] = useState({ buscar: '', soloSinAsignar: false, dictado: 'todas' });
   const [modalCatedra, setModalCatedra] = useState(null);
   const [modalEditar, setModalEditar] = useState(null);
   const [editCatInfo, setEditCatInfo] = useState(null);
   const [paginaActual, setPaginaActual] = useState(1);
+  const [setDictadas, setSetDictadas] = useState(null);
   const porPagina = 20;
+
+  // v17.0: qué cátedras están marcadas para dictarse en este cuatrimestre
+  useEffect(() => {
+    const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres || [])[0]?.id || 1);
+    apiFetch(`/api/catedras/dictado?cuatrimestre_id=${cuatId}`)
+      .then(d => setSetDictadas(new Set(d.catedras.filter(c => c.se_dicta).map(c => c.catedra_id))))
+      .catch(() => setSetDictadas(null));
+  }, [cuatrimestre, cuatrimestres]);
 
   const catedrasFiltradas = useMemo(() => {
     return catedras.filter(c => {
       if (filtros.buscar && !c.nombre.toLowerCase().includes(filtros.buscar.toLowerCase()) &&
           !c.codigo.toLowerCase().includes(filtros.buscar.toLowerCase())) return false;
       if (filtros.soloSinAsignar && c.asignaciones?.length > 0) return false;
+      if (filtros.dictado !== 'todas' && setDictadas) {
+        const seDicta = setDictadas.has(c.id);
+        if (filtros.dictado === 'dictadas' && !seDicta) return false;
+        if (filtros.dictado === 'no_dictadas' && seDicta) return false;
+        if (filtros.dictado === 'abiertas' && !(seDicta && c.asignaciones?.some(a => a.docente_id))) return false;
+        if (filtros.dictado === 'asincronicas' && !(seDicta && !c.asignaciones?.some(a => a.docente_id))) return false;
+      }
       return true;
     }); // Ya vienen ordenadas del backend por código numérico
-  }, [catedras, filtros]);
+  }, [catedras, filtros, setDictadas]);
 
   const totalPaginas = Math.ceil(catedrasFiltradas.length / porPagina);
   const catedrasPag = catedrasFiltradas.slice((paginaActual - 1) * porPagina, paginaActual * porPagina);
@@ -520,15 +645,26 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
           <p className="text-red-700 text-sm">⚠️ Hay <strong>{stats.totalSinClasif}</strong> inscripciones sin clasificar (importadas con la versión anterior). Reimportá los archivos de alumnos para que se clasifiquen correctamente por sede y turno.</p>
         </div>
       )}
-      <div className="flex gap-3 mb-4 bg-white p-4 rounded-xl border items-center">
-        <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
-          value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={filtros.soloSinAsignar}
-            onChange={e => { setFiltros({...filtros, soloSinAsignar: e.target.checked}); setPaginaActual(1); }} />
-          Solo sin asignación
-        </label>
-        <span className="text-sm text-slate-500">{catedrasFiltradas.length} cátedras | Pág {paginaActual}/{totalPaginas||1}</span>
+      <div className="bg-white p-4 rounded-xl border mb-4 space-y-3">
+        <div className="flex gap-3 items-center">
+          <input type="text" placeholder="Buscar por código o nombre..." className="px-3 py-2 border rounded-lg text-sm flex-1"
+            value={filtros.buscar} onChange={e => { setFiltros({...filtros, buscar: e.target.value}); setPaginaActual(1); }} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={filtros.soloSinAsignar}
+              onChange={e => { setFiltros({...filtros, soloSinAsignar: e.target.checked}); setPaginaActual(1); }} />
+            Solo sin asignación
+          </label>
+          <span className="text-sm text-slate-500">{catedrasFiltradas.length} cátedras | Pág {paginaActual}/{totalPaginas||1}</span>
+        </div>
+        <div className="flex flex-wrap gap-2 items-center text-xs">
+          <span className="text-slate-500">Este cuatrimestre:</span>
+          {[['todas','Todas'],['dictadas','✔️ Se dictan'],['abiertas','✅ Abiertas (con docente)'],
+            ['asincronicas','🎥 Asincrónicas'],['no_dictadas','No se dictan']].map(([k,l]) => (
+            <button key={k} onClick={() => { setFiltros({...filtros, dictado: k}); setPaginaActual(1); }}
+              className={`px-2.5 py-1 rounded ${filtros.dictado === k ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}>{l}</button>
+          ))}
+          {setDictadas === null && <span className="text-amber-600">⚠️ Marcá las cátedras que se dictan en el Paso 1 para usar estos filtros</span>}
+        </div>
       </div>
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <table className="w-full">
@@ -692,23 +828,32 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
     const sugInfo = sugerencias?.[c.codigo];
     const tieneDocente = !!sugInfo?.docente_actual;
     const tieneSugerencia = !!sugInfo?.sugerencia_docente;
-    return { ...c, sugerencia: sug, docs_sug_calc: docs, tieneDocente, tieneSugerencia, sugInfo };
+    // v17.0: el estado real sale de las asignaciones cargadas, no de las sugerencias.
+    // Al importar la planilla queda todo resuelto: con docente = ABIERTA, sin docente = ASINCRÓNICA.
+    const docenteReal = (c.asignaciones || []).some(a => a.docente_id || a.docente);
+    const tieneHorario = (c.asignaciones || []).some(a => a.dia && a.hora_inicio);
+    const resuelta = docenteReal || tieneHorario || !!c.decision_apertura;
+    const estadoReal = docenteReal ? 'ABIERTA'
+      : resuelta ? 'ASINCRONICA'
+      : (sug === 'ABRIR' ? 'PENDIENTE' : sug === 'ASINCRÓNICA' ? 'ASINCRONICA' : 'SIN_ALUMNOS');
+    return { ...c, sugerencia: sug, docs_sug_calc: docs,
+             tieneDocente: docenteReal, tieneSugerencia, sugInfo, resuelta, estadoReal };
   }).filter(c => {
     if (filtro === 'abrir') return c.sugerencia === 'ABRIR';
-    if (filtro === 'asinc') return c.sugerencia === 'ASINCRÓNICA';
-    if (filtro === 'sin') return c.sugerencia === 'SIN ALUMNOS';
-    if (filtro === 'pendientes') return c.sugerencia === 'ABRIR' && !c.tieneDocente;
-    if (filtro === 'decididas') return c.tieneDocente;
+    if (filtro === 'asinc') return c.estadoReal === 'ASINCRONICA';
+    if (filtro === 'sin') return c.estadoReal === 'SIN_ALUMNOS';
+    if (filtro === 'pendientes') return c.estadoReal === 'PENDIENTE';
+    if (filtro === 'decididas') return c.resuelta;
     return true;
   });
-  const totalDecididas = catedras.filter(c => {
-    const si = sugerencias?.[c.codigo];
-    return !!si?.docente_actual;
-  }).length;
+  const conDocenteReal = (c) => (c.asignaciones || []).some(a => a.docente_id || a.docente);
+  const estaResuelta = (c) => conDocenteReal(c) ||
+    (c.asignaciones || []).some(a => a.dia && a.hora_inicio) || !!c.decision_apertura;
+  const totalDecididas = catedras.filter(conDocenteReal).length;
+  const totalResueltas = catedras.filter(estaResuelta).length;
   const totalPendAbrir = catedras.filter(c => {
     const enAbrir = criterio?.abrir?.find(a => a.codigo === c.codigo);
-    const si = sugerencias?.[c.codigo];
-    return enAbrir && !si?.docente_actual;
+    return enAbrir && !estaResuelta(c);
   }).length;
   return (
     <div className="p-8">
@@ -716,17 +861,30 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
         <h2 className="text-2xl font-bold text-slate-800">🎯 Toma de Decisiones</h2>
         <p className="text-slate-500 text-sm mt-1">Decidí qué cátedras abrir, cuáles van asincrónicas, y asigná docentes.</p>
         <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
-          <p className="text-blue-800 font-semibold mb-2">Criterio de apertura</p>
+          <p className="text-blue-800 font-semibold mb-2">Criterio sugerido (orientativo)</p>
           <div className="text-sm text-blue-700 space-y-1">
-            <p>• <strong>≥10 inscriptos total</strong> → <strong>ABRIR</strong> (contratar docente)</p>
-            <p>• <strong>1 a 9 inscriptos</strong> → <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
-            <p>• <strong>0 inscriptos</strong> → <strong>NO SE ABRE</strong></p>
+            <p>• <strong>≥10 inscriptos total</strong> → sugiere <strong>ABRIR</strong> (asignar docente)</p>
+            <p>• <strong>1 a 9 inscriptos</strong> → sugiere <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
+            <p>• <strong>0 inscriptos</strong> → sugiere <strong>no dictarla</strong></p>
           </div>
+          <p className="text-xs text-blue-600 mt-2">
+            Es una sugerencia, no una regla: podés forzar la decisión contraria desde
+            <b> Cátedras que se dictan</b> cuando la situación real lo justifique.
+          </p>
         </div>
+        {totalResueltas > 0 && totalPendAbrir === 0 && (
+          <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+            <p className="text-emerald-800 font-semibold">✅ No quedan decisiones pendientes</p>
+            <p className="text-sm text-emerald-700 mt-1">
+              {totalDecididas} cátedras quedaron abiertas con docente y {totalResueltas - totalDecididas} como
+              asincrónicas. Las que no tienen docente se dictan igual con material pregrabado.
+            </p>
+          </div>
+        )}
       </div>
       <div className="grid grid-cols-5 gap-3 mb-4">
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-emerald-600">{totalDecididas}</p><p className="text-xs">✅ Con docente</p></div>
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-amber-600">{totalPendAbrir}</p><p className="text-xs">⚠️ Pendientes</p></div>
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-emerald-600">{totalDecididas}</p><p className="text-xs">✅ Abiertas (con docente)</p></div>
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-amber-600">{totalPendAbrir}</p><p className="text-xs">⚠️ Pendientes reales</p></div>
         <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥10)</p></div>
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-purple-600">{criterio?.stats?.total_asincronica||0}</p><p className="text-xs">Asincrónicas</p></div>
         <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold text-slate-400">{criterio?.stats?.total_sin_alumnos||0}</p><p className="text-xs">Sin alumnos</p></div>
@@ -788,12 +946,15 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
 }
 
 // ==================== v4.0 MEJORA 8: NECESITAN DOCENTE ====================
-function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
+function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], recargar }) {
   const [datos, setDatos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [asignando, setAsignando] = useState(null);
+  const [aviso, setAviso] = useState(null);
 
-  useEffect(() => {
-    const cargar = async () => {
+  const cuatriIdActual = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres || [])[0]?.id || 1);
+
+  const cargar = async () => {
       setLoading(true);
       try {
         const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
@@ -802,9 +963,24 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
         setDatos(r);
       } catch (e) { console.error(e); }
       setLoading(false);
-    };
-    cargar();
-  }, [cuatrimestre]);
+  };
+  useEffect(() => { cargar(); }, [cuatrimestre]);
+
+  // v17.0: asignar el docente sin salir de esta pantalla
+  const asignarDocente = async (catedraId, docenteId) => {
+    if (!docenteId) return;
+    setAsignando(catedraId); setAviso(null);
+    try {
+      const r = await apiFetch(`/api/catedras/${catedraId}/asignar-docente`, {
+        method: 'POST',
+        body: JSON.stringify({ docente_id: parseInt(docenteId), cuatrimestre_id: cuatriIdActual }),
+      });
+      setAviso({ tipo: 'ok', texto: `${r.docente} quedó asignado. La cátedra pasa a estar abierta.` });
+      await cargar();
+      if (recargar) recargar();
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setAsignando(null);
+  };
 
   if (loading) return <div className="p-8 text-center">⏳ Cargando...</div>;
 
@@ -813,7 +989,13 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
         <p className="text-slate-500 text-sm">Cátedras con 10 o más inscriptos en una misma sede y turno, sin docente asignado.</p>
+        <p className="text-slate-400 text-xs mt-1">Podés asignar el docente desde acá mismo: queda vinculado a la cátedra al instante.</p>
       </div>
+      {aviso && (
+        <div className={`rounded-lg p-3 mb-4 text-sm ${aviso.tipo === 'ok' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {aviso.texto}
+        </div>
+      )}
       {datos.length === 0 ? (
         <div className="bg-green-50 border border-green-200 rounded-xl p-8 text-center">
           <p className="text-4xl mb-2">✅</p>
@@ -835,6 +1017,7 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
                 <th className="text-center p-3 text-sm font-semibold w-16">Faltan</th>
                 <th className="text-left p-3 text-sm font-semibold">✅ Sedes ya asignadas</th>
                 <th className="text-left p-3 text-sm font-semibold">⚠️ Desglose inscriptos</th>
+                <th className="text-center p-3 text-sm font-semibold w-56">👨‍🏫 Asignar docente</th>
               </tr></thead>
               <tbody>
                 {datos.map(d => (
@@ -876,6 +1059,12 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres }) {
                           </div>
                         ))}
                       </div>
+                    </td>
+                    <td className="p-3">
+                      <BuscadorDocente docentes={docentes} valor=""
+                        onChange={v => asignarDocente(d.catedra_id, v)}
+                        placeholder="Buscar y asignar..." />
+                      {asignando === d.catedra_id && <p className="text-[10px] text-blue-600 mt-1 text-center">⏳ Asignando...</p>}
                     </td>
                   </tr>
                 ))}
@@ -978,7 +1167,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           sociedad_cfpea: d.sociedad_cfpea || false,
           sociedad_isftea: d.sociedad_isftea || false,
           notas: d.notas || '',
-          especialidad: d.especialidad || '',
+          especialidades: d.especialidades || [],
           catedras_referencia: d.catedras_referencia || '',
         };
       }
@@ -996,7 +1185,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
         sociedad_cfpea: d.sociedad_cfpea || false,
         sociedad_isftea: d.sociedad_isftea || false,
         notas: d.notas || '',
-        especialidad: d.especialidad || '',
+        especialidades: d.especialidades || [],
         catedras_referencia: d.catedras_referencia || '',
       };
     }
@@ -1023,11 +1212,39 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
     return { ...s, horas_cfpea, horas_isftea, horas_total, mat_av_total, mat_cab_total, mat_vl_total, por_sede };
   }, [docentes]);
 
+  const [orden, setOrden] = useState('apellido');
+  const [filtroActividad, setFiltroActividad] = useState('todos');
+  const [filtroArea, setFiltroArea] = useState('');
+  const [areas, setAreas] = useState([]);
+  useEffect(() => {
+    apiFetch('/api/areas-especialidad').then(setAreas).catch(() => setAreas([]));
+  }, []);
+
   const docentesFiltrados = useMemo(() => {
-    if (!buscar) return docentes;
-    const b = buscar.toLowerCase();
-    return docentes.filter(d => d.nombre.toLowerCase().includes(b) || d.apellido.toLowerCase().includes(b) || d.dni.includes(b));
-  }, [docentes, buscar]);
+    let lista = [...docentes];
+    if (filtroActividad === 'activos') lista = lista.filter(d => d.activo_cuatrimestre);
+    else if (filtroActividad === 'inactivos') lista = lista.filter(d => !d.activo_cuatrimestre);
+    if (filtroArea) lista = lista.filter(d => (d.especialidades || []).includes(filtroArea));
+    if (buscar) {
+      const b = buscar.toLowerCase();
+      lista = lista.filter(d =>
+        (d.nombre || '').toLowerCase().includes(b) ||
+        (d.apellido || '').toLowerCase().includes(b) ||
+        (d.dni || '').includes(b));
+    }
+    lista.sort((a, b) => {
+      const ka = orden === 'apellido'
+        ? `${a.apellido || ''} ${a.nombre || ''}`.toLowerCase()
+        : `${a.nombre || ''} ${a.apellido || ''}`.toLowerCase();
+      const kb = orden === 'apellido'
+        ? `${b.apellido || ''} ${b.nombre || ''}`.toLowerCase()
+        : `${b.nombre || ''} ${b.apellido || ''}`.toLowerCase();
+      return ka.localeCompare(kb, 'es');
+    });
+    return lista;
+  }, [docentes, buscar, orden, filtroActividad, filtroArea]);
+
+  const conteoActivos = useMemo(() => docentes.filter(d => d.activo_cuatrimestre).length, [docentes]);
 
   const guardarSedes = async (docenteId, sedeIds) => {
     try { await apiFetch(`/api/docentes/${docenteId}/sedes`, { method: 'PUT', body: JSON.stringify({ sede_ids: sedeIds }) }); recargar(); setModalSedes(null); } catch (e) { alert(e.message); }
@@ -1076,9 +1293,33 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           ))}
         </div>
       )}
-      <div className="bg-white rounded-xl border p-3 mb-4">
+      <div className="bg-white rounded-xl border p-3 mb-4 space-y-3">
         <input type="text" placeholder="Buscar por nombre, apellido o DNI..." className="w-full px-3 py-2 border rounded-lg text-sm"
           value={buscar} onChange={e => setBuscar(e.target.value)} />
+        <div className="flex flex-wrap gap-3 items-center text-xs">
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500">Ordenar:</span>
+            <button onClick={() => setOrden('apellido')}
+              className={`px-2 py-1 rounded ${orden === 'apellido' ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>Apellido, Nombre</button>
+            <button onClick={() => setOrden('nombre')}
+              className={`px-2 py-1 rounded ${orden === 'nombre' ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>Nombre Apellido</button>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500">En este cuatrimestre:</span>
+            {[['todos', `Todos (${docentes.length})`],
+              ['activos', `✅ Activos (${conteoActivos})`],
+              ['inactivos', `💤 Sin asignar (${docentes.length - conteoActivos})`]].map(([k, l]) => (
+              <button key={k} onClick={() => setFiltroActividad(k)}
+                className={`px-2 py-1 rounded ${filtroActividad === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
+            ))}
+          </div>
+          <select value={filtroArea} onChange={e => setFiltroArea(e.target.value)}
+            className="px-2 py-1 border rounded text-xs">
+            <option value="">Todas las áreas</option>
+            {areas.map(a => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+          </select>
+          <span className="text-slate-400 ml-auto">{docentesFiltrados.length} docentes</span>
+        </div>
       </div>
       <div className="bg-white rounded-xl border shadow-sm">
         <table className="w-full">
@@ -1098,9 +1339,25 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                 <tr key={d.id} className={`border-b hover:bg-slate-50 ${(d.horas_asignadas > 0 || d.asignaciones?.length > 0) ? 'bg-emerald-50/50' : ''}`}>
                   <td className="p-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">{(d.nombre||'?')[0]}{(d.apellido||'?')[0]}</div>
-                      <div><p className="font-medium">{d.nombre} {d.apellido}</p><p className="text-xs text-slate-500">DNI: {d.dni}</p>
-                        {d.email && <p className="text-xs text-slate-400">{d.email}</p>}</div>
+                      <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">{(d.apellido||'?')[0]}{(d.nombre||'?')[0]}</div>
+                      <div>
+                        <p className="font-medium">
+                          {d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}
+                          {d.activo_cuatrimestre && <span className="ml-2 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px] font-bold">ACTIVO</span>}
+                        </p>
+                        {d.dni ? <p className="text-xs text-slate-500">DNI: {d.dni}</p>
+                               : <p className="text-xs text-slate-300 italic">sin DNI</p>}
+                        {d.email && <p className="text-xs text-slate-400">{d.email}</p>}
+                        {(d.especialidades || []).length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {(d.especialidades || []).map(eid => {
+                              const a = areas.find(x => x.id === eid);
+                              return <span key={eid} className="px-1.5 py-0.5 rounded text-[9px] text-white"
+                                style={{ backgroundColor: a?.color || '#64748B' }}>{a?.nombre || eid}</span>;
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </td>
                   <td className="p-4 text-center"><span className={`px-3 py-1 rounded-full text-xs font-medium ${tipoCfg.bg} ${tipoCfg.color}`}>{tipoCfg.icon} {tipoCfg.label}</span></td>
@@ -1112,7 +1369,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                     <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
                   </td>
                   <td className="p-1" colSpan="7">
-                    <DocenteEditRow docId={d.id} editStore={editStore} />
+                    <DocenteEditRow docId={d.id} editStore={editStore} areas={areas} />
                   </td>
                   <td className="p-2 text-center text-xs">
                     <span className={`px-2 py-1 rounded ${d.disponibilidad_resumen === 'Sin asignar' ? 'bg-slate-100 text-slate-400' : 'bg-emerald-100 text-emerald-700'}`}>
@@ -1214,6 +1471,217 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
 }
 
 // ==================== CALENDARIO VIEW ====================
+// ==================== v17.0: CÁTEDRAS QUE SE DICTAN (Paso 1) ====================
+// "Se dicta" = funciona este cuatrimestre (puede ser con video pregrabado).
+// "Se abre"  = además tiene docente asignado en vivo.
+function DictadoView({ cuatrimestre, cuatrimestres }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [seleccion, setSeleccion] = useState(new Set());
+  const [buscar, setBuscar] = useState('');
+  const [filtro, setFiltro] = useState('todas');
+  const [mensaje, setMensaje] = useState(null);
+
+  const cuatriId = cuatrimestre !== 'todos' ? cuatrimestre : (cuatrimestres?.[0]?.id || 1);
+
+  const cargar = async () => {
+    setLoading(true);
+    try {
+      const d = await apiFetch(`/api/catedras/dictado?cuatrimestre_id=${cuatriId}`);
+      setData(d);
+      setSeleccion(new Set(d.catedras.filter(c => c.se_dicta).map(c => c.catedra_id)));
+    } catch (e) { setMensaje({ tipo: 'error', texto: e.message }); }
+    setLoading(false);
+  };
+  useEffect(() => { cargar(); }, [cuatriId]);
+
+  const visibles = (data?.catedras || []).filter(c => {
+    if (filtro === 'dictadas' && !c.se_dicta) return false;
+    if (filtro === 'no_dictadas' && c.se_dicta) return false;
+    if (filtro === 'con_inscriptos' && c.inscriptos < 1) return false;
+    if (filtro === 'sin_inscriptos' && c.inscriptos > 0) return false;
+    if (!buscar) return true;
+    const b = buscar.toLowerCase();
+    return (c.codigo || '').toLowerCase().includes(b) || (c.nombre || '').toLowerCase().includes(b);
+  });
+
+  const toggle = (id) => {
+    const s = new Set(seleccion);
+    s.has(id) ? s.delete(id) : s.add(id);
+    setSeleccion(s);
+  };
+  const marcarVisibles = (valor) => {
+    const s = new Set(seleccion);
+    visibles.forEach(c => valor ? s.add(c.catedra_id) : s.delete(c.catedra_id));
+    setSeleccion(s);
+  };
+
+  const guardar = async () => {
+    setGuardando(true); setMensaje(null);
+    try {
+      const r = await apiFetch('/api/catedras/dictado', {
+        method: 'POST',
+        body: JSON.stringify({
+          cuatrimestre_id: cuatriId,
+          catedra_ids: Array.from(seleccion),
+          se_dicta: true,
+          reemplazar_todo: true,
+        }),
+      });
+      setMensaje({ tipo: 'ok', texto: `Guardado. ${r.afectadas} cátedras marcadas para dictarse.` });
+      await cargar();
+    } catch (e) { setMensaje({ tipo: 'error', texto: e.message }); }
+    setGuardando(false);
+  };
+
+  const marcarDesdeInscriptos = async () => {
+    setGuardando(true); setMensaje(null);
+    try {
+      const r = await apiFetch('/api/catedras/dictado/desde-inscripciones', {
+        method: 'POST',
+        body: JSON.stringify({ cuatrimestre_id: cuatriId, minimo: 1 }),
+      });
+      setMensaje({ tipo: 'ok', texto: `${r.marcadas} cátedras con inscriptos marcadas para dictarse.` });
+      await cargar();
+    } catch (e) { setMensaje({ tipo: 'error', texto: e.message }); }
+    setGuardando(false);
+  };
+
+  const forzar = async (catedraId, decision) => {
+    try {
+      await apiFetch('/api/catedras/dictado/forzar', {
+        method: 'POST',
+        body: JSON.stringify({ cuatrimestre_id: cuatriId, catedra_id: catedraId, decision: decision || null }),
+      });
+      await cargar();
+    } catch (e) { setMensaje({ tipo: 'error', texto: e.message }); }
+  };
+
+  const ESTADO_CFG = {
+    'ABIERTA': { txt: '✅ Abierta (con docente)', cls: 'bg-emerald-100 text-emerald-800' },
+    'ABRIR': { txt: '✅ Forzada a abrir', cls: 'bg-emerald-100 text-emerald-800' },
+    'ASINCRONICA': { txt: '🎥 Asincrónica (pregrabada)', cls: 'bg-violet-100 text-violet-800' },
+    'SIN_ALUMNOS': { txt: '⭕ Sin alumnos', cls: 'bg-slate-100 text-slate-600' },
+    'NO_SE_DICTA': { txt: '— No se dicta', cls: 'bg-slate-100 text-slate-400' },
+  };
+
+  if (loading) return <div className="p-8 text-center text-slate-500">⏳ Cargando cátedras...</div>;
+
+  const pendientes = Array.from(seleccion).length;
+  const cambios = pendientes !== (data?.se_dictan || 0) ||
+    (data?.catedras || []).some(c => c.se_dicta !== seleccion.has(c.catedra_id));
+
+  return (
+    <div className="p-8">
+      <div className="mb-5">
+        <h2 className="text-2xl font-bold text-slate-800">✔️ Cátedras que se dictan este cuatrimestre</h2>
+        <p className="text-slate-500 text-sm mt-1">
+          Paso 1 del armado. Marcá todas las cátedras que van a funcionar, tengan o no docente todavía.
+        </p>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-5 text-sm">
+        <p className="font-bold text-blue-900 mb-1">Diferencia entre dictar y abrir</p>
+        <p className="text-blue-800"><b>Se dicta:</b> la cátedra funciona este cuatrimestre. Puede ser con video pregrabado, sin docente en vivo.</p>
+        <p className="text-blue-800"><b>Se abre:</b> además tiene docente asignado. El docente se define más adelante, en el Paso 4.</p>
+        <p className="text-blue-700 mt-1 text-xs">Acá sólo marcás cuáles se dictan. Ninguna queda excluida por no tener docente.</p>
+      </div>
+
+      {mensaje && (
+        <div className={`rounded-lg p-3 mb-4 text-sm ${mensaje.tipo === 'ok' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {mensaje.texto}
+        </div>
+      )}
+
+      <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className="bg-slate-800 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{data?.total_catedras || 0}</p><p className="text-[11px] opacity-70">Cátedras totales</p></div>
+        <div className="bg-blue-600 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{pendientes}</p><p className="text-[11px] opacity-80">Marcadas para dictar</p></div>
+        <div className="bg-emerald-600 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{data?.abiertas || 0}</p><p className="text-[11px] opacity-80">Abiertas (con docente)</p></div>
+        <div className="bg-violet-600 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{data?.asincronicas || 0}</p><p className="text-[11px] opacity-80">Asincrónicas</p></div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 items-center mb-4">
+        {[['todas','Todas'],['dictadas','✔️ Se dictan'],['no_dictadas','No se dictan'],
+          ['con_inscriptos','Con inscriptos'],['sin_inscriptos','Sin inscriptos']].map(([k,l]) => (
+          <button key={k} onClick={() => setFiltro(k)}
+            className={`px-3 py-1.5 rounded-lg text-xs ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}>{l}</button>
+        ))}
+        <input type="text" placeholder="🔍 Buscar código o nombre..." value={buscar} onChange={e => setBuscar(e.target.value)}
+          className="px-3 py-1.5 border rounded-lg text-sm flex-1 min-w-[200px]" />
+      </div>
+
+      <div className="flex flex-wrap gap-2 items-center mb-4 pb-4 border-b">
+        <button onClick={() => marcarVisibles(true)} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs hover:bg-emerald-700">
+          ✔️ Marcar todas las visibles ({visibles.length})</button>
+        <button onClick={() => marcarVisibles(false)} className="px-3 py-1.5 bg-slate-200 rounded-lg text-xs hover:bg-slate-300">
+          ✖️ Desmarcar visibles</button>
+        <button onClick={marcarDesdeInscriptos} disabled={guardando}
+          className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs hover:bg-indigo-700 disabled:opacity-50">
+          ⚡ Marcar automáticamente las que tienen inscriptos</button>
+        <div className="flex-1" />
+        <button onClick={guardar} disabled={guardando || !cambios}
+          className={`px-5 py-2 rounded-lg text-sm font-bold ${cambios ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-200 text-slate-400'} disabled:opacity-50`}>
+          {guardando ? '⏳ Guardando...' : cambios ? '💾 Guardar selección' : '✓ Sin cambios'}</button>
+      </div>
+
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-slate-800 text-white text-xs">
+            <th className="p-2 w-10"></th>
+            <th className="p-2 text-left w-20">Código</th>
+            <th className="p-2 text-left">Cátedra</th>
+            <th className="p-2 text-center w-24">Inscriptos</th>
+            <th className="p-2 text-left w-56">Docente asignado</th>
+            <th className="p-2 text-center w-52">Estado</th>
+            <th className="p-2 text-center w-44">Forzar decisión</th>
+          </tr></thead>
+          <tbody>
+            {visibles.map(c => {
+              const marcada = seleccion.has(c.catedra_id);
+              const cfg = ESTADO_CFG[c.estado] || ESTADO_CFG['NO_SE_DICTA'];
+              return (
+                <tr key={c.catedra_id} className={`border-b hover:bg-slate-50 ${marcada ? '' : 'opacity-60'}`}>
+                  <td className="p-2 text-center">
+                    <input type="checkbox" checked={marcada} onChange={() => toggle(c.catedra_id)} className="w-4 h-4 cursor-pointer" />
+                  </td>
+                  <td className="p-2 font-mono text-xs">{c.codigo}</td>
+                  <td className="p-2">{c.nombre}</td>
+                  <td className="p-2 text-center">
+                    <span className={`font-bold ${c.inscriptos >= 10 ? 'text-emerald-600' : c.inscriptos > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
+                      {c.inscriptos}</span>
+                  </td>
+                  <td className="p-2 text-xs text-slate-600">{c.docentes?.join(', ') || '—'}</td>
+                  <td className="p-2 text-center">
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cfg.cls}`}>{cfg.txt}</span>
+                    {c.decision_forzada && <span className="block text-[9px] text-amber-600 mt-0.5">manual</span>}
+                  </td>
+                  <td className="p-2 text-center">
+                    <select value={c.decision_forzada || ''} onChange={e => forzar(c.catedra_id, e.target.value)}
+                      className="text-[10px] border rounded px-1 py-1 w-full">
+                      <option value="">Automático ({c.sugerido})</option>
+                      <option value="ABRIR">Forzar ABRIR</option>
+                      <option value="ASINCRONICA">Forzar ASINCRÓNICA</option>
+                      <option value="SIN_ALUMNOS">Forzar SIN ALUMNOS</option>
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-slate-500 mt-3 text-center">
+        Mostrando {visibles.length} de {data?.total_catedras || 0} cátedras
+      </p>
+    </div>
+  );
+}
+
 // ==================== v16.0: EDI POR CÁTEDRA ====================
 function EdiAlumnosView({ cuatrimestre }) {
   const [data, setData] = useState(null);
@@ -2529,6 +2997,7 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700">
           {uploading === 'Plan Carrera' ? '⏳ Importando...' : '📤 Importar molde de horarios'}
         </button>
+        <AdminMoldeCarrera />
       </div>
 
       {/* v4.0 MEJORA 4: Alumnos consolidados */}
@@ -2744,81 +3213,154 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   );
 }
 
-// ==================== v15.0: DOCENTE ROW EDITOR — ESTADO EN EL PADRE ====================
-// DocenteEditRow reads/writes from a shared editStore ref, never loses data
-function DocenteEditRow({ docId, editStore, onSave }) {
+// ==================== v17.0: EDITOR DE DOCENTE ====================
+// Reescrito. El guardado ahora reporta campo por campo qué se grabó y qué no,
+// en vez de fallar en silencio. Especialidades pasó a ser selector múltiple.
+function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [estado, setEstado] = useState(null);
+  const [abrirAreas, setAbrirAreas] = useState(false);
+  const [, forceUpdate] = useState(0);
 
   const vals = editStore.current[docId] || {};
-  const set = (campo, valor) => {
-    editStore.current[docId] = {...editStore.current[docId], [campo]: valor};
-    setDirty(true); setSaved(false);
+  const setAndUpdate = (campo, valor) => {
+    editStore.current[docId] = { ...editStore.current[docId], [campo]: valor };
+    setDirty(true); setEstado(null); forceUpdate(n => n + 1);
+  };
+
+  const areasElegidas = vals.especialidades || [];
+  const toggleArea = (areaId) => {
+    const actual = new Set(areasElegidas);
+    actual.has(areaId) ? actual.delete(areaId) : actual.add(areaId);
+    setAndUpdate('especialidades', Array.from(actual));
   };
 
   const guardar = async () => {
-    setSaving(true);
+    setSaving(true); setEstado(null);
     const data = editStore.current[docId];
+    const numero = (v) => {
+      const n = parseInt(v);
+      return isNaN(n) ? 0 : n;
+    };
     try {
       const payload = {
-        horas_asignadas: parseInt(data.horas_asignadas) || 0,
-        materias_av: parseInt(data.materias_av) || 0,
-        materias_cab: parseInt(data.materias_cab) || 0,
-        materias_vl: parseInt(data.materias_vl) || 0,
+        horas_asignadas: numero(data.horas_asignadas),
+        materias_av: numero(data.materias_av),
+        materias_cab: numero(data.materias_cab),
+        materias_vl: numero(data.materias_vl),
         sociedad_cfpea: !!data.sociedad_cfpea,
         sociedad_isftea: !!data.sociedad_isftea,
         notas: data.notas || '',
-        especialidad: data.especialidad || '',
         catedras_referencia: data.catedras_referencia || '',
+        especialidades: data.especialidades || [],
       };
       const res = await fetch(`${API_URL}/api/docentes/${docId}`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
       });
-      if (!res.ok) throw new Error('Error del servidor');
-      setDirty(false); setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
-    } catch (e) { alert('Error al guardar: ' + e.message); }
+      const cuerpo = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(cuerpo.detail || 'Error del servidor');
+      if (cuerpo.ok === false && (cuerpo.fallidos || []).length) {
+        setEstado({ tipo: 'parcial', texto: `No se guardaron: ${cuerpo.fallidos.join(', ')}` });
+      } else {
+        setDirty(false);
+        setEstado({ tipo: 'ok', texto: 'Guardado' });
+        setTimeout(() => setEstado(null), 2500);
+      }
+      if (onSave) onSave();
+    } catch (e) {
+      setEstado({ tipo: 'error', texto: e.message });
+    }
     setSaving(false);
   };
-
-  // Force re-render when editStore changes (using a trick)
-  const [, forceUpdate] = useState(0);
-  const setAndUpdate = (campo, valor) => { set(campo, valor); forceUpdate(n => n + 1); };
 
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {[['horas_asignadas','Hs'],['materias_av','Av'],['materias_cab','Cab'],['materias_vl','VL']].map(([campo,label]) => (
         <div key={campo} className="text-center">
           <label className="text-[8px] text-slate-400 block">{label}</label>
-          <input type="number" min="0" max="99" className={`w-10 text-center border rounded px-0.5 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-            value={vals[campo] ?? 0} onChange={e => setAndUpdate(campo, e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+          <input type="number" min="0" max="99"
+            className={`w-11 text-center border rounded px-0.5 py-1 text-[11px] ${dirty ? 'border-amber-400' : ''}`}
+            value={vals[campo] ?? 0}
+            onChange={e => setAndUpdate(campo, e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && guardar()} />
         </div>
       ))}
       {[['sociedad_cfpea','CFPEA'],['sociedad_isftea','ISFTEA']].map(([campo,label]) => (
         <div key={campo} className="text-center">
           <label className="text-[8px] text-slate-400 block">{label}</label>
-          <input type="checkbox" checked={!!vals[campo]} onChange={e => setAndUpdate(campo, e.target.checked)} className="w-4 h-4" />
+          <input type="checkbox" checked={!!vals[campo]}
+            onChange={e => setAndUpdate(campo, e.target.checked)} className="w-4 h-4 cursor-pointer" />
         </div>
       ))}
-      <div className="flex-1 min-w-[80px]">
-        <input type="text" placeholder="Notas..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.notas ?? ''} onChange={e => setAndUpdate('notas', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+
+      {/* Selector múltiple de áreas — reemplaza el campo de texto libre */}
+      <div className="relative min-w-[130px]">
+        <label className="text-[8px] text-slate-400 block">Áreas de especialidad</label>
+        <button type="button" onClick={() => setAbrirAreas(v => !v)}
+          className={`w-full border rounded px-1.5 py-1 text-[10px] text-left ${dirty ? 'border-amber-400' : ''} hover:bg-slate-50`}>
+          {areasElegidas.length === 0 ? 'Elegir áreas...' : `${areasElegidas.length} seleccionada${areasElegidas.length > 1 ? 's' : ''}`} ▾
+        </button>
+        {abrirAreas && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setAbrirAreas(false)} />
+            <div className="absolute z-20 mt-1 w-64 max-h-64 overflow-y-auto bg-white border rounded-lg shadow-xl p-2">
+              {areas.map(a => (
+                <label key={a.id} className="flex items-center gap-2 px-1.5 py-1 hover:bg-slate-50 rounded cursor-pointer">
+                  <input type="checkbox" checked={areasElegidas.includes(a.id)}
+                    onChange={() => toggleArea(a.id)} className="w-3.5 h-3.5" />
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: a.color }} />
+                  <span className="text-[11px]">{a.nombre}</span>
+                </label>
+              ))}
+              <button onClick={() => { setAbrirAreas(false); guardar(); }}
+                className="w-full mt-2 px-2 py-1 bg-blue-600 text-white rounded text-[10px] font-bold">
+                Aplicar y guardar
+              </button>
+            </div>
+          </>
+        )}
+        {areasElegidas.length > 0 && (
+          <div className="flex flex-wrap gap-0.5 mt-1">
+            {areasElegidas.slice(0, 3).map(eid => {
+              const a = areas.find(x => x.id === eid);
+              return <span key={eid} className="px-1 py-0.5 rounded text-[8px] text-white"
+                style={{ backgroundColor: a?.color || '#64748B' }}>{(a?.nombre || eid).slice(0, 14)}</span>;
+            })}
+            {areasElegidas.length > 3 && <span className="text-[8px] text-slate-400">+{areasElegidas.length - 3}</span>}
+          </div>
+        )}
       </div>
-      <div className="min-w-[70px]">
-        <label className="text-[8px] text-slate-400 block">Especialidad</label>
-        <input type="text" placeholder="Área..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.especialidad ?? ''} onChange={e => setAndUpdate('especialidad', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+
+      <div className="min-w-[90px]">
+        <label className="text-[8px] text-slate-400 block">Cát. de referencia</label>
+        <input type="text" placeholder="c.1, c.3..."
+          className={`w-full border rounded px-1 py-1 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
+          value={vals.catedras_referencia ?? ''}
+          onChange={e => setAndUpdate('catedras_referencia', e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && guardar()} />
       </div>
-      <div className="min-w-[80px]">
-        <label className="text-[8px] text-slate-400 block">Cát. ref.</label>
-        <input type="text" placeholder="c.1, c.3..." className={`w-full border rounded px-1 py-0.5 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.catedras_referencia ?? ''} onChange={e => setAndUpdate('catedras_referencia', e.target.value)} onKeyDown={e => e.key === 'Enter' && guardar()} />
+      <div className="flex-1 min-w-[90px]">
+        <label className="text-[8px] text-slate-400 block">Notas</label>
+        <input type="text" placeholder="Notas..."
+          className={`w-full border rounded px-1 py-1 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
+          value={vals.notas ?? ''}
+          onChange={e => setAndUpdate('notas', e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && guardar()} />
       </div>
-      <button onClick={guardar} disabled={saving}
-        className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap ${saved ? 'bg-emerald-500 text-white' : dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'}`}>
-        {saving ? '⏳' : saved ? '✅' : dirty ? '💾 GUARDAR' : '—'}
-      </button>
+
+      <div className="flex flex-col items-center">
+        <button onClick={guardar} disabled={saving}
+          className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap ${
+            estado?.tipo === 'ok' ? 'bg-emerald-500 text-white' :
+            estado?.tipo === 'error' || estado?.tipo === 'parcial' ? 'bg-red-500 text-white' :
+            dirty ? 'bg-amber-500 text-white animate-pulse' : 'bg-slate-200 text-slate-400'}`}>
+          {saving ? '⏳' : estado?.tipo === 'ok' ? '✅' : dirty ? '💾 GUARDAR' : '—'}
+        </button>
+        {estado && estado.tipo !== 'ok' && (
+          <span className="text-[8px] text-red-600 mt-0.5 max-w-[110px] text-center">{estado.texto}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -2902,6 +3444,7 @@ function DecisionInput({ catedra }) {
 // ==================== v6.0: DISPONIBILIDAD DOCENTE ====================
 function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimestres, recargar }) {
   const [selectedDoc, setSelectedDoc] = useState(null);
+  const [verMediasHoras, setVerMediasHoras] = useState(false);
   const [buscar, setBuscar] = useState('');
   const [disponibilidad, setDisponibilidad] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -2951,21 +3494,25 @@ function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimes
         <h2 className="text-2xl font-bold text-slate-800">🕐 Disponibilidad y Asignaciones</h2>
         <p className="text-slate-500 text-sm">Marcá disponibilidad (verde) y visualizá las cátedras asignadas (azul) en formato calendario.</p>
       </div>
-      <div className="grid grid-cols-4 gap-6">
+      {/* v17.0: la lista pasa a ser más angosta y el calendario ocupa mucho más espacio */}
+      <div className="grid grid-cols-5 gap-5">
         <div className="col-span-1">
           <input type="text" placeholder="Buscar docente..." className="w-full border rounded-lg px-3 py-2 text-sm mb-3"
             value={buscar} onChange={e => setBuscar(e.target.value)} />
-          <div className="bg-white rounded-xl border max-h-96 overflow-y-auto">
+          <p className="text-[10px] text-slate-400 mb-2">{docsFiltrados.length} docentes</p>
+          <div className="bg-white rounded-xl border overflow-y-auto" style={{ maxHeight: 'calc(100vh - 230px)' }}>
             {docsFiltrados.map(d => (
               <div key={d.id} onClick={() => seleccionar(d)}
-                className={`p-3 border-b cursor-pointer hover:bg-amber-50 ${selectedDoc?.id === d.id ? 'bg-amber-100 font-medium' : ''}`}>
-                <p className="text-sm">{d.nombre} {d.apellido}</p>
-                <p className="text-xs text-slate-400">{d.horas_asignadas || 0}h — {d.asignaciones?.length || 0} cátedras</p>
+                className={`p-2.5 border-b cursor-pointer hover:bg-amber-50 ${selectedDoc?.id === d.id ? 'bg-amber-100 font-medium' : ''}`}>
+                <p className="text-sm leading-tight">
+                  {d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}
+                </p>
+                <p className="text-[10px] text-slate-400">{d.horas_asignadas || 0}h — {d.asignaciones?.length || 0} cátedras</p>
               </div>
             ))}
           </div>
         </div>
-        <div className="col-span-3">
+        <div className="col-span-4">
           {!selectedDoc ? (
             <div className="bg-slate-50 rounded-xl p-12 text-center text-slate-400">← Seleccioná un docente</div>
           ) : loading ? (
@@ -2993,16 +3540,26 @@ function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimes
                   ))}
                 </div>
               )}
-              <div className="bg-white rounded-xl border overflow-auto">
+              <div className="flex items-center gap-3 mb-2">
+                <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={verMediasHoras}
+                    onChange={e => setVerMediasHoras(e.target.checked)} className="w-3.5 h-3.5" />
+                  Mostrar franjas de 30 minutos
+                </label>
+                <span className="text-[10px] text-slate-400">
+                  {verMediasHoras ? 'Grilla detallada' : 'Grilla compacta (sólo horas en punto)'}
+                </span>
+              </div>
+              <div className="bg-white rounded-xl border overflow-auto" style={{ maxHeight: 'calc(100vh - 300px)' }}>
                 <table className="w-full text-sm">
-                  <thead><tr className="bg-slate-800 text-white">
+                  <thead><tr className="bg-slate-800 text-white sticky top-0 z-10">
                     <th className="p-2 border-r w-20">Hora</th>
                     {DIAS.map(d => <th key={d} className="p-2 border-r">{d}</th>)}
                   </tr></thead>
                   <tbody>
-                    {HORAS.map(hora => (
+                    {(verMediasHoras ? HORAS : HORAS_HORA).map(hora => (
                       <tr key={hora} className="border-b">
-                        <td className="p-2 border-r bg-slate-50 font-medium text-center text-xs">{hora}</td>
+                        <td className={`p-1.5 border-r font-medium text-center text-xs ${hora.endsWith(':30') ? 'bg-slate-100 text-slate-500' : 'bg-slate-50'}`}>{hora}</td>
                         {DIAS.map(dia => {
                           const disp = isDisponible(dia, hora);
                           const asig = asigEnCelda(dia, hora);
@@ -3010,11 +3567,12 @@ function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimes
                             <td key={dia} className="p-0.5 border-r text-center cursor-pointer select-none"
                               onClick={() => !asig && toggleCelda(dia, hora)}>
                               {asig ? (
-                                <div className="rounded py-1.5 bg-blue-500 text-white text-[10px] font-bold px-1">
+                                <div className="rounded py-2 bg-blue-500 text-white text-[11px] font-bold px-1 leading-tight">
                                   {asig.cat_codigo}
+                                  {asig.hora_fin && <span className="block text-[8px] font-normal opacity-80">hasta {asig.hora_fin}</span>}
                                 </div>
                               ) : (
-                                <div className={`rounded py-1.5 transition-all ${disp ? 'bg-emerald-400 text-white font-bold' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}>
+                                <div className={`rounded py-2 transition-all ${disp ? 'bg-emerald-400 text-white font-bold' : 'bg-slate-100 text-slate-300 hover:bg-slate-200'}`}>
                                   {disp ? '✓' : ''}
                                 </div>
                               )}
@@ -3035,40 +3593,234 @@ function DisponibilidadView({ docentes, catedras, sedes, cuatrimestre, cuatrimes
 }
 
 // ==================== EXPORTAR VIEW (v6.0 con desglose) ====================
-function ExportarView({ cuatrimestre, cuatrimestres }) {
-  const [descargando, setDescargando] = useState(false);
-  const descargar = async () => {
-    setDescargando(true);
+// ==================== v17.0: ADMINISTRAR EL MOLDE DE CARRERAS ====================
+// Permite borrar el molde si se cargó mal, entero o carrera por carrera.
+function AdminMoldeCarrera() {
+  const [resumen, setResumen] = useState(null);
+  const [abierto, setAbierto] = useState(false);
+  const [borrando, setBorrando] = useState(false);
+  const [aviso, setAviso] = useState(null);
+
+  const cargar = async () => {
+    try { setResumen(await apiFetch('/api/plan-carrera/resumen')); }
+    catch (e) { setResumen({ plan_importado: false, entradas: [], total: 0 }); }
+  };
+  useEffect(() => { if (abierto) cargar(); }, [abierto]);
+
+  const borrar = async (params, descripcion) => {
+    if (!window.confirm(`¿Seguro que querés borrar ${descripcion}? Esta acción no se puede deshacer.`)) return;
+    setBorrando(true); setAviso(null);
     try {
-      const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
-      const url = `${API_URL}/api/exportar/horarios${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`;
+      const r = await apiFetch(`/api/plan-carrera?${params}`, { method: 'DELETE' });
+      setAviso({ tipo: 'ok', texto: `Se borraron ${r.borradas} filas del molde.` });
+      await cargar();
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setBorrando(false);
+  };
+
+  return (
+    <div className="mt-4 pt-4 border-t">
+      <button onClick={() => setAbierto(v => !v)} className="text-xs text-slate-500 hover:text-slate-700">
+        {abierto ? '▼' : '▶'} Administrar molde cargado (borrar si te equivocaste)
+      </button>
+      {abierto && (
+        <div className="mt-3">
+          {aviso && (
+            <div className={`rounded p-2 mb-3 text-xs ${aviso.tipo === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-800'}`}>
+              {aviso.texto}
+            </div>
+          )}
+          {!resumen ? <p className="text-xs text-slate-400">Cargando...</p>
+           : !resumen.plan_importado ? <p className="text-xs text-slate-400">No hay ningún molde cargado todavía.</p>
+           : (
+            <>
+              <div className="flex justify-between items-center mb-2">
+                <p className="text-xs text-slate-600">
+                  {resumen.entradas.length} carreras cargadas · {resumen.total} cátedras en total
+                </p>
+                <button onClick={() => borrar('todo=true', 'TODO el molde de carreras')} disabled={borrando}
+                  className="px-3 py-1 bg-red-600 text-white rounded text-xs font-bold hover:bg-red-700 disabled:opacity-50">
+                  🗑️ Borrar todo el molde
+                </button>
+              </div>
+              <div className="max-h-56 overflow-y-auto border rounded">
+                <table className="w-full text-xs">
+                  <thead><tr className="bg-slate-100 sticky top-0">
+                    <th className="p-1.5 text-left">Sede</th>
+                    <th className="p-1.5 text-left">Carrera</th>
+                    <th className="p-1.5 text-center w-16">Cát.</th>
+                    <th className="p-1.5 text-center w-20"></th>
+                  </tr></thead>
+                  <tbody>
+                    {resumen.entradas.map((e, i) => (
+                      <tr key={i} className="border-b hover:bg-slate-50">
+                        <td className="p-1.5">{e.sede}</td>
+                        <td className="p-1.5">{e.carrera}</td>
+                        <td className="p-1.5 text-center">{e.catedras}</td>
+                        <td className="p-1.5 text-center">
+                          <button disabled={borrando}
+                            onClick={() => borrar(`sede=${encodeURIComponent(e.sede)}&carrera=${encodeURIComponent(e.carrera)}`,
+                              `${e.carrera} de ${e.sede}`)}
+                            className="px-2 py-0.5 bg-red-100 text-red-700 rounded hover:bg-red-200 disabled:opacity-50">
+                            Borrar
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExportarView({ cuatrimestre, cuatrimestres }) {
+  const [descargando, setDescargando] = useState(null);
+  const [modulos, setModulos] = useState([]);
+  const [elegidos, setElegidos] = useState(new Set());
+
+  useEffect(() => {
+    apiFetch('/api/exportar/modulos').then(setModulos).catch(() => setModulos([]));
+  }, []);
+
+  const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
+  const cuatNombre = cuatrimestres.find(c => c.id?.toString() === cuatrimestre?.toString())?.nombre || 'Todos';
+
+  const bajarArchivo = async (url, nombre, clave) => {
+    setDescargando(clave);
+    try {
       const res = await fetch(url);
-      if (!res.ok) throw new Error('Error al generar');
+      if (!res.ok) throw new Error('Error al generar el archivo');
       const blob = await res.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      const cuatNombre = cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre || 'Todos';
-      a.download = `IEA_Horarios_${cuatNombre.replace(/ /g, '_')}.xlsx`;
+      a.download = nombre;
       a.click();
+      URL.revokeObjectURL(a.href);
     } catch (e) { alert('Error: ' + e.message); }
-    setDescargando(false);
+    setDescargando(null);
   };
+
+  const exportarTodo = () => bajarArchivo(
+    `${API_URL}/api/exportar/horarios${cuatId ? `?cuatrimestre_id=${cuatId}` : ''}`,
+    `IEA_Horarios_${cuatNombre.replace(/ /g, '_')}.xlsx`, 'todo');
+
+  const [sedePlanilla, setSedePlanilla] = useState('');
+  const exportarPlanilla = () => bajarArchivo(
+    `${API_URL}/api/exportar/planilla-trabajo?solo_dictadas=true${cuatId ? `&cuatrimestre_id=${cuatId}` : ''}${sedePlanilla ? `&sede=${encodeURIComponent(sedePlanilla)}` : ''}`,
+    `Planilla_trabajo${sedePlanilla ? '_' + sedePlanilla.replace(/ /g, '_') : ''}_${cuatNombre.replace(/ /g, '_')}.xlsx`, 'planilla');
+
+  const exportarModulos = () => {
+    if (elegidos.size === 0) return alert('Elegí al menos un módulo');
+    const lista = Array.from(elegidos).join(',');
+    bajarArchivo(
+      `${API_URL}/api/exportar/horarios?modulos=${lista}${cuatId ? `&cuatrimestre_id=${cuatId}` : ''}`,
+      `IEA_${lista.replace(/,/g, '-')}_${cuatNombre.replace(/ /g, '_')}.xlsx`, 'modulos');
+  };
+
+  const toggle = (id) => {
+    const s = new Set(elegidos);
+    s.has(id) ? s.delete(id) : s.add(id);
+    setElegidos(s);
+  };
+
   return (
-    <div className="p-8">
-      <h2 className="text-2xl font-bold text-slate-800 mb-6">Exportar</h2>
-      <div className="bg-white rounded-xl border p-6 max-w-xl">
-        <h3 className="font-semibold mb-2">📊 Exportar Horarios (v6.0)</h3>
-        <p className="text-sm text-slate-500 mb-4">
-          Excel con una solapa por sede. Incluye columnas de inscriptos total, virtuales y presenciales.
-          Cátedras ordenadas por código. Múltiples docentes en filas separadas.
-        </p>
+    <div className="p-8 max-w-4xl">
+      <h2 className="text-2xl font-bold text-slate-800 mb-1">📤 Exportar</h2>
+      <p className="text-slate-500 text-sm mb-6">
         {cuatrimestre !== 'todos'
-          ? <p className="text-sm text-amber-600 font-medium mb-4">📅 Se exportará: {cuatrimestres.find(c => c.id.toString() === cuatrimestre.toString())?.nombre}</p>
-          : <p className="text-sm text-slate-400 mb-4">💡 Seleccioná un cuatrimestre en el menú para filtrar.</p>}
-        <button onClick={descargar} disabled={descargando}
-          className="w-full py-3 bg-amber-500 text-slate-900 rounded-lg font-bold disabled:opacity-50 hover:bg-amber-400">
-          {descargando ? '⏳ Generando...' : '📥 Descargar Excel'}
+          ? <>Cuatrimestre seleccionado: <b>{cuatNombre}</b></>
+          : 'Elegí un cuatrimestre en el menú lateral para filtrar los datos.'}
+      </p>
+
+      {/* Planilla de trabajo — Paso 3 del flujo */}
+      <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-6 mb-5">
+        <div className="flex items-start gap-3">
+          <span className="text-3xl">📝</span>
+          <div className="flex-1">
+            <h3 className="font-bold text-amber-900 text-lg">Planilla de trabajo (Paso 3)</h3>
+            <p className="text-sm text-amber-800 mt-1">
+              Excel con las cátedras que se dictan y sus inscriptos desglosados por turno y sede.
+              El equipo completa día, horario y docente directamente en el archivo.
+            </p>
+            <p className="text-xs text-amber-700 mt-2">
+              Las columnas amarillas se completan a mano; las celestes las calcula el sistema.
+              Cuando esté lista, se sube en <b>Importar → Horarios y Designaciones</b> y el sistema
+              detecta los solapamientos antes de aplicar nada.
+            </p>
+            <p className="text-xs text-amber-700 mt-1">
+              Si una cátedra queda <b>sin docente</b>, se dicta igual como asincrónica. Eso es válido y esperado.
+            </p>
+            <div className="mt-3 bg-white/60 rounded-lg p-3 border border-amber-200">
+              <label className="text-xs font-bold text-amber-900 block mb-1">
+                Dividir el trabajo por sede (opcional)
+              </label>
+              <p className="text-[11px] text-amber-700 mb-2">
+                Si varias personas arman horarios al mismo tiempo, conviene que cada una baje sólo su sede.
+                Al reimportar, el archivo reemplaza todas las asignaciones del cuatrimestre: si dos personas
+                suben planillas completas distintas, la última pisa a la anterior.
+              </p>
+              <select value={sedePlanilla} onChange={e => setSedePlanilla(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2 text-sm">
+                <option value="">Todas las sedes (archivo completo)</option>
+                <option value="Avellaneda">Sólo Avellaneda</option>
+                <option value="Caballito">Sólo Caballito</option>
+                <option value="Vicente López">Sólo Vicente López</option>
+                <option value="CIED">Sólo CIED / Online</option>
+              </select>
+            </div>
+            <button onClick={exportarPlanilla} disabled={descargando === 'planilla'}
+              className="mt-3 px-5 py-2.5 bg-amber-500 text-slate-900 rounded-lg font-bold hover:bg-amber-400 disabled:opacity-50">
+              {descargando === 'planilla' ? '⏳ Generando...' : '📥 Descargar planilla de trabajo'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Export completo */}
+      <div className="bg-white rounded-xl border p-6 mb-5">
+        <h3 className="font-bold text-slate-800">📊 Exportar todo</h3>
+        <p className="text-sm text-slate-500 mt-1 mb-3">
+          Archivo completo con todas las solapas: una por sede, docentes por turno, solapamientos,
+          criterio de decisión, plan por carrera y horarios por día.
+        </p>
+        <button onClick={exportarTodo} disabled={descargando === 'todo'}
+          className="px-5 py-2.5 bg-slate-800 text-white rounded-lg font-bold hover:bg-slate-700 disabled:opacity-50">
+          {descargando === 'todo' ? '⏳ Generando...' : '📥 Descargar Excel completo'}
         </button>
+      </div>
+
+      {/* Export por módulo */}
+      <div className="bg-white rounded-xl border p-6">
+        <h3 className="font-bold text-slate-800">🎯 Exportar sólo algunos módulos</h3>
+        <p className="text-sm text-slate-500 mt-1 mb-4">
+          Para cuando trabajás sobre un módulo puntual y no necesitás el archivo entero.
+        </p>
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          {modulos.map(m => (
+            <label key={m.id}
+              className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-sm ${
+                elegidos.has(m.id) ? 'bg-blue-50 border-blue-400' : 'bg-white hover:bg-slate-50'}`}>
+              <input type="checkbox" checked={elegidos.has(m.id)} onChange={() => toggle(m.id)} className="w-4 h-4" />
+              <span>{m.icono} {m.nombre}</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex gap-2 items-center">
+          <button onClick={exportarModulos} disabled={descargando === 'modulos' || elegidos.size === 0}
+            className="px-5 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50">
+            {descargando === 'modulos' ? '⏳ Generando...' : `📥 Descargar ${elegidos.size || ''} módulo${elegidos.size === 1 ? '' : 's'}`}
+          </button>
+          {elegidos.size > 0 && (
+            <button onClick={() => setElegidos(new Set())} className="px-3 py-2 bg-slate-100 rounded-lg text-sm hover:bg-slate-200">
+              Limpiar
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -3120,7 +3872,7 @@ export default function App() {
         {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
         {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {activeView === 'decisiones' && <DecisionesView catedras={catedras} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
-        {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+        {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} docentes={docentes} recargar={cargarDatos} />}
         {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
@@ -3129,6 +3881,7 @@ export default function App() {
         {activeView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} />}
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
+        {activeView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
         {activeView === 'edi_alumnos' && <EdiAlumnosView cuatrimestre={cuatrimestre} />}
