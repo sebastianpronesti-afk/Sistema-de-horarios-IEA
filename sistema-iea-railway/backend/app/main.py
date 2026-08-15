@@ -1766,10 +1766,20 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
     import io
     content = await file.read()
     wb = load_workbook(io.BytesIO(content), data_only=True)
-    total = 0; errores = []; no_encontradas = set()
-    # Pre-load all catedras for name matching
+    total = 0; errores = []; no_encontradas = set(); duplicados = 0
     all_cats = {c.nombre.lower().strip(): c for c in db.query(Catedra).all()}
     all_cats_by_code = {c.codigo: c for c in db.query(Catedra).all()}
+
+    # v17.1: en los archivos de BCE/BEA el código de cátedra viene en el NOMBRE DEL ARCHIVO
+    # (ej: "c_2028_Lengua_I_-_BCE_15-08-2026.xlsx" -> c.2028). Dentro del Excel la columna
+    # MATERIA sólo trae el nombre ("Lengua I"), sin código. Ésta es la señal más confiable.
+    cat_del_archivo = None
+    nombre_archivo = (file.filename or '')
+    m_arch = re.search(r'c[_\.\s-]*(\d+)', nombre_archivo, re.IGNORECASE)
+    if m_arch:
+        cat_del_archivo = all_cats_by_code.get(f"c.{m_arch.group(1)}")
+
+    vistos = set()  # (dni, catedra_id) para descartar filas repetidas del mismo archivo
     for ws in wb.worksheets:
         for row in ws.iter_rows(min_row=2, values_only=True):
             try:
@@ -1780,11 +1790,13 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
                 materia = str(vals[3] or '').strip()
                 curso = str(vals[4] or '').strip()
                 if not alumno_nombre or not materia: continue
-                # Try to find cátedra: first by code pattern, then by name
-                cat = None
-                cod_match = re.search(r'c\.(\d+)', materia)
-                if cod_match:
-                    cat = all_cats_by_code.get(f"c.{cod_match.group(1)}")
+                if alumno_nombre.upper() in ('ALUMNO', 'NONE'): continue
+                # Orden de búsqueda de la cátedra
+                cat = cat_del_archivo
+                if not cat:
+                    cod_match = re.search(r'c\.(\d+)', materia)
+                    if cod_match:
+                        cat = all_cats_by_code.get(f"c.{cod_match.group(1)}")
                 if not cat:
                     cod_match = re.search(r'c\.(\d+)', curso)
                     if cod_match:
@@ -1808,13 +1820,21 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
                 else:
                     sede_match = re.search(r'\(([^)]+)\)', curso)
                     sede_ref = normalizar_sede(sede_match.group(1).strip()) if sede_match else 'Online - Interior'
-                # Clean DNI
+                # DNI: puede venir en su columna o entre paréntesis en el nombre
                 dni = re.sub(r'[^\d]', '', dni)[:10]
-                # Find or create alumno
+                if not dni:
+                    m_dni = re.search(r'\((\d{6,10})\)', alumno_nombre)
+                    if m_dni: dni = m_dni.group(1)
+                # Descartar filas repetidas dentro del mismo archivo
+                clave = (dni, cat.id)
+                if clave in vistos:
+                    duplicados += 1
+                    continue
+                vistos.add(clave)
                 al = db.query(Alumno).filter(Alumno.dni == dni).first() if dni else None
                 if not al:
                     al_nombre = re.sub(r'\s*\(.*\)', '', alumno_nombre).strip()
-                    al = Alumno(nombre=al_nombre, dni=dni)
+                    al = Alumno(nombre=al_nombre, dni=dni or None)
                     db.add(al); db.flush()
                 # v17.0 FIX: turno/modalidad/sede son columnas creadas por SQL directo y NO existen
                 # en el modelo ORM. Pasarlas al constructor hacía fallar cada fila en silencio.
@@ -1835,10 +1855,24 @@ async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id
                     "curso": curso[:200] if curso else None, "id": existing.id})
                 total += 1
             except Exception as e:
-                errores.append(str(e)[:100])
-    db.commit()
+                db.rollback()
+                errores.append(str(e)[:120])
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error guardando: {str(e)[:200]}")
     wb.close()
-    return {"importados": total, "tipo": "BCE/BEA", "errores": errores[:10], "no_encontradas": list(no_encontradas)[:20]}
+    return {
+        "importados": total,
+        "tipo": "BCE/BEA",
+        "catedra_detectada": (f"{cat_del_archivo.codigo} — {cat_del_archivo.nombre}"
+                              if cat_del_archivo else "No se detectó por nombre de archivo"),
+        "duplicados_omitidos": duplicados,
+        "turno_asignado": "Virtual (BCE/BEA no maneja turnos)",
+        "errores": errores[:10],
+        "no_encontradas": list(no_encontradas)[:20],
+    }
 
 @app.post("/api/cuatrimestres/replicar")
 def replicar_cuatrimestre(data: dict, db: Session = Depends(get_db)):
