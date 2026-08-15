@@ -37,6 +37,8 @@ const HORAS = ['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','
 // Franjas "en punto" para vistas compactas donde 30' sería demasiado denso
 const HORAS_HORA = HORAS.filter(h => h.endsWith(':00'));
 const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online - Interior'];
+// v17.1: tope de 20 horas por docente
+const HORAS_OPCIONES = Array.from({ length: 21 }, (_, i) => i);
 
 function minutosDeHora(h) {
   if (!h) return null;
@@ -836,8 +838,17 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
     const estadoReal = docenteReal ? 'ABIERTA'
       : resuelta ? 'ASINCRONICA'
       : (sug === 'ABRIR' ? 'PENDIENTE' : sug === 'ASINCRÓNICA' ? 'ASINCRONICA' : 'SIN_ALUMNOS');
+    // Todos los docentes asignados a esta cátedra, con su día/hora/sede
+    const docentesAsignados = (c.asignaciones || [])
+      .filter(a => a.docente || a.docente_id)
+      .map(a => ({
+        nombre: a.docente?.nombre || 'Docente',
+        dia: a.dia, hora: a.hora_inicio, hora_fin: a.hora_fin,
+        sede: a.sede_nombre,
+      }));
     return { ...c, sugerencia: sug, docs_sug_calc: docs,
-             tieneDocente: docenteReal, tieneSugerencia, sugInfo, resuelta, estadoReal };
+             tieneDocente: docenteReal, tieneSugerencia, sugInfo, resuelta, estadoReal,
+             docentesAsignados };
   }).filter(c => {
     if (filtro === 'abrir') return c.sugerencia === 'ABRIR';
     if (filtro === 'asinc') return c.estadoReal === 'ASINCRONICA';
@@ -924,8 +935,28 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
                 <td className="p-2 text-center"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${cat.sugerencia==='ABRIR'?'bg-emerald-100 text-emerald-700':cat.sugerencia==='ASINCRÓNICA'?'bg-purple-100 text-purple-700':'bg-slate-100 text-slate-400'}`}>{cat.sugerencia}</span></td>
                 <td className="p-2 text-center font-bold">{cat.docs_sug_calc || ''}</td>
                 <td className="p-2 text-xs">
-                  {cat.tieneDocente ? (
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span><span className="text-emerald-700 font-bold">{cat.sugInfo?.docente_actual}</span></span>
+                  {/* v17.1: se listan TODOS los docentes asignados a la cátedra, no sólo uno.
+                      Antes venía de las sugerencias y mostraba únicamente el primero. */}
+                  {cat.docentesAsignados.length > 0 ? (
+                    <div className="space-y-0.5">
+                      {cat.docentesAsignados.map((doc, i) => (
+                        <div key={i} className="flex items-start gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block mt-1 flex-shrink-0"></span>
+                          <span className="text-emerald-700 font-bold leading-tight">
+                            {doc.nombre}
+                            {(doc.dia || doc.hora) && (
+                              <span className="font-normal text-emerald-600 text-[10px]"> · {doc.dia || ''} {doc.hora || ''}{doc.hora_fin ? `-${doc.hora_fin}` : ''}</span>
+                            )}
+                            {doc.sede && <span className="font-normal text-slate-400 text-[9px]"> ({doc.sede})</span>}
+                          </span>
+                        </div>
+                      ))}
+                      {cat.docentesAsignados.length > 1 && (
+                        <span className="text-[9px] text-emerald-500">{cat.docentesAsignados.length} docentes</span>
+                      )}
+                    </div>
+                  ) : cat.estadoReal === 'ASINCRONICA' ? (
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400 inline-block"></span><span className="text-purple-600">🎥 Asincrónica (sin docente)</span></span>
                   ) : cat.tieneSugerencia ? (
                     <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"></span><span className="text-blue-600 italic font-medium">{cat.sugInfo?.sugerencia_docente}</span><span className="text-[9px] text-blue-400">(sugerido)</span></span>
                   ) : cat.sugerencia === 'ABRIR' ? (
@@ -1220,10 +1251,14 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
     apiFetch('/api/areas-especialidad').then(setAreas).catch(() => setAreas([]));
   }, []);
 
+  // v17.1: "activo" = tiene al menos una cátedra asignada en el cuatrimestre visible.
+  // Se calcula acá con las asignaciones que ya llegaron, sin depender de un campo del backend.
+  const estaActivo = (d) => (d.asignaciones || []).length > 0 || !!d.activo_cuatrimestre;
+
   const docentesFiltrados = useMemo(() => {
     let lista = [...docentes];
-    if (filtroActividad === 'activos') lista = lista.filter(d => d.activo_cuatrimestre);
-    else if (filtroActividad === 'inactivos') lista = lista.filter(d => !d.activo_cuatrimestre);
+    if (filtroActividad === 'activos') lista = lista.filter(estaActivo);
+    else if (filtroActividad === 'inactivos') lista = lista.filter(d => !estaActivo(d));
     if (filtroArea) lista = lista.filter(d => (d.especialidades || []).includes(filtroArea));
     if (buscar) {
       const b = buscar.toLowerCase();
@@ -1244,7 +1279,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
     return lista;
   }, [docentes, buscar, orden, filtroActividad, filtroArea]);
 
-  const conteoActivos = useMemo(() => docentes.filter(d => d.activo_cuatrimestre).length, [docentes]);
+  const conteoActivos = useMemo(() => docentes.filter(estaActivo).length, [docentes]);
 
   const guardarSedes = async (docenteId, sedeIds) => {
     try { await apiFetch(`/api/docentes/${docenteId}/sedes`, { method: 'PUT', body: JSON.stringify({ sede_ids: sedeIds }) }); recargar(); setModalSedes(null); } catch (e) { alert(e.message); }
@@ -1307,8 +1342,8 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
           <div className="flex items-center gap-1">
             <span className="text-slate-500">En este cuatrimestre:</span>
             {[['todos', `Todos (${docentes.length})`],
-              ['activos', `✅ Activos (${conteoActivos})`],
-              ['inactivos', `💤 Sin asignar (${docentes.length - conteoActivos})`]].map(([k, l]) => (
+              ['activos', `✅ Con cátedra asignada (${conteoActivos})`],
+              ['inactivos', `💤 Sin ninguna asignación (${docentes.length - conteoActivos})`]].map(([k, l]) => (
               <button key={k} onClick={() => setFiltroActividad(k)}
                 className={`px-2 py-1 rounded ${filtroActividad === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
             ))}
@@ -1343,7 +1378,7 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
                       <div>
                         <p className="font-medium">
                           {d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}
-                          {d.activo_cuatrimestre && <span className="ml-2 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px] font-bold">ACTIVO</span>}
+                          {estaActivo(d) && <span className="ml-2 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px] font-bold">{(d.asignaciones || []).length} cát.</span>}
                         </p>
                         {d.dni ? <p className="text-xs text-slate-500">DNI: {d.dni}</p>
                                : <p className="text-xs text-slate-300 italic">sin DNI</p>}
@@ -1491,7 +1526,17 @@ function DictadoView({ cuatrimestre, cuatrimestres }) {
       const d = await apiFetch(`/api/catedras/dictado?cuatrimestre_id=${cuatriId}`);
       setData(d);
       setSeleccion(new Set(d.catedras.filter(c => c.se_dicta).map(c => c.catedra_id)));
-    } catch (e) { setMensaje({ tipo: 'error', texto: e.message }); }
+    } catch (e) {
+      // Si el backend todavía corre la versión anterior, estos endpoints no existen:
+      // FastAPI devuelve 405 (la ruta coincide con otra) o 404. Lo avisamos claro.
+      const desactualizado = /405|404|Method Not Allowed|Not Found/i.test(e.message || '');
+      setMensaje({
+        tipo: 'error',
+        texto: desactualizado
+          ? 'El servidor todavía tiene la versión anterior del sistema. Falta que se actualice el servicio del backend en Railway (el que corre Python, no el de Node). Los datos cargados no se ven afectados.'
+          : e.message,
+      });
+    }
     setLoading(false);
   };
   useEffect(() => { cargar(); }, [cuatriId]);
@@ -3252,7 +3297,6 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
         sociedad_cfpea: !!data.sociedad_cfpea,
         sociedad_isftea: !!data.sociedad_isftea,
         notas: data.notas || '',
-        catedras_referencia: data.catedras_referencia || '',
         especialidades: data.especialidades || [],
       };
       const res = await fetch(`${API_URL}/api/docentes/${docId}`, {
@@ -3276,14 +3320,17 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
 
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      {[['horas_asignadas','Hs'],['materias_av','Av'],['materias_cab','Cab'],['materias_vl','VL']].map(([campo,label]) => (
+      {/* v17.1: selectores en vez de inputs numéricos. Los <input type=number> daban
+          problemas para guardar cuando quedaban vacíos. Tope de 20 horas por docente. */}
+      {[['horas_asignadas','Horas'],['materias_av','Avell.'],['materias_cab','Caball.'],['materias_vl','V.López']].map(([campo,label]) => (
         <div key={campo} className="text-center">
           <label className="text-[8px] text-slate-400 block">{label}</label>
-          <input type="number" min="0" max="99"
-            className={`w-11 text-center border rounded px-0.5 py-1 text-[11px] ${dirty ? 'border-amber-400' : ''}`}
-            value={vals[campo] ?? 0}
-            onChange={e => setAndUpdate(campo, e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && guardar()} />
+          <select
+            className={`w-14 text-center border rounded px-0.5 py-1 text-[11px] cursor-pointer ${dirty ? 'border-amber-400' : ''} ${(parseInt(vals[campo]) || 0) > 0 ? 'bg-emerald-50 font-bold' : ''}`}
+            value={parseInt(vals[campo]) || 0}
+            onChange={e => { setAndUpdate(campo, e.target.value); }}>
+            {HORAS_OPCIONES.map(n => <option key={n} value={n}>{n === 0 ? '—' : n}</option>)}
+          </select>
         </div>
       ))}
       {[['sociedad_cfpea','CFPEA'],['sociedad_isftea','ISFTEA']].map(([campo,label]) => (
@@ -3332,14 +3379,6 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
         )}
       </div>
 
-      <div className="min-w-[90px]">
-        <label className="text-[8px] text-slate-400 block">Cát. de referencia</label>
-        <input type="text" placeholder="c.1, c.3..."
-          className={`w-full border rounded px-1 py-1 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.catedras_referencia ?? ''}
-          onChange={e => setAndUpdate('catedras_referencia', e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && guardar()} />
-      </div>
       <div className="flex-1 min-w-[90px]">
         <label className="text-[8px] text-slate-400 block">Notas</label>
         <input type="text" placeholder="Notas..."
@@ -3620,8 +3659,9 @@ function AdminMoldeCarrera() {
 
   return (
     <div className="mt-4 pt-4 border-t">
-      <button onClick={() => setAbierto(v => !v)} className="text-xs text-slate-500 hover:text-slate-700">
-        {abierto ? '▼' : '▶'} Administrar molde cargado (borrar si te equivocaste)
+      <button onClick={() => setAbierto(v => !v)}
+        className="w-full py-2 rounded-lg text-sm font-medium bg-red-50 text-red-700 border border-red-200 hover:bg-red-100">
+        {abierto ? '▼' : '🗑️'} Eliminar moldes cargados (si te equivocaste al importar)
       </button>
       {abierto && (
         <div className="mt-3">
