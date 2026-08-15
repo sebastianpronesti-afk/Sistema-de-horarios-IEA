@@ -1438,28 +1438,147 @@ function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
       </div>
       <p className="text-sm text-slate-500 mt-3 text-center">{docentesFiltrados.length} docentes</p>
       {modalSedes && <ModalEditarSedes docente={modalSedes} sedes={sedes} onSave={guardarSedes} onClose={() => setModalSedes(null)} />}
-      {modalEditar && <ModalEditarDocente docente={modalEditar} onSave={guardarDocente} onClose={() => setModalEditar(null)} />}
+      {modalEditar && <ModalEditarDocente docente={modalEditar} onSave={guardarDocente} onClose={() => setModalEditar(null)} areas={areas} recargar={recargar} />}
       {modalNuevo && <ModalNuevoDocente onSave={crearDocente} onClose={() => setModalNuevo(false)} />}
     </div>
   );
 }
 
-function ModalEditarDocente({ docente, onSave, onClose }) {
-  const [form, setForm] = useState({ nombre: docente.nombre, apellido: docente.apellido, dni: docente.dni, email: docente.email || '' });
+// ==================== v17.2: FICHA DEL DOCENTE ====================
+// Los datos de acá son PERMANENTES: no dependen del cuatrimestre. Se guardan en la base
+// y el modal vuelve a leerlos del servidor para confirmar que quedaron grabados de verdad.
+function ModalEditarDocente({ docente, onSave, onClose, areas = [], recargar }) {
+  const [form, setForm] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [estado, setEstado] = useState(null);
+
+  useEffect(() => {
+    apiFetch(`/api/docentes/${docente.id}/ficha`)
+      .then(f => { setForm(f); setCargando(false); })
+      .catch(() => {
+        setForm({
+          nombre: docente.nombre || '', apellido: docente.apellido || '',
+          dni: docente.dni || '', email: docente.email || '',
+          especialidades: docente.especialidades || [],
+          catedras_referencia: docente.catedras_referencia || '', notas: docente.notas || '',
+        });
+        setCargando(false);
+      });
+  }, [docente.id]);
+
+  const toggleArea = (id) => {
+    const s = new Set(form.especialidades || []);
+    s.has(id) ? s.delete(id) : s.add(id);
+    setForm({ ...form, especialidades: Array.from(s) });
+    setEstado(null);
+  };
+
+  const guardar = async () => {
+    setGuardando(true); setEstado(null);
+    try {
+      const guardado = await apiFetch(`/api/docentes/${docente.id}/ficha`, {
+        method: 'PUT', body: JSON.stringify(form),
+      });
+      // El servidor devuelve lo que quedó realmente en la base: lo comparamos
+      const enviadas = [...(form.especialidades || [])].sort().join(',');
+      const grabadas = [...(guardado.especialidades || [])].sort().join(',');
+      if (enviadas === grabadas) {
+        setForm(guardado);
+        setEstado({ tipo: 'ok', texto: 'Guardado y verificado en la base de datos' });
+        if (recargar) recargar();
+        setTimeout(() => onClose(), 900);
+      } else {
+        setEstado({ tipo: 'error', texto: 'El servidor no confirmó el guardado de las áreas. Revisá que el backend esté actualizado.' });
+      }
+    } catch (e) {
+      setEstado({ tipo: 'error', texto: e.message });
+    }
+    setGuardando(false);
+  };
+
+  if (cargando || !form) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-xl p-8">⏳ Cargando ficha...</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-      <h3 className="text-lg font-bold mb-4">Editar Docente</h3>
-      <div className="space-y-3">
-        {['dni','nombre','apellido','email'].map(f => (
-          <div key={f}><label className="text-sm text-slate-600 capitalize">{f}</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form[f]} onChange={e => setForm({...form, [f]: e.target.value})} /></div>
-        ))}
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-bold mb-1">Ficha del docente</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          Estos datos son permanentes: quedan guardados para todos los cuatrimestres.
+        </p>
+
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <div><label className="text-sm text-slate-600">Apellido</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.apellido || ''}
+              onChange={e => { setForm({...form, apellido: e.target.value}); setEstado(null); }} /></div>
+          <div><label className="text-sm text-slate-600">Nombre</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.nombre || ''}
+              onChange={e => { setForm({...form, nombre: e.target.value}); setEstado(null); }} /></div>
+          <div><label className="text-sm text-slate-600">DNI <span className="text-slate-400">(opcional)</span></label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.dni || ''}
+              onChange={e => { setForm({...form, dni: e.target.value}); setEstado(null); }} /></div>
+          <div><label className="text-sm text-slate-600">Email</label>
+            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form.email || ''}
+              onChange={e => { setForm({...form, email: e.target.value}); setEstado(null); }} /></div>
+        </div>
+
+        <div className="mb-4">
+          <label className="text-sm text-slate-600 font-medium">Áreas de especialidad</label>
+          <p className="text-xs text-slate-400 mb-2">Marcá todas las que correspondan.</p>
+          <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto border rounded-lg p-2">
+            {areas.map(a => (
+              <label key={a.id}
+                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer text-xs ${
+                  (form.especialidades || []).includes(a.id) ? 'bg-blue-50 border border-blue-300' : 'hover:bg-slate-50 border border-transparent'}`}>
+                <input type="checkbox" checked={(form.especialidades || []).includes(a.id)}
+                  onChange={() => toggleArea(a.id)} className="w-3.5 h-3.5" />
+                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: a.color }} />
+                <span>{a.nombre}</span>
+              </label>
+            ))}
+          </div>
+          {(form.especialidades || []).length > 0 && (
+            <p className="text-xs text-blue-600 mt-1">{form.especialidades.length} área(s) seleccionada(s)</p>
+          )}
+        </div>
+
+        <div className="mb-4">
+          <label className="text-sm text-slate-600 font-medium">Cátedras de referencia</label>
+          <p className="text-xs text-slate-400 mb-1">Códigos separados por coma. Se usan para las sugerencias automáticas.</p>
+          <input className="w-full border rounded-lg px-3 py-2" placeholder="c.1, c.17, c.59"
+            value={form.catedras_referencia || ''}
+            onChange={e => { setForm({...form, catedras_referencia: e.target.value}); setEstado(null); }} />
+        </div>
+
+        <div className="mb-4">
+          <label className="text-sm text-slate-600 font-medium">Notas</label>
+          <input className="w-full border rounded-lg px-3 py-2" value={form.notas || ''}
+            onChange={e => { setForm({...form, notas: e.target.value}); setEstado(null); }} />
+        </div>
+
+        {estado && (
+          <div className={`rounded-lg p-3 mb-3 text-sm ${estado.tipo === 'ok'
+            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+            : 'bg-red-50 text-red-800 border border-red-200'}`}>
+            {estado.tipo === 'ok' ? '✅ ' : '⚠️ '}{estado.texto}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button onClick={guardar} disabled={guardando}
+            className="flex-1 py-2.5 bg-amber-500 rounded-lg font-bold hover:bg-amber-400 disabled:opacity-50">
+            {guardando ? '⏳ Guardando...' : '💾 Guardar ficha'}
+          </button>
+          <button onClick={onClose} className="flex-1 py-2.5 bg-slate-100 rounded-lg hover:bg-slate-200">Cancelar</button>
+        </div>
       </div>
-      <div className="flex gap-2 mt-4">
-        <button onClick={() => onSave(docente.id, form)} className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Guardar</button>
-        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-      </div>
-    </div></div>
+    </div>
   );
 }
 
@@ -3193,8 +3312,18 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
 
       <div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
         <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
-        <p className="text-sm text-slate-500 mb-1">BCE: alumnos del secundario acelerado. Se asignan como <strong>Virtual</strong> a la sede del curso.</p>
-        <p className="text-sm text-slate-500 mb-3">BEA: alumnos del bachillerato. Todos se asignan a <strong>Caballito Virtual</strong>.</p>
+        <p className="text-sm text-slate-500 mb-1">
+          BCE y BEA son <strong>100% virtuales</strong>: no tienen turno ni día. El sistema
+          simplemente cuenta cuántos alumnos (DNI) hay en cada cátedra.
+        </p>
+        <p className="text-xs text-slate-500 mb-1">
+          📄 <strong>Un archivo por cátedra.</strong> El código se toma del nombre del archivo,
+          por ejemplo <code className="bg-slate-100 px-1 rounded">c_2028_Lengua_I_-_BCE.xlsx</code> → c.2028.
+        </p>
+        <p className="text-xs text-slate-500 mb-3">
+          Si la cátedra todavía no existe en el sistema, se crea automáticamente.
+          Los DNI repetidos dentro del archivo se cuentan una sola vez.
+        </p>
         <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`)}
           disabled={uploading === 'BCE/BEA'}
           className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-orange-500 text-white hover:bg-orange-600">
@@ -3265,7 +3394,6 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [estado, setEstado] = useState(null);
-  const [abrirAreas, setAbrirAreas] = useState(false);
   const [, forceUpdate] = useState(0);
 
   const vals = editStore.current[docId] || {};
@@ -3275,11 +3403,6 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
   };
 
   const areasElegidas = vals.especialidades || [];
-  const toggleArea = (areaId) => {
-    const actual = new Set(areasElegidas);
-    actual.has(areaId) ? actual.delete(areaId) : actual.add(areaId);
-    setAndUpdate('especialidades', Array.from(actual));
-  };
 
   const guardar = async () => {
     setSaving(true); setEstado(null);
@@ -3296,8 +3419,6 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
         materias_vl: numero(data.materias_vl),
         sociedad_cfpea: !!data.sociedad_cfpea,
         sociedad_isftea: !!data.sociedad_isftea,
-        notas: data.notas || '',
-        especialidades: data.especialidades || [],
       };
       const res = await fetch(`${API_URL}/api/docentes/${docId}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -3341,53 +3462,21 @@ function DocenteEditRow({ docId, editStore, onSave, areas = [] }) {
         </div>
       ))}
 
-      {/* Selector múltiple de áreas — reemplaza el campo de texto libre */}
-      <div className="relative min-w-[130px]">
-        <label className="text-[8px] text-slate-400 block">Áreas de especialidad</label>
-        <button type="button" onClick={() => setAbrirAreas(v => !v)}
-          className={`w-full border rounded px-1.5 py-1 text-[10px] text-left ${dirty ? 'border-amber-400' : ''} hover:bg-slate-50`}>
-          {areasElegidas.length === 0 ? 'Elegir áreas...' : `${areasElegidas.length} seleccionada${areasElegidas.length > 1 ? 's' : ''}`} ▾
-        </button>
-        {abrirAreas && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setAbrirAreas(false)} />
-            <div className="absolute z-20 mt-1 w-64 max-h-64 overflow-y-auto bg-white border rounded-lg shadow-xl p-2">
-              {areas.map(a => (
-                <label key={a.id} className="flex items-center gap-2 px-1.5 py-1 hover:bg-slate-50 rounded cursor-pointer">
-                  <input type="checkbox" checked={areasElegidas.includes(a.id)}
-                    onChange={() => toggleArea(a.id)} className="w-3.5 h-3.5" />
-                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: a.color }} />
-                  <span className="text-[11px]">{a.nombre}</span>
-                </label>
-              ))}
-              <button onClick={() => { setAbrirAreas(false); guardar(); }}
-                className="w-full mt-2 px-2 py-1 bg-blue-600 text-white rounded text-[10px] font-bold">
-                Aplicar y guardar
-              </button>
-            </div>
-          </>
-        )}
-        {areasElegidas.length > 0 && (
-          <div className="flex flex-wrap gap-0.5 mt-1">
-            {areasElegidas.slice(0, 3).map(eid => {
+      {/* v17.2: las áreas ahora se editan en la ficha del docente (botón ✏️), porque son
+          datos permanentes. Acá sólo se muestran para poder identificarlo de un vistazo. */}
+      <div className="min-w-[120px]">
+        <label className="text-[8px] text-slate-400 block">Áreas</label>
+        {areasElegidas.length > 0 ? (
+          <div className="flex flex-wrap gap-0.5">
+            {areasElegidas.slice(0, 2).map(eid => {
               const a = areas.find(x => x.id === eid);
               return <span key={eid} className="px-1 py-0.5 rounded text-[8px] text-white"
-                style={{ backgroundColor: a?.color || '#64748B' }}>{(a?.nombre || eid).slice(0, 14)}</span>;
+                style={{ backgroundColor: a?.color || '#64748B' }}>{(a?.nombre || eid).slice(0, 16)}</span>;
             })}
-            {areasElegidas.length > 3 && <span className="text-[8px] text-slate-400">+{areasElegidas.length - 3}</span>}
+            {areasElegidas.length > 2 && <span className="text-[8px] text-slate-400">+{areasElegidas.length - 2}</span>}
           </div>
-        )}
+        ) : <span className="text-[9px] text-slate-300 italic">Sin definir</span>}
       </div>
-
-      <div className="flex-1 min-w-[90px]">
-        <label className="text-[8px] text-slate-400 block">Notas</label>
-        <input type="text" placeholder="Notas..."
-          className={`w-full border rounded px-1 py-1 text-[10px] ${dirty ? 'border-amber-400' : ''}`}
-          value={vals.notas ?? ''}
-          onChange={e => setAndUpdate('notas', e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && guardar()} />
-      </div>
-
       <div className="flex flex-col items-center">
         <button onClick={guardar} disabled={saving}
           className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap ${
