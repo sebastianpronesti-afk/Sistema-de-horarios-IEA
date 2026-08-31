@@ -259,6 +259,47 @@ def run_migration(db):
                 db.execute(text("ALTER TABLE docentes ALTER COLUMN dni DROP NOT NULL"))
                 db.commit(); resultado.append("✅ docentes.dni ahora opcional")
             except Exception: db.rollback()
+        # --- v18.1: configuración del sistema (claves de acceso) ---
+        if 'configuracion' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS configuracion (
+                        clave VARCHAR PRIMARY KEY,
+                        valor VARCHAR,
+                        actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                db.commit(); resultado.append("✅ tabla configuracion")
+            except Exception: db.rollback()
+        # --- v18.0: respaldos automáticos antes de cada importación ---
+        if 'respaldo_asignaciones' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS respaldo_asignaciones (
+                        id SERIAL PRIMARY KEY,
+                        cuatrimestre_id INTEGER NOT NULL,
+                        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        motivo VARCHAR,
+                        cantidad INTEGER DEFAULT 0,
+                        datos TEXT
+                    )
+                """))
+                db.commit(); resultado.append("✅ tabla respaldo_asignaciones")
+            except Exception: db.rollback()
+        # --- v18.0: alias de docentes (normalizador integrado) ---
+        if 'docente_alias' not in tables:
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS docente_alias (
+                        id SERIAL PRIMARY KEY,
+                        alias VARCHAR NOT NULL UNIQUE,
+                        docente_id INTEGER REFERENCES docentes(id) ON DELETE CASCADE,
+                        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        origen VARCHAR DEFAULT 'manual'
+                    )
+                """))
+                db.commit(); resultado.append("✅ tabla docente_alias")
+            except Exception: db.rollback()
         # --- v17.0: tabla catedra_dictado (se dicta != se abre) ---
         if 'catedra_dictado' not in tables:
             try:
@@ -387,7 +428,61 @@ async def startup():
     db.close()
     print("🚀 IEA Horarios v11.0 iniciado")
 
-CLAVE_ACCESO = "IEA2026"
+# v18.1: dos niveles de acceso, con claves guardadas en la base de datos
+# para poder cambiarlas desde el sistema sin tocar el código.
+#
+# Editor  : importa, modifica y borra.
+# Consulta: sólo mira y exporta.
+#
+# La clave IEA2026 pasó a ser la de CONSULTA, porque ya la conoce todo el equipo.
+# La de edición es nueva y sólo la tienen quienes arman los horarios.
+CLAVE_EDITOR_INICIAL = "Capitalismo2026"
+CLAVE_CONSULTA_INICIAL = "IEA2026"
+CLAVE_ACCESO = CLAVE_EDITOR_INICIAL   # se mantiene por compatibilidad interna
+
+def _hash_clave(texto):
+    import hashlib
+    return hashlib.sha256(f"iea-horarios::{texto}".encode("utf-8")).hexdigest()
+
+def leer_config(db, clave, por_defecto=None):
+    from sqlalchemy import text
+    try:
+        row = db.execute(text("SELECT valor FROM configuracion WHERE clave = :c"),
+                         {"c": clave}).fetchone()
+        return row[0] if row else por_defecto
+    except Exception:
+        db.rollback(); return por_defecto
+
+def guardar_config(db, clave, valor):
+    from sqlalchemy import text
+    try:
+        db.execute(text(
+            "INSERT INTO configuracion (clave, valor, actualizado_en) "
+            "VALUES (:c, :v, CURRENT_TIMESTAMP) "
+            "ON CONFLICT (clave) DO UPDATE SET valor = EXCLUDED.valor, "
+            "actualizado_en = CURRENT_TIMESTAMP"
+        ), {"c": clave, "v": valor})
+        db.commit(); return True
+    except Exception:
+        db.rollback(); return False
+
+def verificar_clave(db, ingresada):
+    """Devuelve 'editor', 'consulta' o None.
+    Si nunca se cambiaron, valen las claves iniciales."""
+    ingresada = (ingresada or "").strip()
+    if not ingresada: return None
+    h = _hash_clave(ingresada)
+    h_editor = leer_config(db, "clave_editor")
+    h_consulta = leer_config(db, "clave_consulta")
+    if h_editor:
+        if h == h_editor: return "editor"
+    elif ingresada == CLAVE_EDITOR_INICIAL:
+        return "editor"
+    if h_consulta:
+        if h == h_consulta: return "consulta"
+    elif ingresada == CLAVE_CONSULTA_INICIAL:
+        return "consulta"
+    return None
 
 @app.get("/")
 def root():
@@ -427,10 +522,65 @@ def diagnostico_bd(db: Session = Depends(get_db)):
     return info
 
 @app.post("/api/login")
-def login(data: dict):
-    if data.get("clave", "") == CLAVE_ACCESO:
-        return {"ok": True}
+def login(data: dict, db: Session = Depends(get_db)):
+    rol = verificar_clave(db, data.get("clave"))
+    if rol == "editor":
+        return {"ok": True, "rol": "editor", "puede_editar": True,
+                "descripcion": "Acceso completo: importar, modificar y exportar"}
+    if rol == "consulta":
+        return {"ok": True, "rol": "consulta", "puede_editar": False,
+                "descripcion": "Sólo consulta: ver y exportar, sin modificar datos"}
     raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+
+
+@app.post("/api/auth/cambiar-clave")
+def cambiar_clave(data: dict, db: Session = Depends(get_db)):
+    """Cambia una de las dos claves. Hay que ingresar la clave de EDICIÓN vigente
+    para autorizar el cambio, sea cual sea la que se quiera modificar."""
+    actual = (data.get("clave_actual") or "").strip()
+    nueva = (data.get("clave_nueva") or "").strip()
+    cual = (data.get("cual") or "editor").strip()
+
+    if verificar_clave(db, actual) != "editor":
+        raise HTTPException(status_code=401,
+            detail="La clave de edición actual no es correcta")
+    if cual not in ("editor", "consulta"):
+        raise HTTPException(status_code=400, detail="Indicá si es la de edición o la de consulta")
+    if len(nueva) < 6:
+        raise HTTPException(status_code=400, detail="La contraseña nueva debe tener al menos 6 caracteres")
+
+    # No permitir que las dos queden iguales
+    otra = "clave_consulta" if cual == "editor" else "clave_editor"
+    hash_otra = leer_config(db, otra)
+    if hash_otra and _hash_clave(nueva) == hash_otra:
+        raise HTTPException(status_code=400,
+            detail="Esa contraseña ya está en uso para el otro nivel de acceso")
+    if not hash_otra:
+        inicial = CLAVE_CONSULTA_INICIAL if cual == "editor" else CLAVE_EDITOR_INICIAL
+        if nueva == inicial:
+            raise HTTPException(status_code=400,
+                detail="Esa contraseña ya está en uso para el otro nivel de acceso")
+
+    destino = "clave_editor" if cual == "editor" else "clave_consulta"
+    if not guardar_config(db, destino, _hash_clave(nueva)):
+        raise HTTPException(status_code=400, detail="No se pudo guardar la contraseña")
+
+    # Al cambiar una, dejar la otra fijada también, para que no siga valiendo la inicial
+    if not leer_config(db, otra):
+        inicial = CLAVE_CONSULTA_INICIAL if cual == "editor" else CLAVE_EDITOR_INICIAL
+        guardar_config(db, otra, _hash_clave(inicial))
+
+    return {"ok": True, "cual": cual,
+            "mensaje": f"Contraseña de {'edición' if cual == 'editor' else 'consulta'} actualizada."}
+
+
+@app.get("/api/auth/estado")
+def estado_claves(db: Session = Depends(get_db)):
+    """Informa si las claves siguen siendo las iniciales, sin revelarlas."""
+    return {
+        "editor_personalizada": leer_config(db, "clave_editor") is not None,
+        "consulta_personalizada": leer_config(db, "clave_consulta") is not None,
+    }
 
 @app.get("/api/sedes")
 def get_sedes(db: Session = Depends(get_db)):
@@ -718,6 +868,532 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
         })
     result.sort(key=lambda x: sort_key_codigo(x['codigo']))
     return result
+
+# ===== v18.2: COMPARACIÓN ENTRE CUATRIMESTRES HOMÓLOGOS =====
+# Se comparan cuatrimestres del MISMO período en distintos años (1ero contra 1ero,
+# 2do contra 2do), porque las cátedras que se dictan cambian entre semestres y
+# comparar 1ero con 2do daría diferencias que no significan nada.
+
+@app.get("/api/cuatrimestres/homologos")
+def cuatrimestres_homologos(cuatrimestre_id: int, db: Session = Depends(get_db)):
+    """Devuelve los cuatrimestres del mismo período en otros años."""
+    actual = db.query(Cuatrimestre).filter(Cuatrimestre.id == cuatrimestre_id).first()
+    if not actual: raise HTTPException(status_code=404, detail="Cuatrimestre no encontrado")
+    numero = getattr(actual, 'numero', None)
+    anio = getattr(actual, 'anio', None)
+    if not numero:
+        numero = 1 if '1' in (actual.nombre or '') else 2
+    otros = []
+    for c in db.query(Cuatrimestre).all():
+        if c.id == actual.id: continue
+        n = getattr(c, 'numero', None) or (1 if '1' in (c.nombre or '') else 2)
+        if n != numero: continue
+        otros.append({"id": c.id, "nombre": c.nombre, "anio": getattr(c, 'anio', None)})
+    otros.sort(key=lambda x: -(x["anio"] or 0))
+    return {
+        "actual": {"id": actual.id, "nombre": actual.nombre, "anio": anio, "numero": numero},
+        "periodo": f"{numero}° cuatrimestre",
+        "homologos": otros,
+    }
+
+@app.get("/api/comparar-cuatrimestres")
+def comparar_cuatrimestres(actual_id: int, anterior_id: int, db: Session = Depends(get_db)):
+    """Compara dos cuatrimestres del mismo período: inscriptos, cátedras y docentes."""
+    from sqlalchemy import text
+    ca = db.query(Cuatrimestre).filter(Cuatrimestre.id == actual_id).first()
+    cb = db.query(Cuatrimestre).filter(Cuatrimestre.id == anterior_id).first()
+    if not ca or not cb: raise HTTPException(status_code=404, detail="Cuatrimestre no encontrado")
+
+    na = getattr(ca, 'numero', None) or (1 if '1' in (ca.nombre or '') else 2)
+    nb = getattr(cb, 'numero', None) or (1 if '1' in (cb.nombre or '') else 2)
+    aviso_periodo = None
+    if na != nb:
+        aviso_periodo = ("Estás comparando cuatrimestres de períodos distintos. "
+                         "Las cátedras que se dictan cambian entre el 1° y el 2°, "
+                         "así que las diferencias pueden no significar nada.")
+
+    def inscriptos(cid):
+        m = {}
+        try:
+            for cat_id, n in db.execute(text(
+                "SELECT catedra_id, COUNT(*) FROM inscripciones WHERE cuatrimestre_id = :c GROUP BY catedra_id"
+            ), {"c": cid}).fetchall(): m[cat_id] = n
+        except Exception: db.rollback()
+        return m
+
+    def dictadas(cid):
+        s = set()
+        try:
+            for (cat_id,) in db.execute(text(
+                "SELECT catedra_id FROM catedra_dictado WHERE cuatrimestre_id = :c AND se_dicta = TRUE"
+            ), {"c": cid}).fetchall(): s.add(cat_id)
+        except Exception: db.rollback()
+        return s
+
+    ins_a, ins_b = inscriptos(actual_id), inscriptos(anterior_id)
+    dic_a, dic_b = dictadas(actual_id), dictadas(anterior_id)
+    # Si no se cargó el dictado, se usa "tener inscriptos" como referencia
+    if not dic_a: dic_a = set(ins_a.keys())
+    if not dic_b: dic_b = set(ins_b.keys())
+
+    cats = {c.id: c for c in db.query(Catedra).all()}
+    filas = []
+    for cat_id in set(list(ins_a.keys()) + list(ins_b.keys()) + list(dic_a) + list(dic_b)):
+        cat = cats.get(cat_id)
+        if not cat: continue
+        a = ins_a.get(cat_id, 0); b = ins_b.get(cat_id, 0)
+        if a == 0 and b == 0: continue
+        delta = a - b
+        pct = round((delta / b) * 100) if b else (100 if a else 0)
+        if cat_id in dic_a and cat_id not in dic_b: estado = "NUEVA"
+        elif cat_id not in dic_a and cat_id in dic_b: estado = "DEJO_DE_DICTARSE"
+        elif b and abs(pct) >= 30: estado = "SUBE_FUERTE" if delta > 0 else "BAJA_FUERTE"
+        else: estado = "ESTABLE"
+        filas.append({
+            "codigo": cat.codigo, "nombre": cat.nombre,
+            "actual": a, "anterior": b, "delta": delta, "porcentaje": pct,
+            "estado": estado,
+            "se_dicta_actual": cat_id in dic_a, "se_dicta_anterior": cat_id in dic_b,
+        })
+    filas.sort(key=lambda x: (x["estado"] != "BAJA_FUERTE", -abs(x["delta"])))
+
+    def docentes_de(cid):
+        s = {}
+        for a in db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cid,
+                                             Asignacion.docente_id.isnot(None)).all():
+            if a.docente:
+                s.setdefault(a.docente_id, {
+                    "nombre": f"{a.docente.apellido or ''}, {a.docente.nombre or ''}".strip(' ,'),
+                    "catedras": set()})
+                if a.catedra: s[a.docente_id]["catedras"].add(a.catedra.codigo)
+        return s
+
+    doc_a, doc_b = docentes_de(actual_id), docentes_de(anterior_id)
+    solo_antes = [{"nombre": v["nombre"], "catedras": sorted(v["catedras"])}
+                  for k, v in doc_b.items() if k not in doc_a]
+    solo_ahora = [{"nombre": v["nombre"], "catedras": sorted(v["catedras"])}
+                  for k, v in doc_a.items() if k not in doc_b]
+    solo_antes.sort(key=lambda x: x["nombre"]); solo_ahora.sort(key=lambda x: x["nombre"])
+
+    total_a = sum(ins_a.values()); total_b = sum(ins_b.values())
+    return {
+        "actual": {"id": ca.id, "nombre": ca.nombre},
+        "anterior": {"id": cb.id, "nombre": cb.nombre},
+        "aviso_periodo": aviso_periodo,
+        "resumen": {
+            "inscriptos_actual": total_a,
+            "inscriptos_anterior": total_b,
+            "delta_inscriptos": total_a - total_b,
+            "porcentaje_inscriptos": round(((total_a - total_b) / total_b) * 100) if total_b else 0,
+            "catedras_actual": len(dic_a), "catedras_anterior": len(dic_b),
+            "catedras_nuevas": len([f for f in filas if f["estado"] == "NUEVA"]),
+            "catedras_dadas_de_baja": len([f for f in filas if f["estado"] == "DEJO_DE_DICTARSE"]),
+            "docentes_actual": len(doc_a), "docentes_anterior": len(doc_b),
+            "docentes_que_no_siguen": len(solo_antes),
+            "docentes_nuevos": len(solo_ahora),
+        },
+        "catedras": filas,
+        "docentes_que_no_siguen": solo_antes[:60],
+        "docentes_nuevos": solo_ahora[:60],
+    }
+
+
+# ===== v18.2: CHEQUEO ANTES DE PUBLICAR =====
+@app.get("/api/checklist-cierre")
+def checklist_cierre(cuatrimestre_id: int, limite_horas: int = 20, db: Session = Depends(get_db)):
+    """Corre todas las verificaciones de una vez y dice si el cuatrimestre está listo."""
+    from sqlalchemy import text
+    controles = []
+
+    dictado = _mapa_dictado(db, cuatrimestre_id)
+    se_dictan = {k for k, v in dictado.items() if v.get("se_dicta")}
+    inscriptos = _inscriptos_por_catedra(db, cuatrimestre_id)
+    asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).all()
+    cats = {c.id: c for c in db.query(Catedra).all()}
+
+    con_docente = {a.catedra_id for a in asigs if a.docente_id}
+    con_horario = {a.catedra_id for a in asigs if a.dia and a.hora_inicio}
+
+    # 1) Cátedras con 10 o más inscriptos que se dictan y no tienen docente
+    faltan_docente = []
+    for cat_id in se_dictan:
+        if cat_id in con_docente: continue
+        n = inscriptos.get(cat_id, 0)
+        if n >= 10:
+            cat = cats.get(cat_id)
+            if cat: faltan_docente.append(f"{cat.codigo} {cat.nombre[:32]} ({n} inscriptos)")
+    controles.append({
+        "id": "sin_docente", "titulo": "Cátedras con 10 o más inscriptos sin docente",
+        "explicacion": "Por criterio deberían abrirse con docente. Si van a quedar asincrónicas a propósito, forzá la decisión en Cátedras que se dictan.",
+        "estado": "error" if faltan_docente else "ok",
+        "cantidad": len(faltan_docente), "detalle": sorted(faltan_docente)[:30],
+        "seccion": "necesitan_docente",
+    })
+
+    # 2) Cátedras que se dictan sin día ni horario
+    sin_horario = []
+    for cat_id in se_dictan:
+        if cat_id in con_horario: continue
+        if cat_id not in con_docente: continue  # sin docente es asincrónica, no necesita horario
+        cat = cats.get(cat_id)
+        if cat: sin_horario.append(f"{cat.codigo} {cat.nombre[:32]}")
+    controles.append({
+        "id": "sin_horario", "titulo": "Cátedras con docente pero sin día ni horario",
+        "explicacion": "Tienen docente asignado pero no se sabe cuándo se dictan.",
+        "estado": "error" if sin_horario else "ok",
+        "cantidad": len(sin_horario), "detalle": sorted(sin_horario)[:30],
+        "seccion": "catedras",
+    })
+
+    # 3) Solapamientos de horarios
+    try: solaps = get_solapamientos(cuatrimestre_id, db)
+    except Exception: solaps = []
+    controles.append({
+        "id": "solapamientos", "titulo": "Solapamientos de horarios",
+        "explicacion": "Un docente en dos lugares a la vez, o una cátedra con dos clases superpuestas.",
+        "estado": "error" if solaps else "ok",
+        "cantidad": len(solaps), "detalle": [s.get("mensaje", "") for s in solaps[:30]],
+        "seccion": "solapamientos",
+    })
+
+    # 4) Docentes que superan el límite de horas
+    try:
+        carga = carga_horaria_docentes(cuatrimestre_id, limite_horas, db)
+        excedidos = [f"{d['nombre']} — {d['horas']} hs" for d in carga["docentes"] if d["excede_limite"]]
+    except Exception:
+        excedidos = []
+    controles.append({
+        "id": "horas", "titulo": f"Docentes que superan {limite_horas} horas semanales",
+        "explicacion": "Puede ser válido, pero conviene revisarlo antes de cerrar.",
+        "estado": "advertencia" if excedidos else "ok",
+        "cantidad": len(excedidos), "detalle": excedidos[:30],
+        "seccion": "carga_horaria",
+    })
+
+    # 5) Cátedras con inscriptos que no están marcadas para dictarse
+    huerfanas = []
+    for cat_id, n in inscriptos.items():
+        if cat_id in se_dictan: continue
+        if n >= 1:
+            cat = cats.get(cat_id)
+            if cat: huerfanas.append(f"{cat.codigo} {cat.nombre[:32]} ({n} inscriptos)")
+    controles.append({
+        "id": "no_marcadas", "titulo": "Cátedras con alumnos que no figuran como dictadas",
+        "explicacion": "Hay alumnos inscriptos pero la cátedra no está marcada en el Paso 1. Los alumnos quedarían sin cursada.",
+        "estado": "error" if huerfanas else "ok",
+        "cantidad": len(huerfanas), "detalle": sorted(huerfanas)[:30],
+        "seccion": "dictado",
+    })
+
+    # 6) Docentes con clases pero sin email
+    sin_mail = []
+    for did in {a.docente_id for a in asigs if a.docente_id}:
+        d = db.query(Docente).filter(Docente.id == did).first()
+        if d and not (d.email or '').strip():
+            sin_mail.append(f"{d.apellido or ''}, {d.nombre or ''}".strip(' ,'))
+    controles.append({
+        "id": "sin_email", "titulo": "Docentes con clases y sin email cargado",
+        "explicacion": "Sin email no se les puede enviar su horario.",
+        "estado": "advertencia" if sin_mail else "ok",
+        "cantidad": len(sin_mail), "detalle": sorted(sin_mail)[:30],
+        "seccion": "docentes",
+    })
+
+    # 7) Cátedras que se dictan sin link de Meet
+    sin_meet = []
+    for cat_id in se_dictan:
+        cat = cats.get(cat_id)
+        if cat and not (getattr(cat, 'link_meet', None) or '').strip():
+            sin_meet.append(f"{cat.codigo} {cat.nombre[:32]}")
+    controles.append({
+        "id": "sin_meet", "titulo": "Cátedras que se dictan sin link de Meet",
+        "explicacion": "Los alumnos de CIED necesitan el link para conectarse.",
+        "estado": "advertencia" if sin_meet else "ok",
+        "cantidad": len(sin_meet), "detalle": sorted(sin_meet)[:30],
+        "seccion": "catedras",
+    })
+
+    # 8) Docentes posiblemente duplicados
+    docentes = db.query(Docente).all()
+    duplicados = []
+    vistos = {}
+    for d in docentes:
+        k = _clave_alias(f"{d.apellido or ''} {d.nombre or ''}")
+        if not k: continue
+        if k in vistos:
+            duplicados.append(f"{d.apellido}, {d.nombre} (aparece más de una vez)")
+        else: vistos[k] = d.id
+    controles.append({
+        "id": "duplicados", "titulo": "Docentes cargados dos veces",
+        "explicacion": "Nombres idénticos en fichas distintas. Suele pasar cuando se importa con el nombre mal escrito.",
+        "estado": "advertencia" if duplicados else "ok",
+        "cantidad": len(duplicados), "detalle": sorted(set(duplicados))[:30],
+        "seccion": "nombres_docentes",
+    })
+
+    errores = [c for c in controles if c["estado"] == "error"]
+    advertencias = [c for c in controles if c["estado"] == "advertencia"]
+    if errores: veredicto = "no_listo"
+    elif advertencias: veredicto = "listo_con_observaciones"
+    else: veredicto = "listo"
+
+    return {
+        "cuatrimestre_id": cuatrimestre_id,
+        "veredicto": veredicto,
+        "controles_ok": len([c for c in controles if c["estado"] == "ok"]),
+        "errores": len(errores),
+        "advertencias": len(advertencias),
+        "total_controles": len(controles),
+        "controles": controles,
+        "resumen": {
+            "catedras_que_se_dictan": len(se_dictan),
+            "con_docente": len(se_dictan & con_docente),
+            "asincronicas": len(se_dictan - con_docente),
+            "inscripciones": sum(inscriptos.values()),
+        },
+    }
+
+
+# ===== v18.0: CARGA HORARIA POR DOCENTE =====
+@app.get("/api/docentes/carga-horaria")
+def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
+                           db: Session = Depends(get_db)):
+    """Horas semanales acumuladas por docente, sumando todas sus cátedras y sedes.
+    Si una clase no tiene hora de fin se estima en 1h30."""
+    q = db.query(Asignacion).filter(Asignacion.docente_id.isnot(None))
+    if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    asigs = q.all()
+    por_docente = {}
+    for a in asigs:
+        d = a.docente
+        if not d: continue
+        info = por_docente.setdefault(d.id, {
+            "docente_id": d.id,
+            "nombre": f"{d.apellido or ''}, {d.nombre or ''}".strip(' ,'),
+            "minutos": 0, "clases": 0, "catedras": set(), "sedes": set(), "detalle": [],
+        })
+        ini = hora_a_minutos(a.hora_inicio)
+        fin = hora_a_minutos(getattr(a, 'hora_fin', None))
+        dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else 90
+        info["minutos"] += dur
+        info["clases"] += 1
+        if a.catedra: info["catedras"].add(a.catedra.codigo)
+        if a.sede: info["sedes"].add(a.sede.nombre)
+        info["detalle"].append({
+            "catedra": f"{a.catedra.codigo} {a.catedra.nombre[:28]}" if a.catedra else "?",
+            "dia": a.dia or "—", "hora": a.hora_inicio or "—",
+            "hora_fin": getattr(a, 'hora_fin', None) or "",
+            "sede": a.sede.nombre if a.sede else "—",
+            "minutos": dur,
+        })
+    resultado = []
+    for info in por_docente.values():
+        horas = round(info["minutos"] / 60, 1)
+        resultado.append({
+            "docente_id": info["docente_id"], "nombre": info["nombre"],
+            "horas": horas, "clases": info["clases"],
+            "catedras": sorted(info["catedras"]), "cantidad_catedras": len(info["catedras"]),
+            "sedes": sorted(info["sedes"]),
+            "excede_limite": horas > limite,
+            "detalle": sorted(info["detalle"], key=lambda x: (x["dia"], x["hora"])),
+        })
+    resultado.sort(key=lambda x: -x["horas"])
+    total_docentes = db.query(Docente).count()
+    return {
+        "limite": limite,
+        "docentes_con_carga": len(resultado),
+        "docentes_sin_asignacion": max(0, total_docentes - len(resultado)),
+        "exceden_limite": len([r for r in resultado if r["excede_limite"]]),
+        "horas_totales": round(sum(r["horas"] for r in resultado), 1),
+        "docentes": resultado,
+    }
+
+
+# ===== v18.0: HORARIO INDIVIDUAL DE CADA DOCENTE =====
+@app.get("/api/exportar/horarios-docentes")
+def exportar_horarios_docentes(cuatrimestre_id: int = None, docente_id: int = None,
+                               db: Session = Depends(get_db)):
+    """Excel con la grilla de cada docente por separado, lista para enviarle a cada uno."""
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    q = db.query(Asignacion).filter(Asignacion.docente_id.isnot(None))
+    if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
+    if docente_id: q = q.filter(Asignacion.docente_id == docente_id)
+    asigs = q.all()
+
+    por_docente = {}
+    for a in asigs:
+        if a.docente: por_docente.setdefault(a.docente.id, {"doc": a.docente, "asigs": []})["asigs"].append(a)
+
+    wb = Workbook(); ws = wb.active; ws.title = "Horarios por docente"
+    hdr = PatternFill("solid", fgColor="1E3A5F")
+    nombre_fill = PatternFill("solid", fgColor="FDEBD0")
+    thin = Side(style="thin", color="CCCCCC")
+    borde = Border(left=thin, right=thin, top=thin, bottom=thin)
+    orden_dias = {"Lunes": 1, "Martes": 2, "Miércoles": 3, "Jueves": 4, "Viernes": 5, "Sábado": 6}
+
+    fila = 1
+    for info in sorted(por_docente.values(),
+                       key=lambda x: f"{x['doc'].apellido or ''} {x['doc'].nombre or ''}"):
+        d = info["doc"]
+        ws.cell(row=fila, column=1, value=f"{d.apellido or ''}, {d.nombre or ''}".strip(' ,'))
+        ws.cell(row=fila, column=1).font = Font(bold=True, size=13, color="1E3A5F")
+        for col in range(1, 7):
+            ws.cell(row=fila, column=col).fill = nombre_fill
+            ws.cell(row=fila, column=col).border = borde
+        if d.email:
+            ws.cell(row=fila, column=5, value=d.email).font = Font(size=9, italic=True)
+        fila += 1
+
+        for i, t in enumerate(["Día", "Comienza", "Termina", "Cátedra", "Sede", "Link de Meet"], 1):
+            cel = ws.cell(row=fila, column=i, value=t)
+            cel.fill = hdr; cel.font = Font(bold=True, color="FFFFFF", size=10); cel.border = borde
+        fila += 1
+
+        total_min = 0
+        for a in sorted(info["asigs"], key=lambda x: (orden_dias.get(x.dia, 9), x.hora_inicio or "")):
+            ini = hora_a_minutos(a.hora_inicio); fin = hora_a_minutos(getattr(a, 'hora_fin', None))
+            dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else 90
+            total_min += dur
+            valores = [
+                a.dia or "A confirmar", a.hora_inicio or "—",
+                getattr(a, 'hora_fin', None) or "—",
+                f"{a.catedra.codigo} — {a.catedra.nombre}" if a.catedra else "—",
+                a.sede.nombre if a.sede else "—",
+                getattr(a.catedra, 'link_meet', None) if a.catedra else "",
+            ]
+            for i, v in enumerate(valores, 1):
+                cel = ws.cell(row=fila, column=i, value=v)
+                cel.border = borde; cel.font = Font(size=10)
+            fila += 1
+        ws.cell(row=fila, column=1, value=f"Total: {round(total_min/60, 1)} horas semanales · {len(info['asigs'])} clases")
+        ws.cell(row=fila, column=1).font = Font(size=9, italic=True, color="666666")
+        fila += 2
+
+    if fila == 1:
+        ws.cell(row=1, column=1, value="No hay docentes con horarios asignados en este cuatrimestre.")
+
+    for col, ancho in zip("ABCDEF", [14, 11, 11, 44, 18, 36]):
+        ws.column_dimensions[col].width = ancho
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    nombre = "horario_docente.xlsx" if docente_id else "horarios_por_docente.xlsx"
+    return StreamingResponse(buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={nombre}"})
+
+
+# ===== v18.0: RESPALDOS Y DESHACER =====
+# Antes de cada importación que borra asignaciones se guarda una copia del estado anterior.
+# Si alguien sube el archivo equivocado, se restaura con un clic.
+
+def crear_respaldo(db, cuatrimestre_id, motivo="Importación de horarios"):
+    """Guarda el estado actual de las asignaciones del cuatrimestre. Devuelve el id del respaldo."""
+    from sqlalchemy import text
+    import json
+    try:
+        asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).all()
+        datos = []
+        for a in asigs:
+            datos.append({
+                "catedra_id": a.catedra_id, "docente_id": a.docente_id,
+                "cuatrimestre_id": a.cuatrimestre_id, "dia": a.dia,
+                "hora_inicio": a.hora_inicio, "hora_fin": getattr(a, 'hora_fin', None),
+                "sede_id": a.sede_id, "modalidad": a.modalidad,
+                "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
+            })
+        res = db.execute(text(
+            "INSERT INTO respaldo_asignaciones (cuatrimestre_id, motivo, cantidad, datos) "
+            "VALUES (:c, :m, :n, :d) RETURNING id"
+        ), {"c": cuatrimestre_id, "m": motivo, "n": len(datos), "d": json.dumps(datos)})
+        nuevo_id = res.scalar()
+        # Conservar sólo los últimos 15 respaldos por cuatrimestre
+        db.execute(text(
+            "DELETE FROM respaldo_asignaciones WHERE cuatrimestre_id = :c AND id NOT IN "
+            "(SELECT id FROM respaldo_asignaciones WHERE cuatrimestre_id = :c ORDER BY id DESC LIMIT 15)"
+        ), {"c": cuatrimestre_id})
+        db.commit()
+        return nuevo_id
+    except Exception:
+        db.rollback()
+        return None
+
+@app.get("/api/respaldos")
+def listar_respaldos(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    q = "SELECT id, cuatrimestre_id, creado_en, motivo, cantidad FROM respaldo_asignaciones"
+    params = {}
+    if cuatrimestre_id:
+        q += " WHERE cuatrimestre_id = :c"; params["c"] = cuatrimestre_id
+    q += " ORDER BY id DESC LIMIT 15"
+    try:
+        rows = db.execute(text(q), params).fetchall()
+    except Exception:
+        db.rollback(); return {"respaldos": []}
+    cuats = {c.id: c.nombre for c in db.query(Cuatrimestre).all()}
+    return {"respaldos": [{
+        "id": r[0], "cuatrimestre_id": r[1],
+        "cuatrimestre": cuats.get(r[1], f"ID {r[1]}"),
+        "creado_en": str(r[2])[:19] if r[2] else "",
+        "motivo": r[3] or "", "cantidad": r[4] or 0,
+    } for r in rows]}
+
+@app.post("/api/respaldos/{respaldo_id}/restaurar")
+def restaurar_respaldo(respaldo_id: int, db: Session = Depends(get_db)):
+    """Deshace una importación: borra lo cargado y repone el estado guardado."""
+    from sqlalchemy import text
+    import json
+    try:
+        row = db.execute(text(
+            "SELECT cuatrimestre_id, datos, cantidad, motivo FROM respaldo_asignaciones WHERE id = :id"
+        ), {"id": respaldo_id}).fetchone()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="No se pudo leer el respaldo")
+    if not row: raise HTTPException(status_code=404, detail="Respaldo no encontrado")
+    cuatrimestre_id = row[0]
+    try:
+        datos = json.loads(row[1] or "[]")
+    except Exception:
+        raise HTTPException(status_code=400, detail="El respaldo está dañado")
+
+    # Antes de restaurar, respaldar el estado actual (por si la restauración también fue un error)
+    crear_respaldo(db, cuatrimestre_id, motivo="Estado previo a una restauración")
+
+    try:
+        db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
+        repuestas = 0
+        for d in datos:
+            a = Asignacion(
+                catedra_id=d.get("catedra_id"), docente_id=d.get("docente_id"),
+                cuatrimestre_id=cuatrimestre_id, dia=d.get("dia"),
+                hora_inicio=d.get("hora_inicio"), sede_id=d.get("sede_id"),
+                modalidad=d.get("modalidad"))
+            db.add(a); db.flush()
+            if d.get("hora_fin"):
+                try:
+                    db.execute(text("UPDATE asignaciones SET hora_fin = :h WHERE id = :id"),
+                               {"h": d["hora_fin"], "id": a.id})
+                except Exception: pass
+            repuestas += 1
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error restaurando: {str(e)[:200]}")
+    return {"ok": True, "asignaciones_restauradas": repuestas,
+            "cuatrimestre_id": cuatrimestre_id,
+            "mensaje": f"Se repusieron {repuestas} asignaciones al estado anterior."}
+
+@app.delete("/api/respaldos/{respaldo_id}")
+def borrar_respaldo(respaldo_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        db.execute(text("DELETE FROM respaldo_asignaciones WHERE id = :id"), {"id": respaldo_id})
+        db.commit(); return {"ok": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e)[:150])
+
 
 # ===== v17.0: DICTADO DE CÁTEDRAS (se dicta != se abre) =====
 # "Se dicta"  = la cátedra funciona este cuatrimestre (puede ser con video pregrabado).
@@ -1832,140 +2508,167 @@ def get_estadisticas_docentes(cuatrimestre_id: int = None, db: Session = Depends
 
 # ===== v15.0: Importar alumnos BCE/BEA =====
 @app.post("/api/importar/alumnos-bce-bea")
-async def importar_alumnos_bce_bea(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
-    """v17.2 — Reescrito con lógica simple.
+async def importar_alumnos_bce_bea(files: List[UploadFile] = File(...), cuatrimestre_id: int = 1,
+                                   db: Session = Depends(get_db)):
+    """v18.0 — BCE y BEA. Acepta VARIOS archivos a la vez (uno por cátedra).
 
-    BCE y BEA son 100% virtuales: no tienen turno, ni día, ni modalidad. Lo único que
-    hace falta es CONTAR cuántos alumnos (DNI) hay en cada cátedra.
+    Sólo cuenta alumnos: no maneja turno, día ni modalidad, porque es todo virtual.
+    El código de cátedra sale del nombre del archivo (ej: "c_2028_Lengua_I_-_BCE.xlsx").
+    Si la cátedra no existe, se crea.
 
-    El código de cátedra viene en el NOMBRE DEL ARCHIVO (ej: "c_2028_Lengua_I_-_BCE.xlsx"),
-    porque dentro del Excel la columna MATERIA sólo trae el nombre ("Lengua I").
-    Si esa cátedra todavía no existe en el sistema, se crea automáticamente: antes el
-    importador la descartaba en silencio y por eso el contador daba siempre cero.
+    Corrección de la versión anterior: el alumno se creaba sin apellido y, como esa columna
+    no admite vacío, cada inserción fallaba y el importador terminaba contando cero sin
+    reportar el error. Ahora el nombre completo se separa en nombre y apellido, y cualquier
+    fallo se informa en pantalla en lugar de quedar oculto.
     """
     from openpyxl import load_workbook
     from sqlalchemy import text
     import io
-    content = await file.read()
-    try:
-        wb = load_workbook(io.BytesIO(content), data_only=True)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"No se pudo abrir el Excel: {str(e)[:150]}")
 
-    nombre_archivo = file.filename or ""
-    # 1) Código de cátedra desde el nombre del archivo
-    codigo = None
-    m = re.search(r'c[_\.\s-]*(\d+)', nombre_archivo, re.IGNORECASE)
-    if m: codigo = f"c.{m.group(1)}"
+    if not isinstance(files, list): files = [files]
+    resumen = []
+    total_general = 0
 
-    # 2) Nombre de la materia: primera fila de datos con contenido en la columna MATERIA
-    nombre_materia = None
-    filas = []
-    for ws in wb.worksheets:
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            vals = list(row)
-            if len(vals) < 4: continue
-            filas.append(vals)
-            if not nombre_materia:
-                mat = str(vals[3] or '').strip()
-                if mat and mat.upper() not in ('MATERIA', 'NONE'):
-                    nombre_materia = mat
-    wb.close()
-
-    if not codigo and not nombre_materia:
-        raise HTTPException(status_code=400,
-            detail="No se pudo identificar la cátedra: el archivo debe llamarse como 'c_2028_Nombre.xlsx' o traer la materia en la columna D.")
-
-    # 3) Buscar la cátedra; si no existe, crearla
-    cat = None
-    creada = False
-    if codigo:
-        cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-    if not cat and nombre_materia:
-        for c in db.query(Catedra).all():
-            if (c.nombre or '').strip().lower() == nombre_materia.strip().lower():
-                cat = c; break
-    if not cat:
-        cat = Catedra(codigo=codigo or f"c.BCE-{abs(hash(nombre_materia)) % 9999}",
-                      nombre=nombre_materia or "Cátedra BCE/BEA")
-        db.add(cat)
+    for archivo in files:
+        detalle = {"archivo": archivo.filename or "(sin nombre)"}
         try:
-            db.commit(); db.refresh(cat); creada = True
+            content = await archivo.read()
+            wb = load_workbook(io.BytesIO(content), data_only=True)
         except Exception as e:
-            db.rollback()
-            raise HTTPException(status_code=400, detail=f"No se pudo crear la cátedra: {str(e)[:150]}")
+            detalle.update({"ok": False, "error": f"No se pudo abrir el archivo: {str(e)[:120]}"})
+            resumen.append(detalle); continue
 
-    # 4) Contar alumnos por DNI (una inscripción por DNI, sin turno ni modalidad)
-    dnis = {}          # dni -> nombre limpio
-    sin_dni = 0
-    for vals in filas:
-        alumno_nombre = str(vals[1] or '').strip()
-        if not alumno_nombre or alumno_nombre.upper() in ('ALUMNO', 'NONE'): continue
-        dni = re.sub(r'[^\d]', '', str(vals[2] or ''))[:10]
-        if not dni:
-            md = re.search(r'\((\d{6,10})\)', alumno_nombre)
-            if md: dni = md.group(1)
-        if not dni:
-            sin_dni += 1
-            continue
-        if dni not in dnis:
-            dnis[dni] = re.sub(r'\s*\(.*\)', '', alumno_nombre).strip()
+        # 1) Código de cátedra desde el nombre del archivo
+        codigo = None
+        m = re.search(r'c[_\.\s-]*(\d+)', archivo.filename or "", re.IGNORECASE)
+        if m: codigo = f"c.{m.group(1)}"
 
-    duplicados = max(0, len([1 for v in filas
-                             if str(v[1] or '').strip() and str(v[1] or '').strip().upper() != 'ALUMNO'])
-                     - len(dnis) - sin_dni)
+        # 2) Leer filas y detectar el nombre de la materia
+        filas = []; nombre_materia = None
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                vals = list(row)
+                if len(vals) < 4: continue
+                filas.append(vals)
+                if not nombre_materia:
+                    mat = str(vals[3] or '').strip()
+                    if mat and mat.upper() not in ('MATERIA', 'NONE'):
+                        nombre_materia = mat
+        wb.close()
 
-    # 5) Crear alumnos e inscripciones
-    nuevos_alumnos = 0; nuevas_insc = 0; ya_estaban = 0; errores = []
-    for dni, nombre_alumno in dnis.items():
-        try:
-            al = db.query(Alumno).filter(Alumno.dni == dni).first()
-            if not al:
-                al = Alumno(nombre=nombre_alumno, dni=dni)
-                db.add(al); db.flush(); nuevos_alumnos += 1
-            insc = db.query(Inscripcion).filter(
-                Inscripcion.alumno_id == al.id,
-                Inscripcion.catedra_id == cat.id,
-                Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
-            if insc:
-                ya_estaban += 1
+        if not codigo and not nombre_materia:
+            detalle.update({"ok": False,
+                "error": "No se pudo identificar la cátedra. El archivo debe llamarse como 'c_2028_Nombre.xlsx' o traer la materia en la columna D."})
+            resumen.append(detalle); continue
+
+        # 3) Buscar o crear la cátedra
+        cat = None; catedra_creada = False
+        if codigo:
+            cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+        if not cat and nombre_materia:
+            for c in db.query(Catedra).all():
+                if (c.nombre or '').strip().lower() == nombre_materia.strip().lower():
+                    cat = c; break
+        if not cat:
+            try:
+                cat = Catedra(codigo=codigo or f"c.BCE{abs(hash(nombre_materia)) % 9999}",
+                              nombre=nombre_materia or "Cátedra BCE/BEA")
+                db.add(cat); db.commit(); db.refresh(cat); catedra_creada = True
+            except Exception as e:
+                db.rollback()
+                detalle.update({"ok": False, "error": f"No se pudo crear la cátedra: {str(e)[:120]}"})
+                resumen.append(detalle); continue
+
+        # 4) Reunir alumnos por DNI (sin repetir)
+        alumnos = {}   # dni -> (nombre, apellido)
+        sin_dni = 0; filas_utiles = 0
+        for vals in filas:
+            texto_alumno = str(vals[1] or '').strip()
+            if not texto_alumno or texto_alumno.upper() in ('ALUMNO', 'NONE'): continue
+            filas_utiles += 1
+            dni = re.sub(r'[^\d]', '', str(vals[2] or ''))[:10]
+            if not dni:
+                md = re.search(r'\((\d{6,10})\)', texto_alumno)
+                if md: dni = md.group(1)
+            if not dni:
+                sin_dni += 1; continue
+            if dni in alumnos: continue
+            # Separar nombre y apellido: la última palabra se toma como apellido
+            limpio = re.sub(r'\s*\(.*?\)', '', texto_alumno).strip()
+            limpio = re.sub(r'\s+', ' ', limpio)
+            partes = limpio.split(' ')
+            if len(partes) >= 2:
+                apellido = partes[-1]; nombre = ' '.join(partes[:-1])
             else:
-                insc = Inscripcion(alumno_id=al.id, catedra_id=cat.id,
-                                   cuatrimestre_id=cuatrimestre_id)
-                db.add(insc); db.flush(); nuevas_insc += 1
-            # Marcarlas como virtuales (columnas fuera del ORM -> SQL directo)
-            db.execute(text(
-                "UPDATE inscripciones SET turno = 'Virtual', modalidad_alumno = 'virtual', "
-                "sede_referencia = 'Online - Interior', curso_nombre = :curso WHERE id = :id"
-            ), {"curso": "BCE/BEA", "id": insc.id})
-        except Exception as e:
-            db.rollback()
-            errores.append(f"DNI {dni}: {str(e)[:80]}")
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error guardando: {str(e)[:200]}")
+                apellido = limpio or 'Sin apellido'; nombre = ''
+            alumnos[dni] = (nombre, apellido)
 
-    # 6) Total real en la base para esta cátedra
-    try:
-        total_en_catedra = db.execute(text(
-            "SELECT COUNT(*) FROM inscripciones WHERE catedra_id = :c AND cuatrimestre_id = :cu"
-        ), {"c": cat.id, "cu": cuatrimestre_id}).scalar() or 0
-    except Exception:
-        db.rollback(); total_en_catedra = nuevas_insc + ya_estaban
+        duplicados = max(0, filas_utiles - len(alumnos) - sin_dni)
 
+        # 5) Crear alumnos e inscripciones
+        nuevos = 0; nuevas_insc = 0; ya_estaban = 0; fallidos = []
+        for dni, (nombre, apellido) in alumnos.items():
+            try:
+                al = db.query(Alumno).filter(Alumno.dni == dni).first()
+                if not al:
+                    al = Alumno(dni=dni, nombre=nombre, apellido=apellido)
+                    db.add(al); db.flush(); nuevos += 1
+                insc = db.query(Inscripcion).filter(
+                    Inscripcion.alumno_id == al.id,
+                    Inscripcion.catedra_id == cat.id,
+                    Inscripcion.cuatrimestre_id == cuatrimestre_id).first()
+                if insc:
+                    ya_estaban += 1
+                else:
+                    insc = Inscripcion(alumno_id=al.id, catedra_id=cat.id,
+                                       cuatrimestre_id=cuatrimestre_id)
+                    db.add(insc); db.flush(); nuevas_insc += 1
+                db.commit()
+                # Marcar como virtual (columnas fuera del modelo -> SQL directo)
+                try:
+                    db.execute(text(
+                        "UPDATE inscripciones SET turno = 'Virtual', modalidad_alumno = 'virtual', "
+                        "sede_referencia = 'Online - Interior', curso_nombre = 'BCE/BEA' WHERE id = :id"
+                    ), {"id": insc.id})
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            except Exception as e:
+                db.rollback()
+                fallidos.append(f"DNI {dni}: {str(e)[:90]}")
+
+        # 6) Total real en la base
+        try:
+            total_cat = db.execute(text(
+                "SELECT COUNT(*) FROM inscripciones WHERE catedra_id = :c AND cuatrimestre_id = :cu"
+            ), {"c": cat.id, "cu": cuatrimestre_id}).scalar() or 0
+        except Exception:
+            db.rollback(); total_cat = nuevas_insc + ya_estaban
+
+        detalle.update({
+            "ok": len(fallidos) == 0 and len(alumnos) > 0,
+            "catedra": f"{cat.codigo} — {cat.nombre}",
+            "catedra_creada": catedra_creada,
+            "inscriptos_contados": len(alumnos),
+            "total_en_la_catedra": total_cat,
+            "alumnos_nuevos": nuevos,
+            "inscripciones_nuevas": nuevas_insc,
+            "ya_estaban": ya_estaban,
+            "duplicados_omitidos": duplicados,
+            "filas_sin_dni": sin_dni,
+            "fallidos": fallidos[:5],
+        })
+        if len(alumnos) == 0:
+            detalle["error"] = "No se encontró ningún alumno con DNI en el archivo."
+        total_general += len(alumnos)
+        resumen.append(detalle)
+
+    exitosos = [r for r in resumen if r.get("ok")]
     return {
-        "catedra": f"{cat.codigo} — {cat.nombre}",
-        "catedra_creada": creada,
-        "inscriptos_en_el_archivo": len(dnis),
-        "inscriptos_totales_en_la_catedra": total_en_catedra,
-        "alumnos_nuevos": nuevos_alumnos,
-        "inscripciones_nuevas": nuevas_insc,
-        "ya_estaban_inscriptos": ya_estaban,
-        "filas_duplicadas_omitidas": duplicados,
-        "filas_sin_dni": sin_dni,
-        "errores": errores[:10],
+        "archivos_procesados": len(resumen),
+        "archivos_ok": len(exitosos),
+        "inscriptos_totales": total_general,
+        "detalle": resumen,
     }
 
 @app.post("/api/cuatrimestres/replicar")
@@ -2310,6 +3013,176 @@ async def importar_catedras_referencia(file: UploadFile = File(...), db: Session
     return {"actualizados": actualizados, "no_encontrados": no_match}
 
 # ===== v15.0: Typo correction map for docente names =====
+# ===== v18.0: NORMALIZADOR DE DOCENTES INTEGRADO =====
+# Antes había que corregir a mano los nombres antes de cada importación. Ahora el sistema
+# guarda un diccionario de equivalencias (docente_alias) que se aplica solo al importar
+# y que aprende los nombres nuevos que se van confirmando.
+
+def _clave_alias(texto):
+    """Normaliza para comparar: sin acentos, sin puntos, mayúsculas, espacios simples."""
+    import unicodedata
+    t = (texto or "").upper().strip()
+    t = ''.join(ch for ch in unicodedata.normalize('NFD', t) if unicodedata.category(ch) != 'Mn')
+    t = re.sub(r"[.'`´]", "", t)
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+def cargar_alias(db):
+    """Devuelve {clave_normalizada: docente_id} con todos los alias guardados."""
+    from sqlalchemy import text
+    mapa = {}
+    try:
+        for alias, did in db.execute(text("SELECT alias, docente_id FROM docente_alias")).fetchall():
+            mapa[_clave_alias(alias)] = did
+    except Exception:
+        db.rollback()
+    return mapa
+
+def guardar_alias(db, alias, docente_id, origen='automatico'):
+    from sqlalchemy import text
+    try:
+        db.execute(text(
+            "INSERT INTO docente_alias (alias, docente_id, origen) VALUES (:a, :d, :o) "
+            "ON CONFLICT (alias) DO UPDATE SET docente_id = EXCLUDED.docente_id"
+        ), {"a": _clave_alias(alias), "d": docente_id, "o": origen})
+        db.commit(); return True
+    except Exception:
+        db.rollback(); return False
+
+def _parecido(a, b):
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio()
+
+def sugerir_docente(texto, docentes):
+    """Busca el docente más parecido. Devuelve (docente, puntaje 0-1)."""
+    clave = _clave_alias(texto)
+    if not clave: return None, 0.0
+    mejor, punt = None, 0.0
+    for d in docentes:
+        candidatos = [
+            _clave_alias(f"{d.apellido or ''} {d.nombre or ''}"),
+            _clave_alias(f"{d.nombre or ''} {d.apellido or ''}"),
+            _clave_alias(d.apellido or ''),
+        ]
+        for cand in candidatos:
+            if not cand: continue
+            if cand == clave: return d, 1.0
+            # Apellido contenido en el texto: fuerte indicio
+            p = _parecido(clave, cand)
+            if d.apellido and _clave_alias(d.apellido) and _clave_alias(d.apellido) in clave:
+                p = max(p, 0.90)
+            if p > punt: mejor, punt = d, p
+    return mejor, punt
+
+@app.get("/api/docentes/alias")
+def listar_alias(db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        rows = db.execute(text(
+            "SELECT a.id, a.alias, a.docente_id, a.origen, d.nombre, d.apellido "
+            "FROM docente_alias a LEFT JOIN docentes d ON a.docente_id = d.id ORDER BY a.alias"
+        )).fetchall()
+    except Exception:
+        db.rollback(); return {"alias": [], "total": 0}
+    return {"alias": [{
+        "id": r[0], "alias": r[1], "docente_id": r[2], "origen": r[3],
+        "docente": f"{r[5] or ''}, {r[4] or ''}".strip(' ,') if r[4] or r[5] else "(docente borrado)",
+    } for r in rows], "total": len(rows)}
+
+@app.post("/api/docentes/alias")
+def crear_alias(data: dict, db: Session = Depends(get_db)):
+    alias = (data.get("alias") or "").strip()
+    docente_id = data.get("docente_id")
+    if not alias or not docente_id:
+        raise HTTPException(status_code=400, detail="Faltan el nombre alternativo y el docente")
+    if not db.query(Docente).filter(Docente.id == docente_id).first():
+        raise HTTPException(status_code=404, detail="Docente no encontrado")
+    if not guardar_alias(db, alias, docente_id, origen='manual'):
+        raise HTTPException(status_code=400, detail="No se pudo guardar la equivalencia")
+    return {"ok": True, "alias": _clave_alias(alias)}
+
+@app.delete("/api/docentes/alias/{alias_id}")
+def borrar_alias(alias_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        db.execute(text("DELETE FROM docente_alias WHERE id = :id"), {"id": alias_id})
+        db.commit(); return {"ok": True}
+    except Exception as e:
+        db.rollback(); raise HTTPException(status_code=400, detail=str(e)[:150])
+
+@app.post("/api/docentes/alias/sembrar")
+def sembrar_alias(db: Session = Depends(get_db)):
+    """Carga de una vez las correcciones históricas que veníamos aplicando a mano."""
+    docentes = db.query(Docente).all()
+    creados = 0; sin_match = []
+    for mal, bien in DOCENTE_TYPO_MAP.items():
+        doc, punt = sugerir_docente(bien, docentes)
+        if doc and punt >= 0.80:
+            if guardar_alias(db, mal, doc.id, origen='semilla'): creados += 1
+        else:
+            sin_match.append(f"{mal} → {bien}")
+    return {"ok": True, "alias_creados": creados,
+            "sin_coincidencia": sin_match[:20],
+            "mensaje": f"Se cargaron {creados} equivalencias. Se aplican solas en la próxima importación."}
+
+@app.post("/api/docentes/alias/analizar")
+async def analizar_nombres_docentes(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Revisa un Excel de horarios y muestra qué nombres de docente NO se reconocen,
+    con la sugerencia más parecida para cada uno. Sirve para revisar antes de importar."""
+    from openpyxl import load_workbook
+    import io
+    content = await file.read()
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"No se pudo abrir el Excel: {str(e)[:150]}")
+    crudos = set()
+    for ws in wb.worksheets:
+        if ws.title.strip().lower() in ('instructivo', 'instrucciones'): continue
+        for row in ws.iter_rows(values_only=True):
+            vals = list(row)
+            if len(vals) < 6: continue
+            try:
+                if int(float(str(vals[0] or ''))) <= 0: continue
+            except Exception: continue
+            for idx in (5, 6):
+                if len(vals) > idx:
+                    txt = str(vals[idx] or '').strip()
+                    if txt and not txt.lower().startswith('http') and txt.lower() not in ('none', 'nan'):
+                        crudos.add(txt)
+                        break
+    wb.close()
+
+    docentes = db.query(Docente).all()
+    alias = cargar_alias(db)
+    exactos = {}
+    for d in docentes:
+        for variante in [f"{d.apellido or ''} {d.nombre or ''}", f"{d.nombre or ''} {d.apellido or ''}", d.apellido or '']:
+            k = _clave_alias(variante)
+            if k: exactos[k] = d
+
+    reconocidos = []; a_revisar = []
+    for crudo in sorted(crudos):
+        k = _clave_alias(crudo)
+        if k in alias:
+            d = db.query(Docente).filter(Docente.id == alias[k]).first()
+            reconocidos.append({"texto": crudo, "docente": f"{d.apellido}, {d.nombre}" if d else "?", "via": "equivalencia guardada"})
+        elif k in exactos:
+            d = exactos[k]
+            reconocidos.append({"texto": crudo, "docente": f"{d.apellido}, {d.nombre}", "via": "coincidencia exacta"})
+        else:
+            sug, punt = sugerir_docente(crudo, docentes)
+            a_revisar.append({
+                "texto": crudo,
+                "sugerencia_id": sug.id if sug else None,
+                "sugerencia": f"{sug.apellido}, {sug.nombre}" if sug else None,
+                "confianza": round(punt * 100),
+            })
+    a_revisar.sort(key=lambda x: -x["confianza"])
+    return {"total_nombres": len(crudos), "reconocidos": len(reconocidos),
+            "a_revisar": a_revisar, "detalle_reconocidos": reconocidos[:50]}
+
+
 DOCENTE_TYPO_MAP = {
     'CAPUCCHETI': 'CAPUCHETTI', 'DATRI': "D'ATRI", "D´ATRI": "D'ATRI",
     'TOMATI': 'TOMATTI', 'MARIA LAURA PAVEL': 'PAVEL',
@@ -2332,6 +3205,10 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
     wb = load_workbook(io.BytesIO(file_content))
     all_cats = {c.codigo: c for c in db.query(Catedra).all()}
     all_docs = db.query(Docente).all()
+    # v18.0: equivalencias de nombres ya aprendidas
+    alias_guardados = cargar_alias(db)
+    docentes_por_id = {d.id: d for d in all_docs}
+    alias_nuevos = {}
     doc_by_apellido = {}
     for d in all_docs:
         ap = (d.apellido or '').upper().strip()
@@ -2425,13 +3302,22 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
                 doc_clean = doc_raw.upper().strip()
                 if doc_clean.startswith('VER '): doc_clean = doc_clean[4:].strip()
                 # Apply typo map
-                corrected = DOCENTE_TYPO_MAP.get(doc_clean, doc_clean)
-                docente_obj = doc_by_apellido.get(corrected)
+                # v18.0: primero el diccionario de equivalencias guardado en la base.
+                # Es lo que antes se corregía a mano en un Excel antes de cada importación.
+                clave = _clave_alias(doc_raw)
+                if clave in alias_guardados:
+                    docente_obj = docentes_por_id.get(alias_guardados[clave])
                 if not docente_obj:
-                    for key, d in doc_by_apellido.items():
-                        if corrected in key or key in corrected: docente_obj = d; break
+                    corrected = DOCENTE_TYPO_MAP.get(doc_clean, doc_clean)
+                    docente_obj = doc_by_apellido.get(corrected)
+                    if not docente_obj:
+                        for key, d in doc_by_apellido.items():
+                            if corrected in key or key in corrected: docente_obj = d; break
                 if docente_obj:
                     doc_display = f"{docente_obj.nombre} {docente_obj.apellido}"
+                    # Aprende la variante para la próxima vez
+                    if clave and clave not in alias_guardados:
+                        alias_nuevos[clave] = (doc_raw, docente_obj.id)
                 else:
                     doc_display = doc_raw
                     doc_to_create.add(doc_raw)
@@ -2445,6 +3331,9 @@ def _parse_horarios_excel(file_content, db, cuatrimestre_id):
                 'doc_raw': doc_raw, 'meet_link': meet_link if meet_link.startswith('http') else '',
             })
     wb.close()
+    # Guardar las variantes nuevas que se resolvieron bien
+    for clave, (texto, did) in alias_nuevos.items():
+        guardar_alias(db, texto, did, origen='automatico')
     return results, list(set(no_cat)), sorted(list(doc_to_create))
 
 # ===== v15.0: Preview horarios import =====
@@ -2499,6 +3388,11 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
         db.add(new_doc); db.flush()
         doc_created_map[doc_name.upper()] = new_doc
         nuevos_docs += 1
+    # v18.0: respaldo automático ANTES de borrar nada. Permite deshacer la importación
+    # si se subió el archivo equivocado o una versión incompleta.
+    respaldo_id = crear_respaldo(db, cuatrimestre_id,
+                                 motivo=f"Antes de importar {getattr(file, 'filename', 'horarios')}"[:120])
+
     # 2) Delete existing asignaciones for this cuatrimestre
     try:
         deleted = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
@@ -2563,6 +3457,8 @@ async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 
     except Exception: db.rollback()
 
     return {
+        "respaldo_id": respaldo_id,
+        "se_puede_deshacer": respaldo_id is not None,
         "asignaciones_borradas": deleted,
         "asignaciones_creadas": creados,
         "links_meet_actualizados": meet_updated,
