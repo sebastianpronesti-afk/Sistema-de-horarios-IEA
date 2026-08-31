@@ -40,6 +40,20 @@ const SEDES_OPERATIVAS = ['Avellaneda', 'Caballito', 'Vicente López', 'Online -
 // v17.1: tope de 20 horas por docente
 const HORAS_OPCIONES = Array.from({ length: 21 }, (_, i) => i);
 
+// v18.0: rol de acceso. 'editor' puede modificar; 'consulta' sólo ve y exporta.
+const RolContext = React.createContext({ rol: 'editor', puedeEditar: true });
+function usarRol() { return React.useContext(RolContext); }
+// Envuelve botones que modifican datos: en modo consulta quedan deshabilitados.
+function SoloEditor({ children, mensaje = 'Necesitás acceso de edición para esto' }) {
+  const { puedeEditar } = usarRol();
+  if (puedeEditar) return children;
+  return (
+    <div className="relative inline-block opacity-40 cursor-not-allowed" title={mensaje}>
+      <div className="pointer-events-none">{children}</div>
+    </div>
+  );
+}
+
 function minutosDeHora(h) {
   if (!h) return null;
   const p = String(h).replace('.', ':').split(':');
@@ -144,11 +158,14 @@ function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar doce
 function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount, solapCarrerasCount }) {
   const menuItems = [
     { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
+    { id: 'chequeo', icon: '🚦', label: '¿Listo para publicar?', highlight: true },
     { id: 'dictado', icon: '✔️', label: 'Cátedras que se dictan', highlight: true },
     { id: 'catedras', icon: '📚', label: 'Cátedras' },
     { id: 'cursos', icon: '🎓', label: 'Cursos' },
     { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
     { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
+    { id: 'carga_horaria', icon: '⏱️', label: 'Carga horaria' },
+    { id: 'nombres_docentes', icon: '🔤', label: 'Nombres de docentes' },
     { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
     { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
     { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
@@ -163,6 +180,8 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     { id: 'edi_alumnos', icon: '🔀', label: 'EDI por Cátedra' },
     { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
     { id: 'exportar', icon: '📤', label: 'Exportar' },
+    { id: 'respaldos', icon: '↩️', label: 'Deshacer importación' },
+    { id: 'comparar', icon: '📊', label: 'Comparar cuatrimestres' },
     { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
   ];
   return (
@@ -202,7 +221,40 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
             <span className="text-[10px] text-slate-300">{s.nombre}</span>
           </div>
         ))}
+        <PieSidebar />
       </div>
+    </div>
+  );
+}
+
+// v18.1: acceso y sesión, al pie del menú
+function PieSidebar() {
+  const { rol, puedeEditar } = usarRol();
+  const [modal, setModal] = useState(false);
+  const salir = () => {
+    localStorage.removeItem('iea_auth');
+    localStorage.removeItem('iea_rol');
+    window.location.reload();
+  };
+  return (
+    <div className="mt-4 pt-3 border-t border-slate-700">
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`w-2 h-2 rounded-full ${puedeEditar ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+        <span className="text-[10px] text-slate-300">
+          {puedeEditar ? 'Acceso de edición' : 'Sólo consulta'}
+        </span>
+      </div>
+      {puedeEditar && (
+        <button onClick={() => setModal(true)}
+          className="w-full text-left text-[10px] text-slate-400 hover:text-white py-1">
+          🔑 Cambiar contraseña
+        </button>
+      )}
+      <button onClick={salir}
+        className="w-full text-left text-[10px] text-slate-400 hover:text-white py-1">
+        🚪 Cerrar sesión
+      </button>
+      {modal && <CambiarClaveModal onClose={() => setModal(false)} />}
     </div>
   );
 }
@@ -214,8 +266,9 @@ function LoginScreen({ onLogin }) {
   const intentarLogin = async () => {
     setError(''); setLoading(true);
     try {
-      await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
+      const r = await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
       localStorage.setItem('iea_auth', 'true');
+      localStorage.setItem('iea_rol', r.rol || 'editor');
       onLogin();
     } catch (e) { setError('Contraseña incorrecta'); }
     setLoading(false);
@@ -225,7 +278,7 @@ function LoginScreen({ onLogin }) {
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
-          <p className="text-slate-500 mt-1">Sistema de Gestión v6.0</p>
+          <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios</p>
         </div>
         <div className="space-y-4">
           <div>
@@ -1625,6 +1678,880 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
 }
 
 // ==================== CALENDARIO VIEW ====================
+// ==================== v18.2: CHEQUEO ANTES DE PUBLICAR ====================
+function ChequeoView({ cuatrimestre, cuatrimestres, setActiveView }) {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [abierto, setAbierto] = useState({});
+
+  const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres || [])[0]?.id || 1);
+  const cuatNombre = (cuatrimestres || []).find(c => String(c.id) === String(cuatId))?.nombre || '';
+
+  const cargar = async () => {
+    setCargando(true);
+    try { setDatos(await apiFetch(`/api/checklist-cierre?cuatrimestre_id=${cuatId}`)); }
+    catch (e) { console.error(e); setDatos(null); }
+    setCargando(false);
+  };
+  useEffect(() => { cargar(); }, [cuatId]);
+
+  if (cargando) return <div className="p-8 text-center text-slate-500">⏳ Revisando el cuatrimestre...</div>;
+  if (!datos) return <div className="p-8 text-center text-slate-500">No se pudo hacer la revisión.</div>;
+
+  const VEREDICTO = {
+    listo: { color: 'bg-emerald-600', icono: '✅', titulo: 'Listo para publicar',
+             texto: 'Pasaron todas las verificaciones. Podés cerrar el cuatrimestre y distribuir los horarios.' },
+    listo_con_observaciones: { color: 'bg-amber-500', icono: '⚠️', titulo: 'Se puede publicar, pero hay cosas para revisar',
+             texto: 'No hay errores que impidan cerrar, pero conviene mirar las observaciones antes de distribuir.' },
+    no_listo: { color: 'bg-red-600', icono: '🛑', titulo: 'Todavía no está listo',
+             texto: 'Hay problemas que conviene resolver antes de publicar los horarios.' },
+  };
+  const v = VEREDICTO[datos.veredicto] || VEREDICTO.no_listo;
+
+  const CFG = {
+    ok: { icono: '✅', clase: 'border-emerald-200 bg-emerald-50', txt: 'text-emerald-800' },
+    advertencia: { icono: '⚠️', clase: 'border-amber-200 bg-amber-50', txt: 'text-amber-800' },
+    error: { icono: '🛑', clase: 'border-red-200 bg-red-50', txt: 'text-red-800' },
+  };
+
+  return (
+    <div className="p-8 max-w-5xl">
+      <div className="flex justify-between items-start mb-5">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">🚦 ¿Está listo para publicar?</h2>
+          <p className="text-slate-500 text-sm mt-1">
+            Revisa de una sola vez todo lo que suele quedar suelto al cerrar un cuatrimestre.
+            {cuatNombre && <> Cuatrimestre: <b>{cuatNombre}</b>.</>}
+          </p>
+        </div>
+        <button onClick={cargar} className="px-3 py-2 bg-slate-100 rounded-lg text-sm hover:bg-slate-200">
+          🔄 Volver a revisar
+        </button>
+      </div>
+
+      <div className={`${v.color} text-white rounded-xl p-5 mb-5`}>
+        <p className="text-2xl font-bold">{v.icono} {v.titulo}</p>
+        <p className="text-sm opacity-90 mt-1">{v.texto}</p>
+        <div className="flex gap-4 mt-3 text-sm">
+          <span>✅ {datos.controles_ok} en orden</span>
+          {datos.errores > 0 && <span>🛑 {datos.errores} a resolver</span>}
+          {datos.advertencias > 0 && <span>⚠️ {datos.advertencias} para revisar</span>}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className="bg-white border rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold text-blue-600">{datos.resumen.catedras_que_se_dictan}</p>
+          <p className="text-[11px] text-slate-500">Se dictan</p></div>
+        <div className="bg-white border rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold text-emerald-600">{datos.resumen.con_docente}</p>
+          <p className="text-[11px] text-slate-500">Con docente</p></div>
+        <div className="bg-white border rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold text-violet-600">{datos.resumen.asincronicas}</p>
+          <p className="text-[11px] text-slate-500">Asincrónicas</p></div>
+        <div className="bg-white border rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold text-slate-700">{datos.resumen.inscripciones}</p>
+          <p className="text-[11px] text-slate-500">Inscripciones</p></div>
+      </div>
+
+      <div className="space-y-2">
+        {datos.controles.map(c => {
+          const cfg = CFG[c.estado] || CFG.ok;
+          const puedeAbrir = c.cantidad > 0;
+          const abierta = abierto[c.id];
+          return (
+            <div key={c.id} className={`border rounded-xl ${cfg.clase}`}>
+              <div className={`flex items-center gap-3 p-3 ${puedeAbrir ? 'cursor-pointer' : ''}`}
+                onClick={() => puedeAbrir && setAbierto(p => ({ ...p, [c.id]: !abierta }))}>
+                <span className="text-lg">{cfg.icono}</span>
+                <div className="flex-1">
+                  <p className={`font-bold text-sm ${cfg.txt}`}>{c.titulo}</p>
+                  <p className="text-xs text-slate-500">{c.explicacion}</p>
+                </div>
+                {c.cantidad > 0 && (
+                  <span className={`px-2 py-1 rounded-full text-xs font-bold ${cfg.txt} bg-white`}>
+                    {c.cantidad}
+                  </span>
+                )}
+                {puedeAbrir && <span className="text-slate-400 text-xs">{abierta ? '▼' : '▶'}</span>}
+              </div>
+              {abierta && c.detalle?.length > 0 && (
+                <div className="px-4 pb-3">
+                  <div className="bg-white rounded-lg p-3 max-h-56 overflow-y-auto">
+                    {c.detalle.map((d, i) => (
+                      <p key={i} className="text-xs text-slate-600 py-0.5 border-b last:border-0">{d}</p>
+                    ))}
+                    {c.cantidad > c.detalle.length && (
+                      <p className="text-xs text-slate-400 pt-1">y {c.cantidad - c.detalle.length} más...</p>
+                    )}
+                  </div>
+                  {c.seccion && (
+                    <button onClick={(e) => { e.stopPropagation(); setActiveView(c.seccion); }}
+                      className="mt-2 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700">
+                      Ir a resolverlo →
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ==================== v18.2: COMPARAR CUATRIMESTRES ====================
+function CompararView({ cuatrimestre, cuatrimestres }) {
+  const [homologos, setHomologos] = useState(null);
+  const [contra, setContra] = useState('');
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [filtro, setFiltro] = useState('todas');
+  const [aviso, setAviso] = useState(null);
+
+  const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres || [])[0]?.id || 1);
+
+  useEffect(() => {
+    setDatos(null); setContra('');
+    apiFetch(`/api/cuatrimestres/homologos?cuatrimestre_id=${cuatId}`)
+      .then(h => {
+        setHomologos(h);
+        if (h.homologos?.length) setContra(String(h.homologos[0].id));
+      })
+      .catch(() => setHomologos(null));
+  }, [cuatId]);
+
+  const comparar = async () => {
+    if (!contra) return;
+    setCargando(true); setAviso(null);
+    try {
+      const d = await apiFetch(`/api/comparar-cuatrimestres?actual_id=${cuatId}&anterior_id=${contra}`);
+      setDatos(d);
+      if (d.aviso_periodo) setAviso({ tipo: 'aviso', texto: d.aviso_periodo });
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setCargando(false);
+  };
+
+  const ESTADOS = {
+    NUEVA: { txt: '🆕 Nueva', cls: 'bg-blue-100 text-blue-800' },
+    DEJO_DE_DICTARSE: { txt: '⛔ Ya no se dicta', cls: 'bg-slate-200 text-slate-600' },
+    SUBE_FUERTE: { txt: '📈 Sube', cls: 'bg-emerald-100 text-emerald-800' },
+    BAJA_FUERTE: { txt: '📉 Baja', cls: 'bg-red-100 text-red-800' },
+    ESTABLE: { txt: 'Estable', cls: 'bg-slate-100 text-slate-500' },
+  };
+
+  const filas = (datos?.catedras || []).filter(f => {
+    if (filtro === 'baja') return f.estado === 'BAJA_FUERTE';
+    if (filtro === 'sube') return f.estado === 'SUBE_FUERTE';
+    if (filtro === 'nuevas') return f.estado === 'NUEVA';
+    if (filtro === 'bajas') return f.estado === 'DEJO_DE_DICTARSE';
+    return true;
+  });
+
+  return (
+    <div className="p-8">
+      <h2 className="text-2xl font-bold text-slate-800">📊 Comparar con el mismo cuatrimestre de otro año</h2>
+      <p className="text-slate-500 text-sm mt-1 mb-5">
+        La comparación se hace siempre entre cuatrimestres del mismo período (1° contra 1°, 2° contra 2°),
+        porque las cátedras que se dictan cambian entre semestres.
+      </p>
+
+      <div className="bg-white rounded-xl border p-4 mb-5">
+        <div className="flex gap-3 items-end flex-wrap">
+          <div className="flex-1 min-w-[200px]">
+            <label className="text-xs text-slate-500">Cuatrimestre actual</label>
+            <p className="font-bold text-slate-800 mt-1">
+              {homologos?.actual?.nombre || '—'}
+              {homologos?.periodo && <span className="ml-2 text-xs font-normal text-slate-400">({homologos.periodo})</span>}
+            </p>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <label className="text-xs text-slate-500">Comparar contra</label>
+            <select value={contra} onChange={e => setContra(e.target.value)}
+              className="w-full border rounded-lg px-3 py-2 mt-1 text-sm">
+              <option value="">Elegí un cuatrimestre</option>
+              {(homologos?.homologos || []).map(h => (
+                <option key={h.id} value={h.id}>{h.nombre}</option>
+              ))}
+            </select>
+          </div>
+          <button onClick={comparar} disabled={!contra || cargando}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 disabled:opacity-50">
+            {cargando ? '⏳ Comparando...' : '📊 Comparar'}
+          </button>
+        </div>
+        {homologos && (homologos.homologos || []).length === 0 && (
+          <p className="text-xs text-amber-600 mt-2">
+            No hay otro cuatrimestre del mismo período cargado para comparar.
+          </p>
+        )}
+      </div>
+
+      {aviso && (
+        <div className={`rounded-lg p-3 mb-4 text-sm ${aviso.tipo === 'error'
+          ? 'bg-red-50 text-red-800 border border-red-200'
+          : 'bg-amber-50 text-amber-800 border border-amber-200'}`}>
+          ⚠️ {aviso.texto}
+        </div>
+      )}
+
+      {datos && (
+        <>
+          <div className="grid grid-cols-4 gap-3 mb-5">
+            <div className="bg-white border rounded-xl p-3">
+              <p className="text-[11px] text-slate-500">Inscripciones</p>
+              <p className="text-2xl font-bold text-slate-800">{datos.resumen.inscriptos_actual}</p>
+              <p className={`text-xs font-bold ${datos.resumen.delta_inscriptos >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                {datos.resumen.delta_inscriptos >= 0 ? '▲' : '▼'} {Math.abs(datos.resumen.delta_inscriptos)}
+                {' '}({datos.resumen.porcentaje_inscriptos > 0 ? '+' : ''}{datos.resumen.porcentaje_inscriptos}%)
+              </p>
+              <p className="text-[10px] text-slate-400">antes: {datos.resumen.inscriptos_anterior}</p>
+            </div>
+            <div className="bg-white border rounded-xl p-3">
+              <p className="text-[11px] text-slate-500">Cátedras que se dictan</p>
+              <p className="text-2xl font-bold text-slate-800">{datos.resumen.catedras_actual}</p>
+              <p className="text-xs text-slate-500">antes: {datos.resumen.catedras_anterior}</p>
+              <p className="text-[10px] text-blue-600">{datos.resumen.catedras_nuevas} nuevas · {datos.resumen.catedras_dadas_de_baja} de baja</p>
+            </div>
+            <div className="bg-white border rounded-xl p-3">
+              <p className="text-[11px] text-slate-500">Docentes con clases</p>
+              <p className="text-2xl font-bold text-slate-800">{datos.resumen.docentes_actual}</p>
+              <p className="text-xs text-slate-500">antes: {datos.resumen.docentes_anterior}</p>
+            </div>
+            <div className="bg-white border rounded-xl p-3">
+              <p className="text-[11px] text-slate-500">Movimiento de docentes</p>
+              <p className="text-lg font-bold text-emerald-600">+{datos.resumen.docentes_nuevos} nuevos</p>
+              <p className="text-lg font-bold text-red-600">−{datos.resumen.docentes_que_no_siguen} no siguen</p>
+            </div>
+          </div>
+
+          <div className="flex gap-2 mb-3 flex-wrap">
+            {[['todas','Todas'],['baja','📉 Bajaron fuerte'],['sube','📈 Subieron fuerte'],
+              ['nuevas','🆕 Nuevas'],['bajas','⛔ Ya no se dictan']].map(([k,l]) => (
+              <button key={k} onClick={() => setFiltro(k)}
+                className={`px-3 py-1.5 rounded-lg text-xs ${filtro === k ? 'bg-blue-600 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}>{l}</button>
+            ))}
+          </div>
+
+          <div className="bg-white rounded-xl border shadow-sm overflow-hidden mb-5">
+            <table className="w-full text-sm">
+              <thead><tr className="bg-slate-800 text-white text-xs">
+                <th className="p-2 text-left w-20">Código</th>
+                <th className="p-2 text-left">Cátedra</th>
+                <th className="p-2 text-center w-24">{datos.actual.nombre}</th>
+                <th className="p-2 text-center w-24">{datos.anterior.nombre}</th>
+                <th className="p-2 text-center w-28">Diferencia</th>
+                <th className="p-2 text-center w-36">Estado</th>
+              </tr></thead>
+              <tbody>
+                {filas.map((f, i) => {
+                  const e = ESTADOS[f.estado] || ESTADOS.ESTABLE;
+                  return (
+                    <tr key={i} className="border-b hover:bg-slate-50">
+                      <td className="p-2 font-mono text-xs">{f.codigo}</td>
+                      <td className="p-2">{f.nombre}</td>
+                      <td className="p-2 text-center font-bold">{f.actual}</td>
+                      <td className="p-2 text-center text-slate-500">{f.anterior}</td>
+                      <td className="p-2 text-center">
+                        <span className={`font-bold ${f.delta > 0 ? 'text-emerald-600' : f.delta < 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                          {f.delta > 0 ? '+' : ''}{f.delta}
+                          {f.anterior > 0 && <span className="text-[10px] ml-1">({f.porcentaje > 0 ? '+' : ''}{f.porcentaje}%)</span>}
+                        </span>
+                      </td>
+                      <td className="p-2 text-center">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${e.cls}`}>{e.txt}</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border overflow-hidden">
+              <div className="bg-red-50 px-4 py-2 text-sm font-bold text-red-800">
+                Docentes que no siguen ({datos.resumen.docentes_que_no_siguen})
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {datos.docentes_que_no_siguen.length === 0
+                  ? <p className="p-4 text-xs text-slate-400">Ninguno.</p>
+                  : datos.docentes_que_no_siguen.map((d, i) => (
+                    <div key={i} className="px-4 py-1.5 border-b text-xs">
+                      <span className="font-medium">{d.nombre}</span>
+                      <span className="text-slate-400 ml-2">{d.catedras.join(', ')}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border overflow-hidden">
+              <div className="bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-800">
+                Docentes nuevos ({datos.resumen.docentes_nuevos})
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {datos.docentes_nuevos.length === 0
+                  ? <p className="p-4 text-xs text-slate-400">Ninguno.</p>
+                  : datos.docentes_nuevos.map((d, i) => (
+                    <div key={i} className="px-4 py-1.5 border-b text-xs">
+                      <span className="font-medium">{d.nombre}</span>
+                      <span className="text-slate-400 ml-2">{d.catedras.join(', ')}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ==================== v18.1: CAMBIAR CONTRASEÑA ====================
+function CambiarClaveModal({ onClose }) {
+  const [cual, setCual] = useState('editor');
+  const [actual, setActual] = useState('');
+  const [nueva, setNueva] = useState('');
+  const [repetir, setRepetir] = useState('');
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState(null);
+  const [verClaves, setVerClaves] = useState(false);
+
+  const guardar = async () => {
+    setAviso(null);
+    if (nueva !== repetir) return setAviso({ tipo: 'error', texto: 'Las contraseñas nuevas no coinciden' });
+    if (nueva.length < 6) return setAviso({ tipo: 'error', texto: 'Debe tener al menos 6 caracteres' });
+    setGuardando(true);
+    try {
+      const r = await apiFetch('/api/auth/cambiar-clave', {
+        method: 'POST',
+        body: JSON.stringify({ clave_actual: actual, clave_nueva: nueva, cual }),
+      });
+      setAviso({ tipo: 'ok', texto: r.mensaje + ' Avisale al equipo que corresponda.' });
+      setActual(''); setNueva(''); setRepetir('');
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setGuardando(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl p-6 max-w-lg w-full">
+        <h3 className="text-lg font-bold mb-1">🔑 Cambiar contraseña</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          Para autorizar el cambio hay que ingresar la contraseña de edición vigente,
+          sin importar cuál de las dos se quiera modificar.
+        </p>
+
+        <div className="bg-slate-50 border rounded-lg p-3 mb-4 text-xs text-slate-600">
+          <p className="font-bold text-slate-700 mb-1">Los dos niveles de acceso</p>
+          <p><b>Edición:</b> importa, modifica y borra. Sólo para quienes arman los horarios.</p>
+          <p><b>Consulta:</b> ve y exporta, pero no puede modificar nada. Para el resto del equipo.</p>
+        </div>
+
+        <label className="text-sm text-slate-600 font-medium">¿Cuál querés cambiar?</label>
+        <div className="flex gap-2 mt-1 mb-3">
+          {[['editor', '🔧 La de edición'], ['consulta', '👁️ La de consulta']].map(([k, l]) => (
+            <button key={k} onClick={() => { setCual(k); setAviso(null); }}
+              className={`flex-1 py-2 rounded-lg text-sm font-medium ${cual === k
+                ? 'bg-slate-800 text-white' : 'bg-slate-100 hover:bg-slate-200'}`}>{l}</button>
+          ))}
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-sm text-slate-600">Contraseña de edición actual</label>
+            <input type={verClaves ? 'text' : 'password'} value={actual}
+              onChange={e => { setActual(e.target.value); setAviso(null); }}
+              className="w-full border rounded-lg px-3 py-2 mt-1" autoFocus />
+          </div>
+          <div>
+            <label className="text-sm text-slate-600">
+              Contraseña nueva {cual === 'editor' ? 'de edición' : 'de consulta'}
+            </label>
+            <input type={verClaves ? 'text' : 'password'} value={nueva}
+              onChange={e => { setNueva(e.target.value); setAviso(null); }}
+              className="w-full border rounded-lg px-3 py-2 mt-1" />
+          </div>
+          <div>
+            <label className="text-sm text-slate-600">Repetir la contraseña nueva</label>
+            <input type={verClaves ? 'text' : 'password'} value={repetir}
+              onChange={e => { setRepetir(e.target.value); setAviso(null); }}
+              className="w-full border rounded-lg px-3 py-2 mt-1"
+              onKeyDown={e => e.key === 'Enter' && guardar()} />
+          </div>
+          <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
+            <input type="checkbox" checked={verClaves} onChange={e => setVerClaves(e.target.checked)} />
+            Mostrar las contraseñas mientras escribo
+          </label>
+        </div>
+
+        {aviso && (
+          <div className={`rounded-lg p-3 my-3 text-sm ${aviso.tipo === 'ok'
+            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+            : 'bg-red-50 text-red-800 border border-red-200'}`}>
+            {aviso.tipo === 'ok' ? '✅ ' : '⚠️ '}{aviso.texto}
+          </div>
+        )}
+
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 my-3 text-xs text-amber-800">
+          ⚠️ Anotá la contraseña nueva en un lugar seguro antes de guardar. Si se pierde,
+          recuperarla requiere entrar a la base de datos.
+        </div>
+
+        <div className="flex gap-2">
+          <button onClick={guardar} disabled={guardando || !actual || !nueva}
+            className="flex-1 py-2.5 bg-slate-800 text-white rounded-lg font-bold hover:bg-slate-700 disabled:opacity-50">
+            {guardando ? '⏳ Guardando...' : '🔑 Cambiar contraseña'}
+          </button>
+          <button onClick={onClose} className="flex-1 py-2.5 bg-slate-100 rounded-lg hover:bg-slate-200">
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== v18.0: RESPALDOS Y DESHACER ====================
+function RespaldosView({ cuatrimestre, cuatrimestres, recargar }) {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [trabajando, setTrabajando] = useState(null);
+  const [aviso, setAviso] = useState(null);
+  const { puedeEditar } = usarRol();
+
+  const cargar = async () => {
+    setCargando(true);
+    try {
+      const cuatId = cuatrimestre !== 'todos' ? `?cuatrimestre_id=${cuatrimestre}` : '';
+      setDatos(await apiFetch(`/api/respaldos${cuatId}`));
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setCargando(false);
+  };
+  useEffect(() => { cargar(); }, [cuatrimestre]);
+
+  const restaurar = async (r) => {
+    if (!window.confirm(
+      `¿Restaurar el estado del ${r.creado_en}?\n\n` +
+      `Se van a reponer ${r.cantidad} asignaciones y se descartará lo cargado después de ese momento.\n\n` +
+      `Antes de restaurar se guarda una copia del estado actual, así que esto también se puede deshacer.`
+    )) return;
+    setTrabajando(r.id); setAviso(null);
+    try {
+      const res = await apiFetch(`/api/respaldos/${r.id}/restaurar`, { method: 'POST' });
+      setAviso({ tipo: 'ok', texto: res.mensaje });
+      await cargar();
+      if (recargar) recargar();
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setTrabajando(null);
+  };
+
+  if (cargando) return <div className="p-8 text-center text-slate-500">⏳ Cargando respaldos...</div>;
+  const lista = datos?.respaldos || [];
+
+  return (
+    <div className="p-8 max-w-5xl">
+      <h2 className="text-2xl font-bold text-slate-800">↩️ Deshacer una importación</h2>
+      <p className="text-slate-500 text-sm mt-1 mb-5">
+        Cada vez que se importan horarios, el sistema guarda automáticamente una copia del
+        estado anterior. Si se subió el archivo equivocado o una versión incompleta, se puede
+        volver atrás desde acá.
+      </p>
+
+      {aviso && (
+        <div className={`rounded-lg p-3 mb-4 text-sm ${aviso.tipo === 'ok'
+          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+          : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {aviso.tipo === 'ok' ? '✅ ' : '⚠️ '}{aviso.texto}
+        </div>
+      )}
+
+      {lista.length === 0 ? (
+        <div className="bg-slate-50 border rounded-xl p-8 text-center">
+          <p className="text-4xl mb-2">📦</p>
+          <p className="text-slate-500">Todavía no hay respaldos. Se generan solos al importar horarios.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+          <table className="w-full text-sm">
+            <thead><tr className="bg-slate-800 text-white text-xs">
+              <th className="p-3 text-left">Fecha y hora</th>
+              <th className="p-3 text-left">Motivo</th>
+              <th className="p-3 text-left">Cuatrimestre</th>
+              <th className="p-3 text-center">Asignaciones</th>
+              <th className="p-3 text-center w-40"></th>
+            </tr></thead>
+            <tbody>
+              {lista.map((r, i) => (
+                <tr key={r.id} className={`border-b hover:bg-slate-50 ${i === 0 ? 'bg-amber-50' : ''}`}>
+                  <td className="p-3 font-mono text-xs">
+                    {r.creado_en}
+                    {i === 0 && <span className="ml-2 px-1.5 py-0.5 bg-amber-500 text-white rounded text-[9px] font-bold">MÁS RECIENTE</span>}
+                  </td>
+                  <td className="p-3 text-xs text-slate-600">{r.motivo}</td>
+                  <td className="p-3 text-xs">{r.cuatrimestre}</td>
+                  <td className="p-3 text-center font-bold">{r.cantidad}</td>
+                  <td className="p-3 text-center">
+                    <SoloEditor>
+                      <button onClick={() => restaurar(r)} disabled={trabajando === r.id || !puedeEditar}
+                        className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-bold hover:bg-slate-700 disabled:opacity-50">
+                        {trabajando === r.id ? '⏳ Restaurando...' : '↩️ Restaurar este estado'}
+                      </button>
+                    </SoloEditor>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="text-xs text-slate-400 mt-3">
+        Se conservan los últimos 15 respaldos de cada cuatrimestre.
+      </p>
+    </div>
+  );
+}
+
+// ==================== v18.0: CARGA HORARIA POR DOCENTE ====================
+function CargaHorariaView({ cuatrimestre }) {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [limite, setLimite] = useState(20);
+  const [abierto, setAbierto] = useState({});
+  const [buscar, setBuscar] = useState('');
+
+  useEffect(() => {
+    const cargar = async () => {
+      setCargando(true);
+      try {
+        const cuatId = cuatrimestre !== 'todos' ? `&cuatrimestre_id=${cuatrimestre}` : '';
+        setDatos(await apiFetch(`/api/docentes/carga-horaria?limite=${limite}${cuatId}`));
+      } catch (e) { console.error(e); }
+      setCargando(false);
+    };
+    cargar();
+  }, [cuatrimestre, limite]);
+
+  const bajarHorarios = async (docenteId) => {
+    const cuatId = cuatrimestre !== 'todos' ? `cuatrimestre_id=${cuatrimestre}&` : '';
+    const url = `${API_URL}/api/exportar/horarios-docentes?${cuatId}${docenteId ? `docente_id=${docenteId}` : ''}`;
+    try {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = docenteId ? 'horario_docente.xlsx' : 'horarios_por_docente.xlsx';
+      a.click(); URL.revokeObjectURL(a.href);
+    } catch (e) { alert('Error: ' + e.message); }
+  };
+
+  if (cargando) return <div className="p-8 text-center text-slate-500">⏳ Calculando carga horaria...</div>;
+  const docentes = (datos?.docentes || []).filter(d =>
+    !buscar || d.nombre.toLowerCase().includes(buscar.toLowerCase()));
+
+  return (
+    <div className="p-8">
+      <div className="flex justify-between items-start mb-5">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">⏱️ Carga horaria por docente</h2>
+          <p className="text-slate-500 text-sm mt-1">
+            Horas semanales de cada docente sumando todas sus cátedras y sedes.
+            Si una clase no tiene hora de fin, se estima en 1 hora y media.
+          </p>
+        </div>
+        <button onClick={() => bajarHorarios(null)}
+          className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700">
+          📥 Bajar horarios de todos
+        </button>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className="bg-slate-800 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{datos?.docentes_con_carga || 0}</p>
+          <p className="text-[11px] opacity-70">Docentes con clases</p></div>
+        <div className="bg-blue-600 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{datos?.horas_totales || 0}</p>
+          <p className="text-[11px] opacity-80">Horas semanales totales</p></div>
+        <div className="bg-red-600 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{datos?.exceden_limite || 0}</p>
+          <p className="text-[11px] opacity-80">Superan el límite</p></div>
+        <div className="bg-slate-400 text-white rounded-xl p-3 text-center">
+          <p className="text-2xl font-bold">{datos?.docentes_sin_asignacion || 0}</p>
+          <p className="text-[11px] opacity-80">Sin ninguna clase</p></div>
+      </div>
+
+      <div className="flex gap-3 items-center mb-4">
+        <input type="text" placeholder="🔍 Buscar docente..." value={buscar}
+          onChange={e => setBuscar(e.target.value)}
+          className="px-3 py-2 border rounded-lg text-sm flex-1" />
+        <label className="text-sm text-slate-600 flex items-center gap-2">
+          Límite de horas:
+          <select value={limite} onChange={e => setLimite(parseInt(e.target.value))}
+            className="border rounded px-2 py-1.5 text-sm">
+            {[10, 15, 20, 25, 30, 40].map(n => <option key={n} value={n}>{n} hs</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-slate-800 text-white text-xs">
+            <th className="p-2 w-8"></th>
+            <th className="p-2 text-left">Docente</th>
+            <th className="p-2 text-center w-24">Horas</th>
+            <th className="p-2 text-center w-20">Clases</th>
+            <th className="p-2 text-center w-20">Cátedras</th>
+            <th className="p-2 text-left w-56">Sedes</th>
+            <th className="p-2 text-center w-28"></th>
+          </tr></thead>
+          <tbody>
+            {docentes.map(d => {
+              const abierta = abierto[d.docente_id];
+              return (
+                <React.Fragment key={d.docente_id}>
+                  <tr className={`border-b hover:bg-slate-50 ${d.excede_limite ? 'bg-red-50' : ''}`}>
+                    <td className="p-2 text-center cursor-pointer"
+                      onClick={() => setAbierto(p => ({...p, [d.docente_id]: !abierta}))}>
+                      {abierta ? '▼' : '▶'}
+                    </td>
+                    <td className="p-2 font-medium">{d.nombre}</td>
+                    <td className="p-2 text-center">
+                      <span className={`font-bold ${d.excede_limite ? 'text-red-600' : 'text-slate-700'}`}>
+                        {d.horas} hs
+                      </span>
+                      {d.excede_limite && <span className="block text-[9px] text-red-500">supera el límite</span>}
+                    </td>
+                    <td className="p-2 text-center">{d.clases}</td>
+                    <td className="p-2 text-center">{d.cantidad_catedras}</td>
+                    <td className="p-2 text-xs text-slate-500">{d.sedes.join(', ') || '—'}</td>
+                    <td className="p-2 text-center">
+                      <button onClick={() => bajarHorarios(d.docente_id)}
+                        className="px-2 py-1 bg-slate-100 rounded text-[10px] hover:bg-slate-200">
+                        📥 Su horario
+                      </button>
+                    </td>
+                  </tr>
+                  {abierta && (
+                    <tr className="bg-slate-50 border-b">
+                      <td></td>
+                      <td colSpan={6} className="p-3">
+                        <table className="w-full text-xs">
+                          <thead><tr className="text-slate-500">
+                            <th className="text-left p-1">Cátedra</th>
+                            <th className="text-left p-1 w-24">Día</th>
+                            <th className="text-left p-1 w-32">Horario</th>
+                            <th className="text-left p-1 w-32">Sede</th>
+                          </tr></thead>
+                          <tbody>
+                            {d.detalle.map((x, i) => (
+                              <tr key={i} className="border-t">
+                                <td className="p-1">{x.catedra}</td>
+                                <td className="p-1">{x.dia}</td>
+                                <td className="p-1">{x.hora}{x.hora_fin ? ` – ${x.hora_fin}` : ''}</td>
+                                <td className="p-1">{x.sede}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-slate-500 mt-3 text-center">{docentes.length} docentes</p>
+    </div>
+  );
+}
+
+// ==================== v18.0: NOMBRES DE DOCENTES (NORMALIZADOR) ====================
+function NombresDocentesView({ docentes, recargar }) {
+  const [alias, setAlias] = useState([]);
+  const [analisis, setAnalisis] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [trabajando, setTrabajando] = useState(false);
+  const [aviso, setAviso] = useState(null);
+  const { puedeEditar } = usarRol();
+
+  const cargar = async () => {
+    try { const r = await apiFetch('/api/docentes/alias'); setAlias(r.alias || []); }
+    catch (e) { setAlias([]); }
+    setCargando(false);
+  };
+  useEffect(() => { cargar(); }, []);
+
+  const sembrar = async () => {
+    setTrabajando(true); setAviso(null);
+    try {
+      const r = await apiFetch('/api/docentes/alias/sembrar', { method: 'POST' });
+      setAviso({ tipo: 'ok', texto: r.mensaje });
+      await cargar();
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+    setTrabajando(false);
+  };
+
+  const analizar = () => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = '.xlsx';
+    input.onchange = async (ev) => {
+      const f = ev.target.files?.[0]; if (!f) return;
+      setTrabajando(true); setAviso(null);
+      try {
+        const form = new FormData(); form.append('file', f);
+        const res = await fetch(`${API_URL}/api/docentes/alias/analizar`, { method: 'POST', body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Error');
+        setAnalisis(data);
+      } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+      setTrabajando(false);
+    };
+    input.click();
+  };
+
+  const confirmar = async (texto, docenteId) => {
+    if (!docenteId) return;
+    try {
+      await apiFetch('/api/docentes/alias', {
+        method: 'POST', body: JSON.stringify({ alias: texto, docente_id: parseInt(docenteId) }),
+      });
+      setAnalisis(a => ({ ...a, a_revisar: a.a_revisar.filter(x => x.texto !== texto) }));
+      await cargar();
+    } catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+  };
+
+  const borrar = async (id) => {
+    try { await apiFetch(`/api/docentes/alias/${id}`, { method: 'DELETE' }); await cargar(); }
+    catch (e) { setAviso({ tipo: 'error', texto: e.message }); }
+  };
+
+  if (cargando) return <div className="p-8 text-center text-slate-500">⏳ Cargando...</div>;
+
+  return (
+    <div className="p-8 max-w-5xl">
+      <h2 className="text-2xl font-bold text-slate-800">🔤 Nombres de docentes</h2>
+      <p className="text-slate-500 text-sm mt-1 mb-5">
+        Acá se guardan las equivalencias entre cómo se escribe un docente en los Excel y cómo
+        figura en el sistema. Se aplican solas al importar horarios, así no hace falta corregir
+        los nombres a mano antes de cada importación.
+      </p>
+
+      {aviso && (
+        <div className={`rounded-lg p-3 mb-4 text-sm ${aviso.tipo === 'ok'
+          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+          : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {aviso.tipo === 'ok' ? '✅ ' : '⚠️ '}{aviso.texto}
+        </div>
+      )}
+
+      <div className="flex gap-2 mb-5">
+        <SoloEditor>
+          <button onClick={analizar} disabled={trabajando || !puedeEditar}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 disabled:opacity-50">
+            🔍 Revisar un Excel antes de importarlo
+          </button>
+        </SoloEditor>
+        <SoloEditor>
+          <button onClick={sembrar} disabled={trabajando || !puedeEditar}
+            className="px-4 py-2 bg-slate-200 rounded-lg text-sm hover:bg-slate-300 disabled:opacity-50">
+            ⚡ Cargar las correcciones históricas
+          </button>
+        </SoloEditor>
+      </div>
+
+      {analisis && (
+        <div className="bg-white rounded-xl border shadow-sm p-4 mb-5">
+          <p className="font-bold text-slate-800 mb-1">Resultado de la revisión</p>
+          <p className="text-sm text-slate-500 mb-3">
+            {analisis.reconocidos} de {analisis.total_nombres} nombres se reconocen bien.
+            {analisis.a_revisar.length > 0
+              ? ` Quedan ${analisis.a_revisar.length} para confirmar.`
+              : ' No hay nada para corregir.'}
+          </p>
+          {analisis.a_revisar.length > 0 && (
+            <table className="w-full text-sm">
+              <thead><tr className="bg-slate-100 text-xs">
+                <th className="p-2 text-left">Como figura en el Excel</th>
+                <th className="p-2 text-left">¿A qué docente corresponde?</th>
+                <th className="p-2 text-center w-24">Parecido</th>
+                <th className="p-2 w-28"></th>
+              </tr></thead>
+              <tbody>
+                {analisis.a_revisar.map((x, i) => (
+                  <FilaRevision key={i} item={x} docentes={docentes} onConfirmar={confirmar} />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <div className="bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700">
+          Equivalencias guardadas ({alias.length})
+        </div>
+        {alias.length === 0 ? (
+          <p className="p-6 text-center text-slate-400 text-sm">
+            Todavía no hay equivalencias. Cargá las históricas con el botón de arriba.
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead><tr className="bg-slate-50 text-xs text-slate-500">
+              <th className="p-2 text-left">Nombre en el Excel</th>
+              <th className="p-2 text-left">Docente del sistema</th>
+              <th className="p-2 text-center w-24">Origen</th>
+              <th className="p-2 w-16"></th>
+            </tr></thead>
+            <tbody>
+              {alias.map(a => (
+                <tr key={a.id} className="border-b hover:bg-slate-50">
+                  <td className="p-2 font-mono text-xs">{a.alias}</td>
+                  <td className="p-2">{a.docente}</td>
+                  <td className="p-2 text-center">
+                    <span className="px-1.5 py-0.5 bg-slate-100 rounded text-[9px]">{a.origen}</span>
+                  </td>
+                  <td className="p-2 text-center">
+                    <SoloEditor>
+                      <button onClick={() => borrar(a.id)} disabled={!puedeEditar}
+                        className="text-red-500 hover:text-red-700 text-xs">Quitar</button>
+                    </SoloEditor>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FilaRevision({ item, docentes, onConfirmar }) {
+  const [elegido, setElegido] = useState(item.sugerencia_id ? String(item.sugerencia_id) : '');
+  return (
+    <tr className="border-b">
+      <td className="p-2 font-mono text-xs">{item.texto}</td>
+      <td className="p-2">
+        <BuscadorDocente docentes={docentes} valor={elegido} onChange={setElegido} />
+      </td>
+      <td className="p-2 text-center">
+        <span className={`text-xs font-bold ${item.confianza >= 80 ? 'text-emerald-600'
+          : item.confianza >= 60 ? 'text-amber-600' : 'text-slate-400'}`}>
+          {item.confianza}%
+        </span>
+      </td>
+      <td className="p-2 text-center">
+        <button onClick={() => onConfirmar(item.texto, elegido)} disabled={!elegido}
+          className="px-2 py-1 bg-emerald-600 text-white rounded text-[10px] font-bold hover:bg-emerald-700 disabled:opacity-40">
+          Confirmar
+        </button>
+      </td>
+    </tr>
+  );
+}
+
 // ==================== v17.0: CÁTEDRAS QUE SE DICTAN (Paso 1) ====================
 // "Se dicta" = funciona este cuatrimestre (puede ser con video pregrabado).
 // "Se abre"  = además tiene docente asignado en vivo.
@@ -3052,14 +3979,16 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
     cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1')
   );
 
-  const subirArchivo = async (endpoint, label, extraParams = '') => {
+  // v18.0: 'multiple' permite subir varios archivos de una (BCE/BEA usa uno por cátedra)
+  const subirArchivo = async (endpoint, label, extraParams = '', multiple = false, campo = 'file') => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.xlsx,.xls';
+    if (multiple) input.multiple = true;
     input.onchange = async (e) => {
-      const file = e.target.files[0]; if (!file) return;
+      const archivos = Array.from(e.target.files || []); if (!archivos.length) return;
       setUploading(label); setResultado(null);
       const formData = new FormData();
-      formData.append('file', file);
+      archivos.forEach(f => formData.append(campo, f));
       try {
         const res = await fetch(`${API_URL}${endpoint}${extraParams}`, { method: 'POST', body: formData });
         const data = await res.json();
@@ -3250,6 +4179,10 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
                 </details>
               )}
             </div>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
+              ↩️ Antes de aplicar, el sistema guarda una copia del estado actual.
+              Si te equivocaste de archivo podés volver atrás desde <b>Deshacer importación</b>.
+            </div>
             <div className="flex gap-3">
               <button onClick={async () => {
                 setUploading('Aplicar Horarios');
@@ -3324,10 +4257,13 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           Si la cátedra todavía no existe en el sistema, se crea automáticamente.
           Los DNI repetidos dentro del archivo se cuentan una sola vez.
         </p>
-        <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`)}
+        <p className="text-xs text-emerald-700 mb-3 font-medium">
+          ✔️ Podés seleccionar varios archivos juntos y se procesan todos de una vez.
+        </p>
+        <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`, true, 'files')}
           disabled={uploading === 'BCE/BEA'}
           className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-orange-500 text-white hover:bg-orange-600">
-          {uploading === 'BCE/BEA' ? '⏳...' : '📤 Subir Excel BCE/BEA'}
+          {uploading === 'BCE/BEA' ? '⏳...' : '📤 Subir archivos BCE/BEA (podés elegir varios)'}
         </button>
       </div>
 
@@ -3958,6 +4894,8 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
 // ==================== APP PRINCIPAL ====================
 export default function App() {
   const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
+  const [rol, setRol] = useState(() => localStorage.getItem('iea_rol') || 'editor');
+  const puedeEditar = rol !== 'consulta';
   const [activeView, setActiveView] = useState('dashboard');
   const [cuatrimestre, setCuatrimestre] = useState('todos');
   const [catedras, setCatedras] = useState([]);
@@ -3986,11 +4924,20 @@ export default function App() {
 
   useEffect(() => { if (autenticado) cargarDatos(); }, [cargarDatos, autenticado]);
 
-  if (!autenticado) return <LoginScreen onLogin={() => setAutenticado(true)} />;
+  if (!autenticado) return <LoginScreen onLogin={() => {
+    setRol(localStorage.getItem('iea_rol') || 'editor');
+    setAutenticado(true);
+  }} />;
   if (loading) return <div className="flex items-center justify-center min-h-screen"><p className="text-xl">⏳ Cargando sistema...</p></div>;
 
   return (
+    <RolContext.Provider value={{ rol, puedeEditar }}>
     <div className="flex min-h-screen bg-slate-100">
+      {!puedeEditar && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-400 text-slate-900 text-center py-1 text-xs font-bold">
+          👁️ Modo consulta — podés ver y exportar, pero no modificar datos
+        </div>
+      )}
       <Sidebar activeView={activeView} setActiveView={setActiveView} cuatrimestre={cuatrimestre}
         setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres}
         solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} solapCarrerasCount={solapCarrerasCount} />
@@ -4011,6 +4958,11 @@ export default function App() {
         {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {activeView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+        {activeView === 'carga_horaria' && <CargaHorariaView cuatrimestre={cuatrimestre} />}
+        {activeView === 'chequeo' && <ChequeoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} setActiveView={setActiveView} />}
+        {activeView === 'comparar' && <CompararView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+        {activeView === 'nombres_docentes' && <NombresDocentesView docentes={docentes} recargar={cargarDatos} />}
+        {activeView === 'respaldos' && <RespaldosView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
         {activeView === 'edi_alumnos' && <EdiAlumnosView cuatrimestre={cuatrimestre} />}
@@ -4018,5 +4970,6 @@ export default function App() {
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
       </main>
     </div>
+    </RolContext.Provider>
   );
 }
