@@ -8,6 +8,7 @@ from typing import List, Optional
 import io
 import re
 
+from app.institution import INSTITUCION
 from app.database import engine, get_db, Base
 from app.models.models import (
     Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
@@ -16,7 +17,12 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="16.0")
+app = FastAPI(title=INSTITUCION.titulo, version="16.0")
+
+@app.get("/api/institucion")
+def get_institucion():
+    """Perfil público de reglas; administrado por configuración del despliegue."""
+    return INSTITUCION.public_config()
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,8 +82,9 @@ def minutos_a_hora(m):
     if m is None: return None
     return f"{int(m)//60:02d}:{int(m)%60:02d}"
 
-def rangos_se_pisan(ini_a, fin_a, ini_b, fin_b, dur_default=90):
+def rangos_se_pisan(ini_a, fin_a, ini_b, fin_b, dur_default=None):
     """Compara dos franjas horarias reales. Si no hay hora_fin usa duración por defecto."""
+    if dur_default is None: dur_default = INSTITUCION.duracion_clase_minutos
     a1 = hora_a_minutos(ini_a); b1 = hora_a_minutos(ini_b)
     if a1 is None or b1 is None: return False
     a2 = hora_a_minutos(fin_a) or (a1 + dur_default)
@@ -391,7 +398,11 @@ async def startup():
     for m in migr:
         print(f"  [MIG] {m}")
     try:
-        from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+        if INSTITUCION.id == 'iea':
+            from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+        else:
+            # Los perfiles de otras instituciones empiezan sin catálogos ni personas del IEA.
+            SEDES, CATEDRAS, CURSOS, DOCENTES = (), (), (), ()
         for nombre, color in SEDES:
             if not db.query(Sede).filter(Sede.nombre == nombre).first():
                 db.add(Sede(nombre=nombre, color=color))
@@ -426,7 +437,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v11.0 iniciado")
+    print(f"{INSTITUCION.titulo} iniciado")
 
 # v18.1: dos niveles de acceso, con claves guardadas en la base de datos
 # para poder cambiarlas desde el sistema sin tocar el código.
@@ -703,7 +714,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             sede_cab = desg['tm_cab'] + desg['tn_cab']
             sede_vl = desg['tm_vl'] + desg['tn_vl']
             sede_cied = desg['tm_cied'] + desg['tn_cied'] + desg['virt_cied']
-            docentes_sugeridos = (1 if inscriptos <= 100 else (1 + -(-max(0, inscriptos - 100) // 100))) if inscriptos >= 10 else 0
+            docentes_sugeridos = INSTITUCION.docentes_sugeridos(inscriptos)
             cursos_vinc = []
             try:
                 for cc in (cat.cursos or []):
@@ -834,9 +845,9 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
     all_cats = db.query(Catedra).all()
     for cat in all_cats:
         total = total_map.get(cat.id, 0)
-        if total < 10: continue
+        if not INSTITUCION.requiere_docente(total): continue
         # Docentes necesarios vs asignados
-        docs_necesarios = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+        docs_necesarios = INSTITUCION.docentes_sugeridos(total)
         asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
         if cuatrimestre_id: asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
         asigs_list = asigs.all()
@@ -1019,11 +1030,11 @@ def checklist_cierre(cuatrimestre_id: int, limite_horas: int = 20, db: Session =
     for cat_id in se_dictan:
         if cat_id in con_docente: continue
         n = inscriptos.get(cat_id, 0)
-        if n >= 10:
+        if INSTITUCION.requiere_docente(n):
             cat = cats.get(cat_id)
             if cat: faltan_docente.append(f"{cat.codigo} {cat.nombre[:32]} ({n} inscriptos)")
     controles.append({
-        "id": "sin_docente", "titulo": "Cátedras con 10 o más inscriptos sin docente",
+        "id": "sin_docente", "titulo": f"Cátedras con {INSTITUCION.minimo_inscriptos_apertura} o más inscriptos sin docente",
         "explicacion": "Por criterio deberían abrirse con docente. Si van a quedar asincrónicas a propósito, forzá la decisión en Cátedras que se dictan.",
         "estado": "error" if faltan_docente else "ok",
         "cantidad": len(faltan_docente), "detalle": sorted(faltan_docente)[:30],
@@ -1159,7 +1170,7 @@ def checklist_cierre(cuatrimestre_id: int, limite_horas: int = 20, db: Session =
 def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
                            db: Session = Depends(get_db)):
     """Horas semanales acumuladas por docente, sumando todas sus cátedras y sedes.
-    Si una clase no tiene hora de fin se estima en 1h30."""
+    Si una clase no tiene hora de fin se usa la duración del perfil institucional."""
     q = db.query(Asignacion).filter(Asignacion.docente_id.isnot(None))
     if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = q.all()
@@ -1174,7 +1185,7 @@ def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
         })
         ini = hora_a_minutos(a.hora_inicio)
         fin = hora_a_minutos(getattr(a, 'hora_fin', None))
-        dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else 90
+        dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else INSTITUCION.duracion_clase_minutos
         info["minutos"] += dur
         info["clases"] += 1
         if a.catedra: info["catedras"].add(a.catedra.codigo)
@@ -1253,7 +1264,7 @@ def exportar_horarios_docentes(cuatrimestre_id: int = None, docente_id: int = No
         total_min = 0
         for a in sorted(info["asigs"], key=lambda x: (orden_dias.get(x.dia, 9), x.hora_inicio or "")):
             ini = hora_a_minutos(a.hora_inicio); fin = hora_a_minutos(getattr(a, 'hora_fin', None))
-            dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else 90
+            dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else INSTITUCION.duracion_clase_minutos
             total_min += dur
             valores = [
                 a.dia or "A confirmar", a.hora_inicio or "—",
@@ -1427,7 +1438,7 @@ def _inscriptos_por_catedra(db, cuatrimestre_id):
 
 def _estado_catedra(total, tiene_docente, se_dicta, forzada):
     """Devuelve (estado, sugerido). Estado real considera el forzado manual."""
-    if total >= 10: sugerido = "ABRIR"
+    if INSTITUCION.requiere_docente(total): sugerido = "ABRIR"
     elif total >= 1: sugerido = "ASINCRONICA"
     else: sugerido = "SIN_ALUMNOS"
     if not se_dicta: return "NO_SE_DICTA", sugerido
@@ -1653,8 +1664,8 @@ def asignar_docente_rapido(catedra_id: int, data: dict, db: Session = Depends(ge
 @app.get("/api/catedras/criterio-apertura")
 def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     """
-    >=10 total → ABRIR. 1 doc hasta 100, luego +1 cada 100 adicionales.
-    1-9 total → ASINCRÓNICA
+    Mínimo de apertura y cantidad por docente: definidos por el perfil institucional.
+    Entre 1 y el mínimo de apertura → ASINCRÓNICA
     0 → SIN ALUMNOS
     """
     from sqlalchemy import text
@@ -1671,10 +1682,10 @@ def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get
         total = total_map.get(cat.id, 0)
         if total == 0:
             sin_alumnos.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": 0})
-        elif total < 10:
+        elif not INSTITUCION.requiere_docente(total):
             asincronica.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total})
         else:
-            docs = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+            docs = INSTITUCION.docentes_sugeridos(total)
             # Check if already has asignacion
             tiene = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
             if cuatrimestre_id: tiene = tiene.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -3524,7 +3535,7 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
         cat_id = cat_info["id"] if cat_info else None
         insc = total_map.get(cat_id, 0) if cat_id else 0
         # Criterio
-        if insc >= 10: criterio = "ABRIR"
+        if INSTITUCION.requiere_docente(insc): criterio = "ABRIR"
         elif insc > 0: criterio = "ASINCRÓNICA"
         else: criterio = "SIN ALUMNOS"
         # Current assignment
@@ -3548,49 +3559,15 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
 
 
 # ===== v16.0: Control de Inscripciones =====
-CARRERA_NORMALIZE = {
-    'ACOMPAÑANTE TERAPÉUTICO': 'TECNICO SUPERIOR EN ACOMPAÑANTE  TERAPEUTICO',
-    'ADMINISTRACIÓN DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
-    'ADMINISTRACION DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
-    'ADMINISTRACION AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
-    'ADMINISTRACIÓN AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
-    'ADMINISTRACIÓN BANCARIA': 'TECNICO SUPERIOR EN ADMINISTRACION BANCARIA',
-    'CIENCIA DE DATOS E INTELIGENCIA ARTIFICIAL': 'TECNICO SUPERIOR EN CIENCIA DE DATOS',
-    'COMERCIO INTERNACIONAL': 'TECNICO SUPERIOR EN COMERCIO',
-    'COUNSELING': 'TECNICO SUPERIOR EN COUSELING',
-    'DESARROLLO HUMANO': 'TECNICO SUPERIOR EN DESARROLLO HUMANO',
-    'DESPACHANTE DE ADUANAS': 'TECNICO SUPERIOR EN DESPACHO ADUANERO',
-    'FINANZAS': 'TECNICO SUPERIOR EN FINANZAS',
-    'GESTORÍA': 'TECNICO SUPERIOR EN GESTORIA',
-    'GUIA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
-    'GUÍA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
-    'HOTELERÍA': 'TECNICO SUPERIOR EN HOTELERIA',
-    'LOGÍSTICA': 'TECNICO SUPERIOR EN LOGISTICA',
-    'LOGISTICA': 'TECNICO SUPERIOR EN LOGISTICA',
-    'MARKETING': 'TECNICO SUPERIOR EN MARKETING',
-    'NEGOCIOS DIGITALES': 'TECNICO SUPERIOR EN NEGOCIOS DIGITALES',
-    'ORGANIZACIÓN DE EVENTOS': 'TECNICO SUPERIOR EN ORGANIZACION DE EVENTOS',
-    'PERIODISMO DEPORTIVO': 'TECNICO SUPERIOR EN PERIODISMO DEPORTIVO',
-    'PSICOPEDAGOGÍA': 'TECNICO SUPERIOR EN PSICOPEDAGOGIA',
-    'PUBLICIDAD': 'TECNICO SUPERIOR EN PUBLICIDAD',
-    'RECURSOS HUMANOS': 'TECNICO SUPERIOR EN RECURSOS HUMANOS',
-    'RELACIONES PUBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
-    'RELACIONES PÚBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
-    'RÉGIMEN ADUANERO': 'TECNICO SUPERIOR EN REGIMEN ADUANERO',
-    'SEGURIDAD E HIGIENE': 'TECNICO SUPERIOR EN HIGIENE Y SEGURIDAD',
-    'SEGUROS': 'TECNICO SUPERIOR EN SEGUROS',
-    'TRABAJO SOCIAL': 'TECNICO SUPERIOR EN TRABAJO SOCIAL',
-    'TURISMO': 'TECNICO SUPERIOR EN TURISMO',
-}
 
 def _extract_carrera(curso):
     import re
     c = curso.upper().strip()
     c = re.split(r'\s*[\(]\s*(AVELLANEDA|CABALLITO|VICENTE|LINIERS|ONLINE|VIRTUAL|PILAR|MONTE|LA PLATA)', c)[0].strip()
     c = re.split(r'\s*[\-]\s*(CIED|CURSADA|CFE|DCFE|RDCFE|RMEDGC|RMEIGC|NO DISP|RD |RM |RES)', c)[0].strip().strip(' -')
-    return CARRERA_NORMALIZE.get(c, None)
+    return INSTITUCION.alias_carreras.get(c, c or None)
 
-def _calc_anno(fecha_str, inicio_str):
+def _calc_anno(fecha_str, inicio_str, anio_actual, numero_actual):
     import math
     try:
         if '/' in fecha_str:
@@ -3600,13 +3577,18 @@ def _calc_anno(fecha_str, inicio_str):
         else: return '3ER AÑO'
         inicio = (inicio_str or '').strip().lower()
         start = (year - 2020) * 2 + (1 if 'agosto' in inicio or 'ago' in inicio else 0)
-        current = (2026 - 2020) * 2  # Marzo 2026
+        current = (anio_actual - 2020) * 2 + numero_actual - 1
         cuats = max(1, current - start + 1)
         return {1:'1ER AÑO', 2:'2DO AÑO', 3:'3ER AÑO'}[min(3, math.ceil(cuats / 2))]
     except: return '3ER AÑO'
 
 @app.post("/api/control-inscripciones")
 async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    periodo = db.query(Cuatrimestre).filter(Cuatrimestre.id == cuatrimestre_id).first()
+    if not periodo:
+        raise HTTPException(status_code=404, detail="Seleccioná un período existente para el control")
+    if periodo.numero not in (1, 2):
+        raise HTTPException(status_code=422, detail="Este control requiere un calendario de dos períodos por año")
     from openpyxl import load_workbook
     import io, re
     content = await file.read()
@@ -3690,7 +3672,7 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
             stats['total'] += 1
             is_doble = 'DOBLE' in curso.upper()
             if is_doble: stats['doble'] += 1
-            anno = _calc_anno(fecha, inicio)
+            anno = _calc_anno(fecha, inicio, periodo.anio, periodo.numero)
             carrera_norm = _extract_carrera(curso)
             sede_norm = norm_sede_plan(sede, curso)
             plan_key = find_plan_key(sede_norm, carrera_norm)
@@ -3745,6 +3727,11 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
 
 @app.post("/api/control-inscripciones/exportar")
 async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    periodo = db.query(Cuatrimestre).filter(Cuatrimestre.id == cuatrimestre_id).first()
+    if not periodo:
+        raise HTTPException(status_code=404, detail="Seleccioná un período existente para el control")
+    if periodo.numero not in (1, 2):
+        raise HTTPException(status_code=422, detail="Este control requiere un calendario de dos períodos por año")
     from openpyxl import load_workbook, Workbook
     from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
     from starlette.responses import Response
@@ -3804,7 +3791,7 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
             fecha = str(vals[4] or '').strip(); inicio = str(vals[5] or '').strip()
             sede = str(vals[9] or '').strip(); curso = str(vals[10] or '').strip()
             if not nombre or not curso or curso == 'None': continue
-            anno = _calc_anno(fecha, inicio)
+            anno = _calc_anno(fecha, inicio, periodo.anio, periodo.numero)
             carrera_norm = _extract_carrera(curso)
             sede_n = _norm_sede_exp(sede, curso)
             plan_key = _find_pk(sede_n, carrera_norm)
@@ -3920,7 +3907,7 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
         cat_info = cat_map.get(cod)
         cat_id = cat_info["id"] if cat_info else None
         insc = total_map.get(cat_id, 0) if cat_id else 0
-        criterio = "ABRIR" if insc >= 10 else ("ASINCRÓNICA" if insc > 0 else "SIN ALUMNOS")
+        criterio = "ABRIR" if INSTITUCION.requiere_docente(insc) else ("ASINCRÓNICA" if insc > 0 else "SIN ALUMNOS")
         # Current assignments
         current_asigs = asig_map.get(cat_id, []) if cat_id else []
         tiene_docente = any(a['docente'] for a in current_asigs)
@@ -4145,7 +4132,7 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
         d = desglose.get(cat.id, {"total": 0, "tm": 0, "tn": 0, "cied": 0, "av": 0, "cab": 0, "vl": 0})
         if clave_sede and d.get(clave_sede, 0) < 1: continue
         total = d["total"]
-        sugerencia = "ABRIR (con docente)" if total >= 10 else ("ASINCRÓNICA (pregrabada)" if total >= 1 else "SIN ALUMNOS")
+        sugerencia = "ABRIR (con docente)" if INSTITUCION.requiere_docente(total) else ("ASINCRÓNICA (pregrabada)" if total >= 1 else "SIN ALUMNOS")
         existentes = asig_por_cat.get(cat.id, [])
         filas_cat = existentes if existentes else [None]
         for a in filas_cat:
@@ -4274,7 +4261,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
             d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
             d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
             d.get('virt',0) or '', s_av or '', s_cab or '', s_vl or '', s_cied or '', tot or ''])
-        if tot >= 10:
+        if INSTITUCION.requiere_docente(tot):
             tiene = any(1 for a in asigs if a.catedra_id == cat.id)
             if not tiene:
                 for cell in ws0[ws0.max_row]: cell.fill = YELLOW
@@ -4299,7 +4286,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
             d.get('virt',0) or '', tot or '',
             f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td,
             mod, a.dia or "Pend.", a.hora_inicio or "Pend.", a.sede.nombre if a.sede else "Remoto"])
-        if tot >= 10 and not a.docente_id:
+        if INSTITUCION.requiere_docente(tot) and not a.docente_id:
             for cell in ws1[ws1.max_row]: cell.fill = YELLOW
     for col, w in [('A',4),('B',8),('C',28),('D',7),('E',7),('F',7),('G',7),('H',7),('I',7),('J',7),('K',7),('L',7),('M',7),('N',9),('O',7),('P',26),('Q',10),('R',12),('S',10),('T',7),('U',16)]:
         ws1.column_dimensions[col].width = w
@@ -4530,9 +4517,9 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E40AF"); cell.alignment = Alignment(horizontal="center")
     for i, cat in enumerate(all_cats, 1):
         ic = total_insc_map.get(cat.id, 0)
-        if ic >= 10:
+        if INSTITUCION.requiere_docente(ic):
             criterio_txt = f"ABRIR ({ic} inscriptos)"
-            docs_sug = 1 if ic <= 100 else (1 + -(-max(0, ic - 100) // 100))
+            docs_sug = INSTITUCION.docentes_sugeridos(ic)
         elif ic > 0:
             criterio_txt = f"ASINCRÓNICA ({ic} inscriptos)"
             docs_sug = 0
@@ -4542,7 +4529,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
         decision = getattr(cat, 'decision_apertura', '') or ''
         notas_c = getattr(cat, 'notas', '') or ''
         ws_dec.append([i, cat.codigo, cat.nombre, ic, criterio_txt, docs_sug or '', decision, notas_c])
-        if ic >= 10 and not decision:
+        if INSTITUCION.requiere_docente(ic) and not decision:
             for cell in ws_dec[ws_dec.max_row]: cell.fill = YELLOW
     for col, w in [('A',4),('B',8),('C',30),('D',14),('E',22),('F',16),('G',28),('H',30)]:
         ws_dec.column_dimensions[col].width = w
@@ -4641,7 +4628,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
                 sede_p, carrera_p, anno_p, cod_p, nombre_p, dtm, htm, dtn, htn = r
                 cat_id_p = cat_code_to_id.get(cod_p)
                 insc_p = total_insc_map.get(cat_id_p, 0) if cat_id_p else 0
-                crit = "ABRIR" if insc_p >= 10 else ("ASINCRÓNICA" if insc_p > 0 else "SIN ALUMNOS")
+                crit = "ABRIR" if INSTITUCION.requiere_docente(insc_p) else ("ASINCRÓNICA" if insc_p > 0 else "SIN ALUMNOS")
                 # Current assignment
                 cat_asigs = asig_lookup_exp.get(cat_id_p, [])
                 doc_act = ', '.join([f"{a.docente.nombre} {a.docente.apellido}" for a in cat_asigs if a.docente]) or ''

@@ -1,0 +1,12 @@
+{
+  "name": "horarios-institution-validation",
+  "private": true,
+  "scripts": {"test": "node --test institution.test.cjs"},
+  "engines": {"node": ">=24"},
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "jsdom": "30.0.1",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  }
+}

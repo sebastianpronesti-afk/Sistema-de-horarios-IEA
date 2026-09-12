@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { InstitutionProvider, useInstitution } from './InstitutionContext';
 
 const API_URL = '';
 
@@ -66,10 +67,10 @@ function horaDeMinutos(m) {
   const hh = Math.floor(m / 60), mm = m % 60;
   return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
 }
-// Sugiere hora de fin 1h30 después del inicio
-function finSugerido(inicio) {
+// Sugiere el fin usando la duración institucional; no inventa horarios del día siguiente.
+function finSugerido(inicio, duracion) {
   const m = minutosDeHora(inicio);
-  return m === null ? '' : horaDeMinutos(m + 90);
+  return m === null || m + duracion >= 1440 ? '' : horaDeMinutos(m + duracion);
 }
 
 function sortByCodigo(a, b) {
@@ -156,6 +157,7 @@ function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar doce
 
 // ==================== SIDEBAR ====================
 function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount, solapCarrerasCount }) {
+  const institucion = useInstitution();
   const menuItems = [
     { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
     { id: 'chequeo', icon: '🚦', label: '¿Listo para publicar?', highlight: true },
@@ -187,7 +189,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
   return (
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
-        <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
+        <h1 className="text-xl font-bold text-white">{institucion.titulo}</h1>
         <p className="text-slate-500 text-sm">Sistema v16.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
@@ -260,6 +262,7 @@ function PieSidebar() {
 }
 
 function LoginScreen({ onLogin }) {
+  const institucion = useInstitution();
   const [clave, setClave] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -277,7 +280,7 @@ function LoginScreen({ onLogin }) {
     <div className="min-h-screen bg-slate-900 flex items-center justify-center">
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
+          <h1 className="text-3xl font-bold text-slate-800">{institucion.titulo}</h1>
           <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios</p>
         </div>
         <div className="space-y-4">
@@ -300,6 +303,7 @@ function LoginScreen({ onLogin }) {
 
 // ==================== MODAL EDITAR ASIGNACIÓN (v4.0 MEJORA 3) ====================
 function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar, catCodigo, catNombre }) {
+  const institucion = useInstitution();
   const [form, setForm] = useState({
     docente_id: asignacion.docente?.id?.toString() || '',
     modalidad: asignacion.modalidad || 'virtual_tm',
@@ -360,7 +364,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
             <div><label className="text-sm text-slate-600">Comienza:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio}
                 onChange={e => setForm({...form, hora_inicio: e.target.value,
-                  hora_fin: form.hora_fin || finSugerido(e.target.value)})}>
+                  hora_fin: form.hora_fin || finSugerido(e.target.value, institucion.duracion_clase_minutos)})}>
                 <option value="">Sin definir</option>
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
@@ -368,6 +372,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_fin || ''}
                 onChange={e => setForm({...form, hora_fin: e.target.value})}>
                 <option value="">Sin definir</option>
+                {form.hora_fin && !HORAS.includes(form.hora_fin) && <option value={form.hora_fin}>{form.hora_fin}</option>}
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
           </div>
@@ -390,6 +395,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
 
 // ==================== MODAL ASIGNAR CÁTEDRA ====================
 function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
+  const institucion = useInstitution();
   const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
   const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', hora_fin: '', recibe_alumnos_presenciales: false });
   const [error, setError] = useState('');
@@ -448,7 +454,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
             <div><label className="text-sm text-slate-600">Comienza:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio}
                 onChange={e => setForm({...form, hora_inicio: e.target.value,
-                  hora_fin: form.hora_fin || finSugerido(e.target.value)})}>
+                  hora_fin: form.hora_fin || finSugerido(e.target.value, institucion.duracion_clase_minutos)})}>
                 <option value="">Pendiente de confirmar</option>
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
@@ -456,6 +462,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_fin || ''}
                 onChange={e => setForm({...form, hora_fin: e.target.value})}>
                 <option value="">Pendiente de confirmar</option>
+                {form.hora_fin && !HORAS.includes(form.hora_fin) && <option value={form.hora_fin}>{form.hora_fin}</option>}
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
           </div>
@@ -830,6 +837,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
 
 // ==================== v12.0: DECISIONES - Módulo central ====================
 function DecisionesView({ catedras, cuatrimestre, recargar }) {
+  const institucion = useInstitution();
   const [criterio, setCriterio] = useState(null);
   const [sugerencias, setSugerencias] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -927,8 +935,8 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
         <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
           <p className="text-blue-800 font-semibold mb-2">Criterio sugerido (orientativo)</p>
           <div className="text-sm text-blue-700 space-y-1">
-            <p>• <strong>≥10 inscriptos total</strong> → sugiere <strong>ABRIR</strong> (asignar docente)</p>
-            <p>• <strong>1 a 9 inscriptos</strong> → sugiere <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
+            <p>• <strong>≥{institucion.minimo_inscriptos_apertura} inscriptos total</strong> → sugiere <strong>ABRIR</strong> (asignar docente)</p>
+            <p>• <strong>Con inscripciones, por debajo de {institucion.minimo_inscriptos_apertura}</strong> → sugiere <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
             <p>• <strong>0 inscriptos</strong> → sugiere <strong>no dictarla</strong></p>
           </div>
           <p className="text-xs text-blue-600 mt-2">
@@ -949,7 +957,7 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
       <div className="grid grid-cols-5 gap-3 mb-4">
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-emerald-600">{totalDecididas}</p><p className="text-xs">✅ Abiertas (con docente)</p></div>
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-amber-600">{totalPendAbrir}</p><p className="text-xs">⚠️ Pendientes reales</p></div>
-        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥10)</p></div>
+        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥{institucion.minimo_inscriptos_apertura})</p></div>
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-purple-600">{criterio?.stats?.total_asincronica||0}</p><p className="text-xs">Asincrónicas</p></div>
         <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold text-slate-400">{criterio?.stats?.total_sin_alumnos||0}</p><p className="text-xs">Sin alumnos</p></div>
       </div>
@@ -1031,6 +1039,7 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
 
 // ==================== v4.0 MEJORA 8: NECESITAN DOCENTE ====================
 function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], recargar }) {
+  const institucion = useInstitution();
   const [datos, setDatos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [asignando, setAsignando] = useState(null);
@@ -1072,7 +1081,7 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], reca
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
-        <p className="text-slate-500 text-sm">Cátedras con 10 o más inscriptos en una misma sede y turno, sin docente asignado.</p>
+        <p className="text-slate-500 text-sm">Cátedras con al menos {institucion.minimo_inscriptos_apertura} inscriptos totales y docentes pendientes de asignar.</p>
         <p className="text-slate-400 text-xs mt-1">Podés asignar el docente desde acá mismo: queda vinculado a la cátedra al instante.</p>
       </div>
       {aviso && (
@@ -1163,6 +1172,7 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], reca
 
 // ==================== v8.0: MATERIAS ASINCRÓNICAS (1-9 alumnos) ====================
 function AsincronicasView({ cuatrimestre }) {
+  const institucion = useInstitution();
   const [datos, setDatos] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -1184,14 +1194,14 @@ function AsincronicasView({ cuatrimestre }) {
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🎥 Materias Asincrónicas</h2>
-        <p className="text-slate-500 text-sm">Cátedras con 1 a 9 inscriptos totales. Se dictan con material pregrabado (sin docente en vivo).</p>
+        <p className="text-slate-500 text-sm">Cátedras con inscripciones que no alcanzan el mínimo de {institucion.minimo_inscriptos_apertura}. Se dictan con material pregrabado (sin docente en vivo).</p>
       </div>
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-emerald-600">Abrir con docente</p><p className="text-3xl font-bold text-emerald-700">{datos.stats.total_abrir}</p><p className="text-xs text-emerald-500">≥10 inscriptos</p>
+          <p className="text-xs text-emerald-600">Abrir con docente</p><p className="text-3xl font-bold text-emerald-700">{datos.stats.total_abrir}</p><p className="text-xs text-emerald-500">≥{institucion.minimo_inscriptos_apertura} inscriptos</p>
         </div>
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-purple-600">Asincrónicas</p><p className="text-3xl font-bold text-purple-700">{datos.stats.total_asincronica}</p><p className="text-xs text-purple-500">1-9 inscriptos</p>
+          <p className="text-xs text-purple-600">Asincrónicas</p><p className="text-3xl font-bold text-purple-700">{datos.stats.total_asincronica}</p><p className="text-xs text-purple-500">Menos de {institucion.minimo_inscriptos_apertura}</p>
         </div>
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-center">
           <p className="text-xs text-slate-600">Sin alumnos</p><p className="text-3xl font-bold text-slate-400">{datos.stats.total_sin_alumnos}</p><p className="text-xs text-slate-400">0 inscriptos</p>
@@ -2556,6 +2566,7 @@ function FilaRevision({ item, docentes, onConfirmar }) {
 // "Se dicta" = funciona este cuatrimestre (puede ser con video pregrabado).
 // "Se abre"  = además tiene docente asignado en vivo.
 function DictadoView({ cuatrimestre, cuatrimestres }) {
+  const institucion = useInstitution();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [guardando, setGuardando] = useState(false);
@@ -2743,7 +2754,7 @@ function DictadoView({ cuatrimestre, cuatrimestres }) {
                   <td className="p-2 font-mono text-xs">{c.codigo}</td>
                   <td className="p-2">{c.nombre}</td>
                   <td className="p-2 text-center">
-                    <span className={`font-bold ${c.inscriptos >= 10 ? 'text-emerald-600' : c.inscriptos > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
+                    <span className={`font-bold ${c.inscriptos >= institucion.minimo_inscriptos_apertura ? 'text-emerald-600' : c.inscriptos > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
                       {c.inscriptos}</span>
                   </td>
                   <td className="p-2 text-xs text-slate-600">{c.docentes?.join(', ') || '—'}</td>
@@ -4892,7 +4903,7 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
 }
 
 // ==================== APP PRINCIPAL ====================
-export default function App() {
+function SistemaApp() {
   const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
   const [rol, setRol] = useState(() => localStorage.getItem('iea_rol') || 'editor');
   const puedeEditar = rol !== 'consulta';
@@ -4972,4 +4983,9 @@ export default function App() {
     </div>
     </RolContext.Provider>
   );
+}
+
+
+export default function App() {
+  return <InstitutionProvider><SistemaApp /></InstitutionProvider>;
 }
