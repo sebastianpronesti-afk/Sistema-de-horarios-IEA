@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { InstitutionProvider, useInstitution } from './InstitutionContext';
+import ImportWorkflow, { ImportHistory } from './ImportWorkflow';
 
 const API_URL = '';
 
@@ -190,7 +191,7 @@ function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sed
     <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
       <div className="mb-6 px-2">
         <h1 className="text-xl font-bold text-white">{institucion.titulo}</h1>
-        <p className="text-slate-500 text-sm">Sistema v16.0</p>
+        <p className="text-slate-500 text-sm">Sistema v19.0</p>
       </div>
       {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
       <div className="mb-6 px-2">
@@ -2161,9 +2162,11 @@ function RespaldosView({ cuatrimestre, cuatrimestres, recargar }) {
 
   return (
     <div className="p-8 max-w-5xl">
+      <ImportHistory period={cuatrimestre} canEdit={puedeEditar} onChange={recargar} />
+      <p className="text-sm text-amber-800 mb-3">Respaldos anteriores: recuperan las asignaciones del cuatrimestre completo. No incluyen enlaces ni otros datos que no se guardaron entonces.</p>
       <h2 className="text-2xl font-bold text-slate-800">↩️ Deshacer una importación</h2>
       <p className="text-slate-500 text-sm mt-1 mb-5">
-        Cada vez que se importan horarios, el sistema guarda automáticamente una copia del
+        Las versiones anteriores guardaban una copia del
         estado anterior. Si se subió el archivo equivocado o una versión incompleta, se puede
         volver atrás desde acá.
       </p>
@@ -3982,10 +3985,10 @@ function BceBeaView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, re
 }
 
 // ==================== IMPORTAR VIEW (v4.0 con apertura y alumnos consolidados) ====================
-function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
+function ImportarView({ recargar, cuatrimestres, cuatrimestre, sedes }) {
+  const { puedeEditar } = usarRol();
   const [uploading, setUploading] = useState('');
   const [resultado, setResultado] = useState(null);
-  const [horariosPreview, setHorariosPreview] = useState(null);
   const [cuatriSeleccionado, setCuatriSeleccionado] = useState(
     cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1')
   );
@@ -4035,8 +4038,10 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Importar Datos</h2></div>
+      <ImportWorkflow periods={cuatrimestres} campuses={sedes} initialPeriod={cuatrimestre} canEdit={puedeEditar} onApplied={recargar} />
+      <details className="mb-6"><summary className="cursor-pointer font-medium">Administrar el molde de carrera existente</summary><AdminMoldeCarrera /></details>
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
-        <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
+        <p className="text-blue-700 text-sm">Los importadores auxiliares de catálogos y módulos específicos se mantienen debajo. El circuito de vista previa y recuperación de esta versión cubre horarios, inscripciones generales y planes de carrera.</p>
       </div>
 
       {/* v4.0 MEJORA 1: Apertura masiva de cátedras */}
@@ -4091,132 +4096,6 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
             </button>
           </div>
         ))}
-      </div>
-
-      <h3 className="font-semibold text-slate-600 mb-3">🗺️ Molde de horarios por carrera</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-blue-200">
-        <p className="text-sm text-slate-500 mb-3">Subí el archivo <strong>Horarios.xlsx</strong> con la estructura de carreras, años y cátedras por sede. Se importa una sola vez y sirve como "molde" para generar sugerencias.</p>
-        <button onClick={() => subirArchivo('/api/importar/plan-carrera', 'Plan Carrera')}
-          disabled={uploading === 'Plan Carrera'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700">
-          {uploading === 'Plan Carrera' ? '⏳ Importando...' : '📤 Importar molde de horarios'}
-        </button>
-        <AdminMoldeCarrera />
-      </div>
-
-      {/* v4.0 MEJORA 4: Alumnos consolidados */}
-      <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
-        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos (v6.0)</h3>
-        <p className="text-sm text-slate-500 mb-1">El sistema ahora clasifica automáticamente cada alumno según su CURSO:</p>
-        <p className="text-xs text-slate-500 mb-1">🖥️ <strong>Virtual</strong>: Si el curso dice "CIED" o es "Online-Interior"</p>
-        <p className="text-xs text-slate-500 mb-1">🏫 <strong>Presencial</strong>: Si el curso NO dice "CIED" (requiere profesor en aula)</p>
-        <p className="text-xs text-slate-500 mb-1">📋 <strong>Turno</strong>: Se lee de la MATERIA (Mañana / Noche / Virtual)</p>
-        <p className="text-xs text-slate-400 mb-3">Si el Excel tiene varias hojas, se procesan todas.</p>
-        <div className="mb-4">
-          <label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
-          <select className="w-full border-2 border-cyan-300 rounded-lg px-3 py-2 mt-1 bg-cyan-50"
-            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
-            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
-        </div>
-        <button onClick={() => subirArchivo('/api/importar/alumnos', 'Alumnos', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'Alumnos'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-cyan-600 text-white hover:bg-cyan-700">
-          {uploading === 'Alumnos' ? '⏳...' : '📤 Subir Excel de inscriptos'}
-        </button>
-      </div>
-
-      <div className="bg-white rounded-xl border p-6 mb-6 border-emerald-200">
-        <h3 className="font-semibold mb-2">📅 Importar Horarios y Designaciones</h3>
-        <p className="text-sm text-slate-500 mb-1">Importa asignaciones con día, hora, sede y docente. <strong>Borra las asignaciones anteriores</strong> y carga las nuevas.</p>
-        <p className="text-xs text-slate-400 mb-3">Paso 1: Vista previa de cambios → Paso 2: Confirmar y aplicar. Docentes no existentes se crean automáticamente.</p>
-        {!horariosPreview ? (
-          <button onClick={async () => {
-            const input = document.createElement('input'); input.type = 'file'; input.accept = '.xlsx';
-            input.onchange = async (ev) => {
-              const file = ev.target.files?.[0]; if (!file) return;
-              setUploading('Preview Horarios');
-              try {
-                const form = new FormData(); form.append('file', file);
-                const res = await fetch(`${API_URL}/api/importar/horarios-preview?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
-                const data = await res.json();
-                console.log('Preview response:', data);
-                if (data.detail || data.error) { alert('Error: ' + (data.detail || data.error)); setUploading(null); return; }
-                setHorariosPreview({ data, file });
-              } catch (e) { alert('Error: ' + e.message); }
-              setUploading(null);
-            }; input.click();
-          }} disabled={uploading === 'Preview Horarios'}
-            className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-emerald-600 text-white hover:bg-emerald-700">
-            {uploading === 'Preview Horarios' ? '⏳ Analizando...' : '🔍 Paso 1: Analizar Excel de horarios'}
-          </button>
-        ) : (
-          <div>
-            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-3">
-              <p className="font-bold text-emerald-800 text-lg mb-2">Vista previa de cambios</p>
-              {horariosPreview.data.error && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
-                  <p className="font-bold text-red-800">⚠️ Error: {horariosPreview.data.error}</p>
-                  {horariosPreview.data.traceback && <pre className="text-[9px] text-red-600 mt-1 overflow-auto max-h-24">{horariosPreview.data.traceback}</pre>}
-                </div>
-              )}
-              {horariosPreview.data._debug && (
-                <p className="text-[10px] text-slate-400 mb-2">DB: {horariosPreview.data._debug.total_catedras_db} cátedras, {horariosPreview.data._debug.total_docentes_db} docentes | No encontradas: {horariosPreview.data._debug.no_cat_count}</p>
-              )}
-              <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-red-600">{horariosPreview.data.asignaciones_actuales_a_borrar ?? 0}</p><p className="text-xs text-slate-500">Se borran</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-emerald-600">{horariosPreview.data.asignaciones_nuevas ?? 0}</p><p className="text-xs text-slate-500">Se crean</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-blue-600">{horariosPreview.data.con_docente_existente ?? 0}</p><p className="text-xs text-slate-500">Con docente</p></div>
-              </div>
-              {horariosPreview.data.docentes_a_crear?.length > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
-                  <p className="font-medium text-amber-800 text-sm">🆕 Se crearán {horariosPreview.data.docentes_a_crear.length} docentes nuevos:</p>
-                  <p className="text-xs text-amber-600 mt-1">{horariosPreview.data.docentes_a_crear.join(', ')}</p>
-                </div>
-              )}
-              {horariosPreview.data.catedras_no_encontradas?.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
-                  <p className="font-medium text-red-800 text-sm">⚠️ Cátedras no encontradas:</p>
-                  <p className="text-xs text-red-600 mt-1">{horariosPreview.data.catedras_no_encontradas.join(', ')}</p>
-                </div>
-              )}
-              {horariosPreview.data.preview?.length > 0 && (
-                <details className="mt-2"><summary className="text-xs text-slate-500 cursor-pointer">Ver primeras {horariosPreview.data.preview.length} asignaciones</summary>
-                  <div className="mt-2 max-h-48 overflow-y-auto text-[10px]">
-                    <table className="w-full"><thead><tr className="bg-slate-100"><th className="p-1">Cát.</th><th className="p-1">Nombre</th><th className="p-1">Día</th><th className="p-1">Hora</th><th className="p-1">Sede</th><th className="p-1">Docente</th><th className="p-1">Est.</th></tr></thead>
-                    <tbody>{horariosPreview.data.preview.map((r,i) => <tr key={i} className="border-b"><td className="p-1 font-mono">{r.cat}</td><td className="p-1">{r.nombre}</td><td className="p-1">{r.dia}</td><td className="p-1">{r.hora}</td><td className="p-1">{r.sede}</td><td className="p-1">{r.docente}</td><td className="p-1">{r.estado}</td></tr>)}</tbody></table>
-                  </div>
-                </details>
-              )}
-            </div>
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
-              ↩️ Antes de aplicar, el sistema guarda una copia del estado actual.
-              Si te equivocaste de archivo podés volver atrás desde <b>Deshacer importación</b>.
-            </div>
-            <div className="flex gap-3">
-              <button onClick={async () => {
-                setUploading('Aplicar Horarios');
-                try {
-                  const form = new FormData(); form.append('file', horariosPreview.file);
-                  const res = await fetch(`${API_URL}/api/importar/horarios-aplicar?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
-                  if (!res.ok) { const txt = await res.text(); throw new Error(txt); }
-                  const data = await res.json();
-                  if (data.error) { alert('⚠️ ' + data.error); setUploading(null); return; }
-                  setResultado({ ok: true, data, label: 'Importar Horarios' });
-                  setHorariosPreview(null); recargar();
-                } catch (e) { alert('Error: ' + e.message); }
-                setUploading(null);
-              }} disabled={uploading === 'Aplicar Horarios'}
-                className="flex-1 py-2.5 rounded-lg font-bold bg-emerald-600 text-white hover:bg-emerald-700">
-                {uploading === 'Aplicar Horarios' ? '⏳ Aplicando...' : '✅ Confirmar y aplicar cambios'}
-              </button>
-              <button onClick={() => setHorariosPreview(null)} className="px-6 py-2.5 rounded-lg font-medium bg-slate-200 hover:bg-slate-300">
-                ❌ Cancelar
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       <h3 className="font-semibold text-slate-600 mb-3">👨‍🏫 Docentes</h3>
@@ -4977,7 +4856,7 @@ function SistemaApp() {
         {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
         {activeView === 'edi_alumnos' && <EdiAlumnosView cuatrimestre={cuatrimestre} />}
-        {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
+        {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} sedes={sedes} />}
         {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
       </main>
     </div>
