@@ -1,5 +1,9 @@
 # Método común con adaptación institucional
 
+> Documento de la primera entrega. La implementación posterior de importaciones,
+> sus cambios de compatibilidad y la validación de v19 están en
+> [IMPORTACIONES_V19.md](IMPORTACIONES_V19.md).
+
 ## Decisión de producto
 
 Mantener un solo producto y una misma base de código. El IEA será un perfil

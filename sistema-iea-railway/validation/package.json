@@ -1,7 +1,7 @@
 {
   "name": "horarios-institution-validation",
   "private": true,
-  "scripts": {"test": "node --test institution.test.cjs"},
+  "scripts": {"test": "node --test *.test.cjs"},
   "engines": {"node": ">=24"},
   "devDependencies": {
     "esbuild": "0.28.2",
