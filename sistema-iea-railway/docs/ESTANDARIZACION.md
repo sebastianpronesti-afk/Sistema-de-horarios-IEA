@@ -2,7 +2,8 @@
 
 > Documento de la primera entrega. La implementación posterior de importaciones,
 > sus cambios de compatibilidad y la validación de v19 están en
-> [IMPORTACIONES_V19.md](IMPORTACIONES_V19.md).
+> [IMPORTACIONES_V19.md](IMPORTACIONES_V19.md). La reorganización posterior del panel
+> y el cuatrimestre único están en [PANEL_V20.md](PANEL_V20.md).
 
 ## Decisión de producto
 

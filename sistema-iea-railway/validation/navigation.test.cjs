@@ -1,0 +1,111 @@
+const {test,afterEach}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');
+const {JSDOM}=require('jsdom'),{buildSync}=require('esbuild');
+const dom=new JSDOM('<!doctype html><div id="root"></div>',{url:'https://validation.invalid'});
+for(const key of ['window','document','HTMLElement','Event','MouseEvent','localStorage','FormData'])global[key]=dom.window[key];
+Object.defineProperty(global,'navigator',{value:dom.window.navigator,configurable:true});
+global.IS_REACT_ACT_ENVIRONMENT=true;
+const React=require('react'),{act,Simulate}=require('react-dom/test-utils'),{createRoot}=require('react-dom/client');
+function compile(file){const built=buildSync({entryPoints:[path.join(__dirname,'../frontend/src',file)],bundle:true,loader:{'.js':'jsx'},platform:'node',format:'cjs',external:['react'],write:false});const mod=new Module(path.join(__dirname,file+'.cjs'),module);mod.filename=path.join(__dirname,file+'.cjs');mod.paths=module.paths;mod._compile(built.outputFiles[0].text,mod.filename);return mod.exports;}
+const App=compile('App.js').default,{choosePeriod}=compile('periods.js');
+const fixtures=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures.json')));
+const iea=JSON.parse(fs.readFileSync(path.join(__dirname,'../backend/app/profiles/iea.json')));
+const other=JSON.parse(fs.readFileSync(path.join(__dirname,'../backend/app/profiles/institucion-ejemplo.json')));
+const scoped=['/api/catedras','/api/docentes','/api/horarios/solapamientos','/api/catedras/necesitan-docente','/api/solapamientos-carreras','/api/dashboard','/api/plan-carrera/sugerencias','/api/sugerencias-armado'];
+let root,calls,handler,profile;
+const settle=async()=>{for(let i=0;i<3;i++)await act(async()=>new Promise(resolve=>setTimeout(resolve,5)));};
+const button=(text,scope=document)=>[...scope.querySelectorAll('button')].find(b=>b.textContent.trim()===text);
+async function click(b){assert.ok(b,'Button exists');await act(async()=>b.click());await settle();}
+async function select(id,value){await act(async()=>{const e=document.getElementById(id);e.value=value;e.dispatchEvent(new Event('change',{bubbles:true}));});await settle();}
+async function search(text){await act(async()=>Simulate.change(document.querySelector('input[type="search"]'),{target:{value:text}}));await settle();}
+async function mount(selected=iea,overrides={}){
+  profile=selected;calls=[];handler=null;localStorage.clear();localStorage.setItem('iea_auth','true');localStorage.setItem('iea_rol','editor');
+  if(overrides.saved)localStorage.setItem('horarios.periodo.'+profile.id,overrides.saved);
+  global.fetch=async url=>{
+    const parsed=new URL(url,'https://validation.invalid');calls.push(parsed);
+    if(handler){const result=handler(parsed);if(result)return await result;}
+    const data=parsed.pathname==='/api/institucion'?profile:overrides[parsed.pathname]??fixtures[parsed.pathname]??{};
+    return {ok:true,json:async()=>structuredClone(data)};
+  };
+  root=createRoot(document.getElementById('root'));await act(async()=>root.render(React.createElement(App)));await settle();
+}
+afterEach(async()=>{if(root)await act(async()=>root.unmount());root=null;});
+
+test('one explicit period is selected before any period-dependent request',async()=>{
+  await mount(iea,{saved:'todos'});
+  const select=document.getElementById('working-period');assert.equal(select.value,'1');
+  assert.deepEqual([...select.options].map(o=>o.value),['1','2']);
+  assert.ok(calls.some(u=>u.pathname==='/api/dashboard'));
+  for(const url of calls.filter(u=>scoped.includes(u.pathname)))assert.equal(url.searchParams.get('cuatrimestre_id'),'1',url.href);
+});
+
+test('ambiguous calendars ask for a concrete period without loading combined data',async()=>{
+  const periods=[{id:8,nombre:'Anterior 1',anio:1990,numero:1,activo:false},{id:9,nombre:'Anterior 2',anio:1990,numero:2,activo:false}];
+  assert.equal(choosePeriod(periods,'todos',new Date(2026,8,12)),'');
+  await mount(iea,{'/api/cuatrimestres':periods});
+  assert.ok(document.getElementById('initial-period'));assert.equal(calls.filter(u=>scoped.includes(u.pathname)).length,0);
+  await select('initial-period','9');assert.equal(document.getElementById('working-period').value,'9');
+});
+
+test('IEA tools are nested and are absent from another institution menu and search',async()=>{
+  await mount(other);await search('edi');
+  assert.doesNotMatch(document.querySelector('nav').textContent,/EDI por cátedra/);
+  await search('BCE');assert.match(document.querySelector('nav').textContent,/0 resultados/);
+  await search('asincronicas');assert.match(document.querySelector('nav').textContent,/0 resultados/);
+});
+
+test('accent-insensitive search finds IEA tertiary functions and Enter opens a result',async()=>{
+  await mount();await search('iea terciarias edi');
+  assert.match(document.querySelector('nav').textContent,/IEA \/ Carreras terciarias/);
+  await act(async()=>Simulate.keyDown(document.querySelector('input[type="search"]'),{key:'Enter'}));await settle();
+  assert.match(document.querySelector('.app-location').textContent,/EDI por cátedra/);
+  await search('asincronicas');assert.match(document.querySelector('nav').textContent,/Materias asincrónicas/);
+});
+
+test('general and IEA career entries use the same period-bound service',async()=>{
+  await mount();await search('horarios por carrera');
+  const results=[...document.querySelectorAll('.app-search-item')].filter(b=>b.querySelector('span').firstChild.textContent==='Horarios por carrera');assert.equal(results.length,2);
+  await click(results[0]);assert.match(document.querySelector('.app-location').textContent,/Planificación/);
+  const first=calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').at(-1);
+  await search('iea horarios por carrera');await click(document.querySelector('.app-search-item'));
+  assert.match(document.querySelector('.app-location').textContent,/IEA/);
+  const second=calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').at(-1);assert.equal(first.href,second.href);
+  await click(button('Sugerencias por carrera',document.querySelector('.app-section-tabs')));
+  assert.equal(calls.filter(u=>u.pathname==='/api/sugerencias-armado').at(-1).searchParams.get('cuatrimestre_id'),'1');
+});
+
+test('switching periods hides old data and ignores a late response from the previous choice',async()=>{
+  await mount();let resolveOld;
+  handler=u=>u.pathname==='/api/catedras'&&u.searchParams.get('cuatrimestre_id')==='2'?new Promise(resolve=>{resolveOld=resolve;}):null;
+  await select('working-period','2');assert.match(document.querySelector('main [role="status"]').textContent,/Periodo prueba 2/);
+  assert.equal(document.querySelector('.app-content'),null);
+  await select('working-period','1');assert.ok(document.querySelector('.app-content'));
+  await act(async()=>resolveOld({ok:true,json:async()=>[{id:999,nombre:'RESPUESTA ANTIGUA'}]}));await settle();
+  assert.equal(document.getElementById('working-period').value,'1');
+  assert.doesNotMatch(document.querySelector('main').textContent,/RESPUESTA ANTIGUA/);
+  assert.equal(localStorage.getItem('horarios.periodo.iea'),'1');
+});
+
+test('failed period load shows retry and never presents old data as current',async()=>{
+  await mount();handler=u=>u.pathname==='/api/catedras'&&u.searchParams.get('cuatrimestre_id')==='2'?Promise.resolve({ok:false,json:async()=>({detail:'Falla de prueba'})}):null;
+  await select('working-period','2');assert.match(document.querySelector('main [role="alert"]').textContent,/Falla de prueba/);assert.equal(document.querySelector('.app-content'),null);
+  handler=null;await click(button('Reintentar carga'));assert.ok(document.querySelector('.app-content'));
+});
+
+test('career import opens the common plan workflow with the global period locked',async()=>{
+  await mount(other);await search('horarios por carrera');await click(document.querySelector('.app-search-item'));
+  await click(button('Importar plan con vista previa'));
+  assert.equal(document.querySelector('[aria-label="Datos a importar"]').value,'plan');
+  assert.equal(document.querySelector('[aria-label="Período de importación"]'),null);
+  assert.equal(document.getElementById('working-period').value,'1');
+  assert.doesNotMatch(document.querySelector('main').textContent,/Importar Alumnos BCE/);
+});
+
+test('changing campus in the course view keeps all campus tabs available',async()=>{
+  const plans=structuredClone(fixtures['/api/plan-carrera/sugerencias']);plans.sedes['Campus nuevo']=structuredClone(plans.sedes.Caballito);
+  await mount(other,{'/api/plan-carrera/sugerencias':plans});await search('horarios por carrera');await click(document.querySelector('.app-search-item'));
+  await click(button('Campus nuevo',document.querySelector('.app-content')));
+  assert.ok(button('Caballito',document.querySelector('.app-content')));assert.ok(button('Campus nuevo',document.querySelector('.app-content')));
+  assert.equal(calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').length,1);
+});

@@ -18,7 +18,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title=INSTITUCION.titulo, version="19.0")
+app = FastAPI(title=INSTITUCION.titulo, version="20.0")
 app.include_router(import_router)
 
 @app.get("/api/institucion")
@@ -2631,7 +2631,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     # v17.0: Pasos alineados al flujo real de trabajo del equipo
     pasos = [
         {"num": 1, "titulo": "Marcar qué cátedras se dictan",
-         "desc": "Selector masivo. Incluye las asincrónicas: se dictan aunque no tengan docente.",
+         "desc": "Seleccioná las materias que integran la oferta de este cuatrimestre.",
          "completo": se_dictan > 0,
          "parcial": False,
          "detalle": (f"{se_dictan} cátedras marcadas para dictarse"
@@ -2650,7 +2650,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                      if se_dictan and total_insc else "Completá los pasos 1 y 2 primero"),
          "seccion": "exportar"},
         {"num": 4, "titulo": "Reimportar la planilla completada",
-         "desc": "El sistema detecta solapamientos y deja todo asignado.",
+         "desc": "Revisá las diferencias de la planilla y confirmá su importación. Después verificá cruces y restricciones.",
          "completo": cats_con_horario > 0 and solaps == 0,
          "parcial": cats_con_horario > 0,
          "detalle": (f"{cats_con_horario} cátedras con horario cargado"
@@ -2661,7 +2661,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
          "desc": "Verificar solapamientos, completar faltantes y exportar el archivo final.",
          "completo": cats_con_horario > 0 and solaps == 0 and sin_docente == 0,
          "parcial": cats_con_horario > 0,
-         "detalle": (f"{cats_abiertas_doc} abiertas con docente · {cats_asincronicas} asincrónicas"
+         "detalle": (f"{cats_abiertas_doc} con docente · {cats_asincronicas} sin docente asignado"
                      + (f" · {sin_docente} sin resolver" if sin_docente else "")),
          "seccion": "exportar"},
     ]
@@ -3002,16 +3002,33 @@ async def horarios_aplicar(file: UploadFile = File(...)):
     raise HTTPException(status_code=409, detail="Actualizá la interfaz y usá Importaciones recuperables: primero vista previa y después confirmación con sede y período explícitos.")
 
 # ===== v13.0: Sugerencias de horarios cruzando plan + inscriptos =====
+def _require_work_period(db, period):
+    if period is None:
+        raise HTTPException(422, "Elegí un cuatrimestre de trabajo")
+    if not db.query(Cuatrimestre).filter(Cuatrimestre.id == period).first():
+        raise HTTPException(404, "El cuatrimestre seleccionado no existe")
+
+
+def _career_assignment_matches(assignment, campus):
+    from app.import_adapters import norm
+    def key(value):
+        normalized = norm(value)
+        if INSTITUCION.id == 'iea':
+            return {'cied':'onlineinterior', 'online':'onlineinterior', 'vtelopez':'vicentelopez'}.get(normalized, normalized)
+        return normalized
+    # A remote shared session remains visible; physical sessions stay in their campus.
+    return not assignment.get('sede') or key(assignment['sede']) == key(campus)
+
+
 @app.get("/api/plan-carrera/sugerencias")
 def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
+    _require_work_period(db, cuatrimestre_id)
     # Get plan
     q = "SELECT * FROM plan_carrera"
-    filters = []
-    if sede: filters.append(f"sede = '{sede}'")
-    if filters: q += " WHERE " + " AND ".join(filters)
+    if sede: q += " WHERE sede = :sede"
     q += " ORDER BY sede, carrera, anno, codigo_catedra"
-    try: rows = db.execute(text(q)).fetchall()
+    try: rows = db.execute(text(q), {"sede":sede}).fetchall()
     except: return {"sedes": [], "plan_importado": False}
     if not rows: return {"sedes": [], "plan_importado": False}
     # Get inscriptos totales
@@ -3055,10 +3072,10 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
         insc = total_map.get(cat_id, 0) if cat_id else 0
         # Criterio
         if INSTITUCION.requiere_docente(insc): criterio = "ABRIR"
-        elif insc > 0: criterio = "ASINCRÓNICA"
+        elif insc > 0: criterio = "ASINCRÓNICA" if INSTITUCION.id == "iea" else "REVISAR APERTURA"
         else: criterio = "SIN ALUMNOS"
         # Current assignment
-        asig_actual = asig_map.get(cat_id, []) if cat_id else []
+        asig_actual = [a for a in asig_map.get(cat_id, []) if _career_assignment_matches(a, sede_n)] if cat_id else []
         tiene_docente = any(a['docente'] for a in asig_actual)
         docente_actual = ', '.join([a['docente'] for a in asig_actual if a['docente']]) or None
         horario_actual_tm = next((f"{a['dia']} {a['hora']}" for a in asig_actual if a['hora'] and a['hora'] < '15:00'), None)
@@ -3363,11 +3380,12 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
 @app.get("/api/sugerencias-armado")
 def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
+    _require_work_period(db, cuatrimestre_id)
     # 1) Get plan_carrera entries
     q = "SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera"
-    if sede: q += f" WHERE sede = '{sede}'"
+    if sede: q += " WHERE sede = :sede"
     q += " ORDER BY sede, carrera, anno"
-    try: plan = db.execute(text(q)).fetchall()
+    try: plan = db.execute(text(q), {"sede":sede}).fetchall()
     except: return {"sedes": {}, "stats": {}}
     if not plan: return {"sedes": {}, "stats": {}}
     # 2) Get inscriptos count
@@ -3398,7 +3416,7 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
             if a.docente_id not in docente_busy: docente_busy[a.docente_id] = set()
             docente_busy[a.docente_id].add((a.dia, a.hora_inicio))
     # 5) Docentes with availability and references
-    docentes = db.query(Docente).all()
+    docentes = db.query(Docente).filter(text("activo IS DISTINCT FROM FALSE")).all()
     disp_map = {}
     try:
         for r in db.execute(text("SELECT docente_id, dia, hora FROM docente_disponibilidad WHERE disponible = TRUE")).fetchall():
@@ -3407,8 +3425,9 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
     except: pass
     # Build docente lookup for suggestions
     doc_info = {}
+    reference_map = dict(db.execute(text("SELECT id, catedras_referencia FROM docentes")).fetchall())
     for d in docentes:
-        refs = (getattr(d, 'catedras_referencia', '') or '').strip()
+        refs = (reference_map.get(d.id) or '').strip()
         ref_codes = [r.strip() for r in refs.split(',') if r.strip()] if refs else []
         avail = disp_map.get(d.id, set())
         busy = docente_busy.get(d.id, set())
@@ -3420,15 +3439,15 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
         }
     # 6) Build result per sede → carrera → anno → catedras with suggestions
     sedes_result = {}
-    stats = {"total": 0, "con_docente": 0, "sugerido": 0, "sin_sugerencia": 0, "asincronica": 0}
+    stats = {"total": 0, "con_docente": 0, "sugerido": 0, "sin_sugerencia": 0, "asincronica": 0, "revisar": 0}
     for r in plan:
         sede_n, carrera, anno, cod, nombre_plan = r[0], r[1], r[2], r[3], r[4]
         cat_info = cat_map.get(cod)
         cat_id = cat_info["id"] if cat_info else None
         insc = total_map.get(cat_id, 0) if cat_id else 0
-        criterio = "ABRIR" if INSTITUCION.requiere_docente(insc) else ("ASINCRÓNICA" if insc > 0 else "SIN ALUMNOS")
+        criterio = "ABRIR" if INSTITUCION.requiere_docente(insc) else (("ASINCRÓNICA" if INSTITUCION.id == "iea" else "REVISAR APERTURA") if insc > 0 else "SIN ALUMNOS")
         # Current assignments
-        current_asigs = asig_map.get(cat_id, []) if cat_id else []
+        current_asigs = [a for a in asig_map.get(cat_id, []) if _career_assignment_matches(a, sede_n)] if cat_id else []
         tiene_docente = any(a['docente'] for a in current_asigs)
         docente_actual = ', '.join(set(a['docente'] for a in current_asigs if a['docente'])) or None
         horarios_actuales = [f"{a['dia']} {a['hora']}" for a in current_asigs if a['dia']] if current_asigs else []
@@ -3458,6 +3477,9 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
             else:
                 estado = "sin_sugerencia"  # red
                 stats["sin_sugerencia"] += 1
+        elif criterio == "REVISAR APERTURA":
+            estado = "revisar"
+            stats["revisar"] += 1
         elif criterio == "ASINCRÓNICA":
             estado = "asincronica"
             stats["asincronica"] += 1
