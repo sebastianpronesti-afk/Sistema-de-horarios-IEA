@@ -68,6 +68,8 @@ test('custom opening threshold is shown in the existing decisions section', asyn
     return {ok:true,json:async () => structuredClone(key === '/api/institucion' ? example : fixtures[key] ?? {})};
   };
   await mount(true);
+  const offer=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Oferta y materias');
+  await act(async()=>offer.click());await settle();
   const button=[...document.querySelectorAll('nav button')].find(b => /Decisiones/.test(b.textContent));
   assert.ok(button);
   await act(async () => button.click());
@@ -83,8 +85,9 @@ test('assignment form preserves an institutional duration outside the fixed half
       ? {...example, duracion_clase_minutos:45} : fixtures[key] ?? {})};
   };
   await mount(true);
-  const nav=[...document.querySelectorAll('nav button')].find(b =>
-    [...b.querySelectorAll('span')].some(s => s.textContent === 'Cátedras'));
+  const offer=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Oferta y materias');
+  await act(async()=>offer.click());await settle();
+  const nav=[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Materias y asignaciones');
   await act(async () => nav.click());
   await settle();
   const add=[...document.querySelectorAll('main button')].find(b => b.textContent.trim() === '+');

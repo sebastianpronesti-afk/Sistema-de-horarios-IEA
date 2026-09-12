@@ -99,8 +99,8 @@ export function ImportHistory({period,canEdit=true,refresh=0,onChange}) {
   </section>;
 }
 
-export default function ImportWorkflow({periods=[],campuses=[],initialPeriod,canEdit=true,onApplied}) {
-  const [kind,setKind]=useState('horarios'),[period,setPeriod]=useState(initialPeriod&&initialPeriod!=='todos'?String(initialPeriod):'');
+export default function ImportWorkflow({periods=[],campuses=[],initialPeriod,initialKind='horarios',lockPeriod=false,canEdit=true,onApplied}) {
+  const [kind,setKind]=useState(initialKind),[period,setPeriod]=useState(initialPeriod&&initialPeriod!=='todos'?String(initialPeriod):'');
   const [campus,setCampus]=useState(''),[mode,setMode]=useState('actualizar'),[format,setFormat]=useState('auto');
   const [file,setFile]=useState(null),[mapping,setMapping]=useState({}),[preview,setPreview]=useState(null),[columns,setColumns]=useState([]);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[result,setResult]=useState(null),[ack,setAck]=useState(false),[refresh,setRefresh]=useState(0);
@@ -126,7 +126,7 @@ export default function ImportWorkflow({periods=[],campuses=[],initialPeriod,can
       <p className="text-sm text-slate-600 my-2">Subí la planilla, revisá las diferencias y confirmá los cambios. Podés usar las planillas del IEA, la plantilla común o un archivo con columnas equivalentes.</p>
       <fieldset disabled={busy} className="grid md:grid-cols-3 gap-4 my-4">
         <label className="text-sm">Datos a importar<select aria-label="Datos a importar" value={kind} onChange={e=>{setKind(e.target.value);setMapping({});setColumns([]);}} className="block w-full border rounded p-2 mt-1">{Object.entries(TYPES).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
-        <label className="text-sm">Período<select aria-label="Período de importación" disabled={kind==='plan'} value={period} onChange={e=>setPeriod(e.target.value)} className="block w-full border rounded p-2 mt-1"><option value="">Elegí un período</option>{periods.map(p=><option key={p.id} value={p.id}>{p.nombre}</option>)}</select>{kind==='plan'&&<span className="text-xs text-amber-800">Molde compartido entre períodos.</span>}</label>
+        <label className="text-sm">Período{lockPeriod?<strong className="block mt-2">{kind==='plan'?'Molde compartido':periods.find(p=>String(p.id)===period)?.nombre}</strong>:<select aria-label="Período de importación" disabled={kind==='plan'} value={period} onChange={e=>setPeriod(e.target.value)} className="block w-full border rounded p-2 mt-1"><option value="">Elegí un período</option>{periods.map(p=><option key={p.id} value={p.id}>{p.nombre}</option>)}</select>}{kind==='plan'&&<span className="text-xs text-amber-800">Compartido entre períodos.</span>}</label>
         <label className="text-sm">Sede<select aria-label="Sede de importación" value={campus} onChange={e=>setCampus(e.target.value)} className="block w-full border rounded p-2 mt-1"><option value="">Elegí el alcance</option><option value="0">Todas las sedes</option>{campuses.map(s=><option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label>
         <label className="text-sm">Modo<select aria-label="Modo de importación" value={mode} onChange={e=>setMode(e.target.value)} className="block w-full border rounded p-2 mt-1"><option value="actualizar">Actualizar y conservar ausentes</option><option value="reemplazar">Reemplazar dentro del alcance</option></select></label>
         <label className="text-sm">Formato<select aria-label="Formato del archivo" value={format} onChange={e=>setFormat(e.target.value)} className="block w-full border rounded p-2 mt-1"><option value="auto">Detectar automáticamente</option><option value="estandar">Tabla con encabezados</option><option value="iea">Planilla del IEA</option></select></label>
