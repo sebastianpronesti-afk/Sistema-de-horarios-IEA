@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "institucion-ejemplo",
+  "nombre": "Institución de prueba",
+  "titulo": "Planificación académica",
+  "minimo_inscriptos_apertura": 15,
+  "alumnos_por_docente": 40,
+  "duracion_clase_minutos": 60,
+  "alias_carreras": {
+    "DESARROLLO DE SOFTWARE": "TECNICATURA EN DESARROLLO DE SOFTWARE"
+  }
+}

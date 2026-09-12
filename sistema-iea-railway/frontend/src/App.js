@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { InstitutionProvider, useInstitution } from './InstitutionContext';
+import ImportWorkflow, { ImportHistory } from './ImportWorkflow';
+import {Navigation, PeriodHeader, SectionTabs, menuFor, currentItem, flattenMenu} from './Navigation';
+import {choosePeriod} from './periods';
 
 const API_URL = '';
 
@@ -66,10 +70,10 @@ function horaDeMinutos(m) {
   const hh = Math.floor(m / 60), mm = m % 60;
   return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
 }
-// Sugiere hora de fin 1h30 después del inicio
-function finSugerido(inicio) {
+// Sugiere el fin usando la duración institucional; no inventa horarios del día siguiente.
+function finSugerido(inicio, duracion) {
   const m = minutosDeHora(inicio);
-  return m === null ? '' : horaDeMinutos(m + 90);
+  return m === null || m + duracion >= 1440 ? '' : horaDeMinutos(m + duracion);
 }
 
 function sortByCodigo(a, b) {
@@ -155,78 +159,6 @@ function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar doce
 }
 
 // ==================== SIDEBAR ====================
-function Sidebar({ activeView, setActiveView, cuatrimestre, setCuatrimestre, sedes, cuatrimestres, solapamientosCount, necesitanDocenteCount, solapCarrerasCount }) {
-  const menuItems = [
-    { id: 'dashboard', icon: '🏠', label: 'Dashboard' },
-    { id: 'chequeo', icon: '🚦', label: '¿Listo para publicar?', highlight: true },
-    { id: 'dictado', icon: '✔️', label: 'Cátedras que se dictan', highlight: true },
-    { id: 'catedras', icon: '📚', label: 'Cátedras' },
-    { id: 'cursos', icon: '🎓', label: 'Cursos' },
-    { id: 'inscriptos_curso', icon: '📊', label: 'Inscriptos x Curso' },
-    { id: 'docentes', icon: '👨‍🏫', label: 'Docentes' },
-    { id: 'carga_horaria', icon: '⏱️', label: 'Carga horaria' },
-    { id: 'nombres_docentes', icon: '🔤', label: 'Nombres de docentes' },
-    { id: 'necesitan_docente', icon: '🔴', label: 'Necesitan Docente', badge: necesitanDocenteCount },
-    { id: 'asincronicas', icon: '🎥', label: 'Asincrónicas' },
-    { id: 'disponibilidad', icon: '🕐', label: 'Disponibilidad' },
-    { id: 'docentes_dia', icon: '📋', label: 'Horarios x Día' },
-    { id: 'calendario', icon: '📅', label: 'Calendario' },
-    { id: 'plan_carrera', icon: '🗺️', label: 'Horarios x Carrera' },
-    { id: 'sugerencias', icon: '🤖', label: 'Sug. Horarios x Carrera' },
-    { id: 'solapamientos', icon: '⚠️', label: 'Solap. Horarios', badge: solapamientosCount },
-    { id: 'solap_carreras', icon: '🎓', label: 'Solap. Carreras', badge: solapCarrerasCount },
-    { id: 'bce_bea', icon: '🏫', label: 'BCE / BEA' },
-    { id: 'control_insc', icon: '✅', label: 'Control Inscripciones' },
-    { id: 'edi_alumnos', icon: '🔀', label: 'EDI por Cátedra' },
-    { id: 'importar', icon: '📥', label: 'Importar', highlight: true },
-    { id: 'exportar', icon: '📤', label: 'Exportar' },
-    { id: 'respaldos', icon: '↩️', label: 'Deshacer importación' },
-    { id: 'comparar', icon: '📊', label: 'Comparar cuatrimestres' },
-    { id: 'decisiones', icon: '🎯', label: 'Toma de Decisiones' },
-  ];
-  return (
-    <div className="w-64 bg-slate-900 min-h-screen p-4 flex flex-col">
-      <div className="mb-6 px-2">
-        <h1 className="text-xl font-bold text-white">IEA Horarios</h1>
-        <p className="text-slate-500 text-sm">Sistema v16.0</p>
-      </div>
-      {/* v4.0 MEJORA 11: Selector año + cuatrimestre */}
-      <div className="mb-6 px-2">
-        <label className="text-xs text-slate-400 block mb-1">Ver cuatrimestre</label>
-        <select className="w-full bg-slate-800 text-white rounded px-3 py-2 text-sm border border-slate-700"
-          value={cuatrimestre} onChange={e => setCuatrimestre(e.target.value)}>
-          <option value="todos">Todos los cuatrimestres</option>
-          {(cuatrimestres || []).map(c => (
-            <option key={c.id} value={c.id}>{c.nombre}</option>
-          ))}
-        </select>
-      </div>
-      <nav className="flex-1 space-y-1">
-        {menuItems.map(item => (
-          <button key={item.id} onClick={() => setActiveView(item.id)}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all ${
-              activeView === item.id ? 'bg-amber-500 text-slate-900 font-medium'
-              : item.highlight ? 'text-amber-400 hover:bg-slate-800' : 'text-slate-400 hover:bg-slate-800'}`}>
-            <span className="text-lg">{item.icon}</span>
-            <span className="flex-1">{item.label}</span>
-            {item.badge > 0 && <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-500 text-white">{item.badge}</span>}
-          </button>
-        ))}
-      </nav>
-      <div className="mt-4 p-3 bg-slate-800/50 rounded-lg">
-        <p className="text-xs text-slate-400 mb-2">Sedes operativas</p>
-        {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
-          <div key={s.id} className="flex items-center gap-2 mb-1">
-            <div className={`w-2 h-2 rounded-full ${SEDE_COLORS[s.nombre] || 'bg-gray-500'}`}></div>
-            <span className="text-[10px] text-slate-300">{s.nombre}</span>
-          </div>
-        ))}
-        <PieSidebar />
-      </div>
-    </div>
-  );
-}
-
 // v18.1: acceso y sesión, al pie del menú
 function PieSidebar() {
   const { rol, puedeEditar } = usarRol();
@@ -240,18 +172,18 @@ function PieSidebar() {
     <div className="mt-4 pt-3 border-t border-slate-700">
       <div className="flex items-center gap-2 mb-2">
         <span className={`w-2 h-2 rounded-full ${puedeEditar ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
-        <span className="text-[10px] text-slate-300">
+        <span className="text-sm text-slate-300">
           {puedeEditar ? 'Acceso de edición' : 'Sólo consulta'}
         </span>
       </div>
       {puedeEditar && (
         <button onClick={() => setModal(true)}
-          className="w-full text-left text-[10px] text-slate-400 hover:text-white py-1">
+          className="w-full text-left text-sm text-slate-300 hover:text-white py-1">
           🔑 Cambiar contraseña
         </button>
       )}
       <button onClick={salir}
-        className="w-full text-left text-[10px] text-slate-400 hover:text-white py-1">
+        className="w-full text-left text-sm text-slate-300 hover:text-white py-1">
         🚪 Cerrar sesión
       </button>
       {modal && <CambiarClaveModal onClose={() => setModal(false)} />}
@@ -260,6 +192,7 @@ function PieSidebar() {
 }
 
 function LoginScreen({ onLogin }) {
+  const institucion = useInstitution();
   const [clave, setClave] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -277,7 +210,7 @@ function LoginScreen({ onLogin }) {
     <div className="min-h-screen bg-slate-900 flex items-center justify-center">
       <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-slate-800">IEA Horarios</h1>
+          <h1 className="text-3xl font-bold text-slate-800">{institucion.titulo}</h1>
           <p className="text-slate-500 mt-1">Sistema de Gestión de Horarios</p>
         </div>
         <div className="space-y-4">
@@ -300,6 +233,7 @@ function LoginScreen({ onLogin }) {
 
 // ==================== MODAL EDITAR ASIGNACIÓN (v4.0 MEJORA 3) ====================
 function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar, catCodigo, catNombre }) {
+  const institucion = useInstitution();
   const [form, setForm] = useState({
     docente_id: asignacion.docente?.id?.toString() || '',
     modalidad: asignacion.modalidad || 'virtual_tm',
@@ -348,7 +282,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
             <div><label className="text-sm text-slate-600">Sede:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
                 <option value="">🏠 Remoto</option>
-                {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                {sedes.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
               </select></div>
           </div>
           <div className="grid grid-cols-3 gap-3">
@@ -360,7 +294,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
             <div><label className="text-sm text-slate-600">Comienza:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio}
                 onChange={e => setForm({...form, hora_inicio: e.target.value,
-                  hora_fin: form.hora_fin || finSugerido(e.target.value)})}>
+                  hora_fin: form.hora_fin || finSugerido(e.target.value, institucion.duracion_clase_minutos)})}>
                 <option value="">Sin definir</option>
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
@@ -368,6 +302,7 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_fin || ''}
                 onChange={e => setForm({...form, hora_fin: e.target.value})}>
                 <option value="">Sin definir</option>
+                {form.hora_fin && !HORAS.includes(form.hora_fin) && <option value={form.hora_fin}>{form.hora_fin}</option>}
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
           </div>
@@ -390,7 +325,8 @@ function ModalEditarAsignacion({ asignacion, docentes, sedes, onClose, recargar,
 
 // ==================== MODAL ASIGNAR CÁTEDRA ====================
 function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimestres, onClose, recargar }) {
-  const defaultCuat = cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1');
+  const institucion = useInstitution();
+  const defaultCuat = cuatrimestre;
   const [form, setForm] = useState({ cuatrimestre_id: defaultCuat, docente_id: '', modalidad: 'virtual_tm', sede_id: '', dia: '', hora_inicio: '', hora_fin: '', recibe_alumnos_presenciales: false });
   const [error, setError] = useState('');
   const crear = async () => {
@@ -420,9 +356,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
         <p className="text-slate-600 mb-4">{catedra.codigo} - {catedra.nombre}</p>
         <div className="space-y-3">
           <div><label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
-            <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50" value={form.cuatrimestre_id} onChange={e => setForm({...form, cuatrimestre_id: e.target.value})}>
-              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </select></div>
+            <p className="font-semibold text-lg">{cuatrimestres.find(c=>String(c.id)===String(cuatrimestre))?.nombre}</p></div>
           <div><label className="text-sm text-slate-600">Docente (opcional):</label>
             <div className="mt-1">
               <BuscadorDocente docentes={docentes} valor={form.docente_id}
@@ -436,7 +370,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
             <div><label className="text-sm text-slate-600">Sede física:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.sede_id} onChange={e => setForm({...form, sede_id: e.target.value})}>
                 <option value="">🏠 Remoto</option>
-                {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+                {sedes.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
               </select></div>
           </div>
           <div className="grid grid-cols-3 gap-3">
@@ -448,7 +382,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
             <div><label className="text-sm text-slate-600">Comienza:</label>
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_inicio}
                 onChange={e => setForm({...form, hora_inicio: e.target.value,
-                  hora_fin: form.hora_fin || finSugerido(e.target.value)})}>
+                  hora_fin: form.hora_fin || finSugerido(e.target.value, institucion.duracion_clase_minutos)})}>
                 <option value="">Pendiente de confirmar</option>
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
@@ -456,6 +390,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
               <select className="w-full border rounded-lg px-3 py-2 mt-1" value={form.hora_fin || ''}
                 onChange={e => setForm({...form, hora_fin: e.target.value})}>
                 <option value="">Pendiente de confirmar</option>
+                {form.hora_fin && !HORAS.includes(form.hora_fin) && <option value={form.hora_fin}>{form.hora_fin}</option>}
                 {HORAS.map(h => <option key={h} value={h}>{h}</option>)}
               </select></div>
           </div>
@@ -478,6 +413,7 @@ function ModalAsignarCatedra({ catedra, docentes, sedes, cuatrimestre, cuatrimes
 
 // ==================== v11.0: DASHBOARD SEMÁFORO CON FLUJO GUIADO ====================
 function DashboardView({ cuatrimestre, setActiveView }) {
+  const institucion=useInstitution();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -491,7 +427,7 @@ function DashboardView({ cuatrimestre, setActiveView }) {
     };
     cargar();
   }, [cuatrimestre]);
-  if (loading || !data) return <div className="p-8 text-center text-xl">⏳ Cargando dashboard...</div>;
+  if (loading || !data) return <div className="p-8 text-center text-xl">⏳ Cargando panel general...</div>;
 
   const cob = data.cobertura_pct;
   const sColor = cob >= 80 ? '#059669' : cob >= 50 ? '#D97706' : '#DC2626';
@@ -501,11 +437,11 @@ function DashboardView({ cuatrimestre, setActiveView }) {
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
-      <h2 className="text-2xl font-bold text-slate-800 mb-2">🏠 Dashboard — Estado del Cuatrimestre</h2>
+      <h2 className="text-2xl font-bold text-slate-800 mb-2">Panel general</h2>
       <p className="text-slate-500 mb-6">Seguí los pasos en orden para armar los horarios del cuatrimestre.</p>
 
       {/* Semáforo + resumen */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid app-dashboard-grid gap-4 mb-8">
         <div className={`${sBg} border-2 rounded-2xl p-6 text-center`}>
           <p className="text-5xl font-extrabold" style={{color: sColor}}>{cob}%</p>
           <p className="text-sm font-bold mt-1" style={{color: sColor}}>Cobertura docentes</p>
@@ -523,7 +459,7 @@ function DashboardView({ cuatrimestre, setActiveView }) {
           <div className="flex justify-center gap-4">
             {data.sin_docente > 0 && <div><p className="text-2xl font-bold text-red-500">{data.sin_docente}</p><p className="text-[10px] text-red-400">sin docente</p></div>}
             {data.solapamientos > 0 && <div><p className="text-2xl font-bold text-orange-500">{data.solapamientos}</p><p className="text-[10px] text-orange-400">solapamientos</p></div>}
-            {data.sin_docente === 0 && data.solapamientos === 0 && <div><p className="text-3xl">✅</p><p className="text-sm text-emerald-600">Todo OK</p></div>}
+            {data.sin_docente === 0 && data.solapamientos === 0 && <div><p className="text-3xl">✅</p><p className="text-sm text-emerald-600">Sin pendientes en estos dos controles</p></div>}
           </div>
         </div>
       </div>
@@ -534,9 +470,9 @@ function DashboardView({ cuatrimestre, setActiveView }) {
           const esActual = paso.num === pasoActual?.num;
           const estado = paso.completo ? 'completo' : paso.parcial ? 'parcial' : (esActual ? 'actual' : 'pendiente');
           return (
-            <div key={paso.num}
+            <button type="button" key={paso.num}
               onClick={() => setActiveView(paso.seccion)}
-              className={`rounded-xl border-2 p-5 cursor-pointer transition-all hover:shadow-lg ${
+              className={`app-dashboard-step rounded-xl border-2 p-5 cursor-pointer transition-all hover:shadow-lg ${
                 estado === 'completo' ? 'bg-emerald-50 border-emerald-300' :
                 estado === 'parcial' ? 'bg-amber-50 border-amber-300' :
                 esActual ? 'bg-blue-50 border-blue-400 shadow-md ring-2 ring-blue-200' :
@@ -569,17 +505,17 @@ function DashboardView({ cuatrimestre, setActiveView }) {
                 {/* Flecha */}
                 <div className="text-slate-300 text-2xl flex-shrink-0">→</div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
 
       {/* Resumen rápido abajo */}
-      <div className="grid grid-cols-4 gap-3 mt-8">
+      <div className="grid app-dashboard-foot gap-3 mt-8">
         {[
           {val: data.se_dictan ?? 0, label: 'Se dictan', color: 'text-blue-600', bg: 'bg-blue-50'},
           {val: data.catedras_abiertas_docente ?? 0, label: 'Abiertas (con docente)', color: 'text-emerald-600', bg: 'bg-emerald-50'},
-          {val: data.catedras_asincronicas ?? 0, label: 'Asincrónicas', color: 'text-purple-600', bg: 'bg-purple-50'},
+          ...(institucion.id==='iea'?[{val: data.catedras_asincronicas ?? 0, label: 'Asincrónicas · IEA', color: 'text-purple-600', bg: 'bg-purple-50'}]:[]),
           {val: data.sin_alumnos, label: 'Sin alumnos', color: 'text-slate-400', bg: 'bg-slate-50'},
         ].map((s, i) => (
           <div key={i} className={`${s.bg} rounded-xl p-3 text-center`}>
@@ -588,9 +524,9 @@ function DashboardView({ cuatrimestre, setActiveView }) {
           </div>
         ))}
       </div>
-      <p className="text-xs text-slate-400 text-center mt-3">
+      {institucion.id==='iea'&&<p className="text-xs text-slate-400 text-center mt-3">
         Una cátedra <b>se dicta</b> aunque no tenga docente (video pregrabado). <b>Se abre</b> cuando además tiene docente asignado.
-      </p>
+      </p>}
     </div>
   );
 }
@@ -830,6 +766,7 @@ function CatedrasView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, 
 
 // ==================== v12.0: DECISIONES - Módulo central ====================
 function DecisionesView({ catedras, cuatrimestre, recargar }) {
+  const institucion = useInstitution();
   const [criterio, setCriterio] = useState(null);
   const [sugerencias, setSugerencias] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -927,8 +864,8 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
         <div className="mt-3 bg-blue-50 border border-blue-200 rounded-xl p-4">
           <p className="text-blue-800 font-semibold mb-2">Criterio sugerido (orientativo)</p>
           <div className="text-sm text-blue-700 space-y-1">
-            <p>• <strong>≥10 inscriptos total</strong> → sugiere <strong>ABRIR</strong> (asignar docente)</p>
-            <p>• <strong>1 a 9 inscriptos</strong> → sugiere <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
+            <p>• <strong>≥{institucion.minimo_inscriptos_apertura} inscriptos total</strong> → sugiere <strong>ABRIR</strong> (asignar docente)</p>
+            <p>• <strong>Con inscripciones, por debajo de {institucion.minimo_inscriptos_apertura}</strong> → sugiere <strong>ASINCRÓNICA</strong> (material pregrabado, sin docente)</p>
             <p>• <strong>0 inscriptos</strong> → sugiere <strong>no dictarla</strong></p>
           </div>
           <p className="text-xs text-blue-600 mt-2">
@@ -949,7 +886,7 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
       <div className="grid grid-cols-5 gap-3 mb-4">
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-emerald-600">{totalDecididas}</p><p className="text-xs">✅ Abiertas (con docente)</p></div>
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-amber-600">{totalPendAbrir}</p><p className="text-xs">⚠️ Pendientes reales</p></div>
-        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥10)</p></div>
+        <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold">{criterio?.stats?.total_abrir||0}</p><p className="text-xs">A abrir (≥{institucion.minimo_inscriptos_apertura})</p></div>
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-center"><p className="text-2xl font-bold text-purple-600">{criterio?.stats?.total_asincronica||0}</p><p className="text-xs">Asincrónicas</p></div>
         <div className="bg-slate-50 border rounded-xl p-3 text-center"><p className="text-2xl font-bold text-slate-400">{criterio?.stats?.total_sin_alumnos||0}</p><p className="text-xs">Sin alumnos</p></div>
       </div>
@@ -1031,6 +968,7 @@ function DecisionesView({ catedras, cuatrimestre, recargar }) {
 
 // ==================== v4.0 MEJORA 8: NECESITAN DOCENTE ====================
 function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], recargar }) {
+  const institucion = useInstitution();
   const [datos, setDatos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [asignando, setAsignando] = useState(null);
@@ -1072,7 +1010,7 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], reca
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🔴 Materias que necesitan docente</h2>
-        <p className="text-slate-500 text-sm">Cátedras con 10 o más inscriptos en una misma sede y turno, sin docente asignado.</p>
+        <p className="text-slate-500 text-sm">Cátedras con al menos {institucion.minimo_inscriptos_apertura} inscriptos totales y docentes pendientes de asignar.</p>
         <p className="text-slate-400 text-xs mt-1">Podés asignar el docente desde acá mismo: queda vinculado a la cátedra al instante.</p>
       </div>
       {aviso && (
@@ -1163,6 +1101,7 @@ function NecesitanDocenteView({ cuatrimestre, cuatrimestres, docentes = [], reca
 
 // ==================== v8.0: MATERIAS ASINCRÓNICAS (1-9 alumnos) ====================
 function AsincronicasView({ cuatrimestre }) {
+  const institucion = useInstitution();
   const [datos, setDatos] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -1184,14 +1123,14 @@ function AsincronicasView({ cuatrimestre }) {
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🎥 Materias Asincrónicas</h2>
-        <p className="text-slate-500 text-sm">Cátedras con 1 a 9 inscriptos totales. Se dictan con material pregrabado (sin docente en vivo).</p>
+        <p className="text-slate-500 text-sm">Cátedras con inscripciones que no alcanzan el mínimo de {institucion.minimo_inscriptos_apertura}. Se dictan con material pregrabado (sin docente en vivo).</p>
       </div>
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-emerald-600">Abrir con docente</p><p className="text-3xl font-bold text-emerald-700">{datos.stats.total_abrir}</p><p className="text-xs text-emerald-500">≥10 inscriptos</p>
+          <p className="text-xs text-emerald-600">Abrir con docente</p><p className="text-3xl font-bold text-emerald-700">{datos.stats.total_abrir}</p><p className="text-xs text-emerald-500">≥{institucion.minimo_inscriptos_apertura} inscriptos</p>
         </div>
         <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 text-center">
-          <p className="text-xs text-purple-600">Asincrónicas</p><p className="text-3xl font-bold text-purple-700">{datos.stats.total_asincronica}</p><p className="text-xs text-purple-500">1-9 inscriptos</p>
+          <p className="text-xs text-purple-600">Asincrónicas</p><p className="text-3xl font-bold text-purple-700">{datos.stats.total_asincronica}</p><p className="text-xs text-purple-500">Menos de {institucion.minimo_inscriptos_apertura}</p>
         </div>
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-center">
           <p className="text-xs text-slate-600">Sin alumnos</p><p className="text-3xl font-bold text-slate-400">{datos.stats.total_sin_alumnos}</p><p className="text-xs text-slate-400">0 inscriptos</p>
@@ -1662,7 +1601,7 @@ function ModalEditarSedes({ docente, sedes, onSave, onClose }) {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
       <h3 className="text-lg font-bold mb-4">Sedes: {docente.nombre} {docente.apellido}</h3>
       <div className="space-y-2 mb-4">
-        {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => (
+        {sedes.map(s => (
           <label key={s.id} className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${sel.includes(s.id) ? 'border-amber-500 bg-amber-50' : 'hover:bg-slate-50'}`}>
             <input type="checkbox" checked={sel.includes(s.id)} onChange={() => toggle(s.id)} />
             <span className={`w-3 h-3 rounded-full ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}></span><span>{s.nombre}</span>
@@ -2151,9 +2090,11 @@ function RespaldosView({ cuatrimestre, cuatrimestres, recargar }) {
 
   return (
     <div className="p-8 max-w-5xl">
+      <ImportHistory period={cuatrimestre} canEdit={puedeEditar} onChange={recargar} />
+      <p className="text-sm text-amber-800 mb-3">Respaldos anteriores: recuperan las asignaciones del cuatrimestre completo. No incluyen enlaces ni otros datos que no se guardaron entonces.</p>
       <h2 className="text-2xl font-bold text-slate-800">↩️ Deshacer una importación</h2>
       <p className="text-slate-500 text-sm mt-1 mb-5">
-        Cada vez que se importan horarios, el sistema guarda automáticamente una copia del
+        Las versiones anteriores guardaban una copia del
         estado anterior. Si se subió el archivo equivocado o una versión incompleta, se puede
         volver atrás desde acá.
       </p>
@@ -2556,6 +2497,7 @@ function FilaRevision({ item, docentes, onConfirmar }) {
 // "Se dicta" = funciona este cuatrimestre (puede ser con video pregrabado).
 // "Se abre"  = además tiene docente asignado en vivo.
 function DictadoView({ cuatrimestre, cuatrimestres }) {
+  const institucion = useInstitution();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [guardando, setGuardando] = useState(false);
@@ -2743,7 +2685,7 @@ function DictadoView({ cuatrimestre, cuatrimestres }) {
                   <td className="p-2 font-mono text-xs">{c.codigo}</td>
                   <td className="p-2">{c.nombre}</td>
                   <td className="p-2 text-center">
-                    <span className={`font-bold ${c.inscriptos >= 10 ? 'text-emerald-600' : c.inscriptos > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
+                    <span className={`font-bold ${c.inscriptos >= institucion.minimo_inscriptos_apertura ? 'text-emerald-600' : c.inscriptos > 0 ? 'text-amber-600' : 'text-slate-300'}`}>
                       {c.inscriptos}</span>
                   </td>
                   <td className="p-2 text-xs text-slate-600">{c.docentes?.join(', ') || '—'}</td>
@@ -3013,6 +2955,8 @@ function ControlInscripcionesView({ cuatrimestre }) {
 
 // ==================== v16.0: SUGERENCIAS DE ARMADO DE HORARIOS ====================
 function SugerenciasArmadoView({ cuatrimestre }) {
+  const institucion=useInstitution();
+  const [error,setError]=useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sedeActiva, setSedeActiva] = useState('');
@@ -3025,7 +2969,7 @@ function SugerenciasArmadoView({ cuatrimestre }) {
         const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
         const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
         setData(await apiFetch(`/api/sugerencias-armado${qp}`));
-      } catch (e) { console.error(e); }
+      } catch (e) { setError(e.message); }
       setLoading(false);
     };
     cargar();
@@ -3048,6 +2992,7 @@ function SugerenciasArmadoView({ cuatrimestre }) {
     asignado: { bg: 'bg-emerald-50', border: 'border-emerald-200', badge: 'bg-emerald-500', label: '✅ Con docente' },
     sugerido: { bg: 'bg-blue-50', border: 'border-blue-200', badge: 'bg-blue-500', label: '🤖 Sugerido' },
     sin_sugerencia: { bg: 'bg-red-50', border: 'border-red-200', badge: 'bg-red-500', label: '❌ Sin sugerencia' },
+    revisar: {bg:'bg-amber-50',border:'border-amber-200',badge:'bg-amber-500',label:'Revisar apertura'},
     asincronica: { bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-500', label: '🎥 Asincrónica' },
     sin_alumnos: { bg: 'bg-slate-50', border: '', badge: 'bg-slate-300', label: '—' },
   };
@@ -3056,15 +3001,16 @@ function SugerenciasArmadoView({ cuatrimestre }) {
     <div className="p-8">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-800">🤖 Sugerencia de Horarios por Carrera</h2>
-        <p className="text-slate-500 text-sm">Pre-armado automático cruzando cátedras abiertas, disponibilidad docente y cátedras de referencia.</p>
+        <p className="text-slate-500 text-sm">Candidatos orientativos según materias de referencia y disponibilidad. Revisá cruces y restricciones antes de asignar.</p>
       </div>
 
+      {error&&<p role="alert" className="p-4 bg-red-50 text-red-700 mb-4">{error}</p>}
       <div className="grid grid-cols-5 gap-3 mb-6">
         <div className="bg-slate-800 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.total||0}</p><p className="text-xs opacity-70">Total cátedras</p></div>
         <div className="bg-emerald-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.con_docente||0}</p><p className="text-xs opacity-80">✅ Con docente</p></div>
         <div className="bg-blue-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.sugerido||0}</p><p className="text-xs opacity-80">🤖 Sugerido</p></div>
         <div className="bg-red-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.sin_sugerencia||0}</p><p className="text-xs opacity-80">❌ Sin sugerencia</p></div>
-        <div className="bg-purple-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{st.asincronica||0}</p><p className="text-xs opacity-80">🎥 Asincrónicas</p></div>
+        <div className="bg-purple-500 text-white rounded-xl p-4 text-center"><p className="text-3xl font-bold">{institucion.id==='iea'?(st.asincronica||0):(st.revisar||0)}</p><p className="text-xs opacity-80">{institucion.id==='iea'?'🎥 Asincrónicas':'Revisar apertura'}</p></div>
       </div>
 
       <div className="flex gap-2 mb-6 flex-wrap">
@@ -3288,7 +3234,7 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
           <label className="text-sm text-slate-600 font-medium">Sede:</label>
           <select className="w-full border rounded-lg px-3 py-2 mt-1" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
             <option value="">Todas</option>
-            {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+            {sedes.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
             <option value="remoto">🏠 Solo Remotos</option>
           </select>
         </div>
@@ -3407,22 +3353,22 @@ function CalendarioView({ catedras, docentes, sedes, cuatrimestre }) {
 }
 
 // ==================== v13.0: HORARIOS POR CARRERA Y SEDE ====================
-function PlanCarreraView({ cuatrimestre }) {
+function PlanCarreraView({ cuatrimestre, onImport }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sedeActiva, setSedeActiva] = useState('');
   const [carreraAbierta, setCarreraAbierta] = useState({});
-  const [importando, setImportando] = useState(false);
+  const {puedeEditar}=usarRol();
+  const [error,setError]=useState('');
 
-  const cargar = async (sedeOverride) => {
+  const cargar = async () => {
     setLoading(true);
     try {
       const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : '';
       const qp = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-      const sede = sedeOverride || sedeActiva;
-      const sedeP = sede ? `${qp ? '&' : '?'}sede=${encodeURIComponent(sede)}` : '';
-      setData(await apiFetch(`/api/plan-carrera/sugerencias${qp}${sedeP}`));
-    } catch (e) { console.error(e); }
+      setError('');
+      setData(await apiFetch(`/api/plan-carrera/sugerencias${qp}`));
+    } catch (e) { setError(e.message); }
     setLoading(false);
   };
 
@@ -3439,29 +3385,13 @@ function PlanCarreraView({ cuatrimestre }) {
     }
   }, [data]);
 
-  const importarPlan = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImportando(true);
-    try {
-      const form = new FormData();
-      form.append('file', file);
-      const res = await fetch(`${API_URL}/api/importar/plan-carrera`, { method: 'POST', body: form });
-      const r = await res.json();
-      alert(`✅ ${r.importados} registros importados`);
-      cargar();
-    } catch (e) { alert('Error: ' + e.message); }
-    setImportando(false);
-    e.target.value = '';
-  };
-
   const toggleCarrera = (key) => {
     setCarreraAbierta(prev => ({...prev, [key]: !prev[key]}));
   };
 
   const cambiarSede = (s) => {
     setSedeActiva(s);
-    cargar(s);
+
   };
 
   // Conditional return AFTER all hooks
@@ -3475,19 +3405,17 @@ function PlanCarreraView({ cuatrimestre }) {
       <div className="flex justify-between items-start mb-6">
         <div>
           <h2 className="text-2xl font-bold text-slate-800">🗺️ Horarios por Carrera y Sede</h2>
-          <p className="text-slate-500 text-sm">Sugerencia automática basada en el molde de horarios importado, cruzado con inscriptos actuales.</p>
+          <p className="text-slate-500 text-sm">Plan de la institución y horarios del cuatrimestre de trabajo, organizados por carrera, año y sede.</p>
         </div>
-        <label className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer ${importando ? 'bg-slate-300' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
-          {importando ? '⏳ Importando...' : '📥 Importar molde (Horarios.xlsx)'}
-          <input type="file" accept=".xlsx" className="hidden" onChange={importarPlan} disabled={importando} />
-        </label>
+        <button type="button" onClick={onImport} disabled={!puedeEditar} className="px-4 py-2 rounded-lg bg-blue-600 text-white disabled:opacity-50">Importar plan con vista previa</button>
       </div>
 
-      {!data?.plan_importado ? (
+      {error&&<p role="alert" className="p-4 bg-red-50 text-red-700 mb-4">{error}<button onClick={()=>cargar()} className="ml-3 underline">Reintentar</button></p>}
+      {!error&&(!data?.plan_importado ? (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-8 text-center">
           <p className="text-4xl mb-3">📥</p>
           <p className="text-amber-800 font-medium">No hay molde de horarios importado</p>
-          <p className="text-amber-600 text-sm mt-2">Subí el archivo Horarios.xlsx con la estructura de carreras, años y cátedras por sede. El sistema lo cruza con los inscriptos para generar sugerencias.</p>
+          <p className="text-amber-600 text-sm mt-2">Importá un plan con carreras, años y materias por sede. Podés usar la plantilla común o adaptar las columnas de tu archivo.</p>
         </div>
       ) : (
         <>
@@ -3544,7 +3472,7 @@ function PlanCarreraView({ cuatrimestre }) {
                                 <td className="p-2 text-center text-indigo-600">{cat.sugerencia_tn || ''}</td>
                                 <td className="p-2 text-center">{cat.actual_tm ? <span className="bg-emerald-100 text-emerald-700 px-1 rounded text-[9px]">{cat.actual_tm}</span> : ''}</td>
                                 <td className="p-2 text-center">{cat.actual_tn ? <span className="bg-indigo-100 text-indigo-700 px-1 rounded text-[9px]">{cat.actual_tn}</span> : ''}</td>
-                                <td className="p-2">{cat.docente ? <span className="text-emerald-600 font-medium">{cat.docente}</span> : cat.criterio === 'ABRIR' ? <span className="text-red-400 italic">Pendiente</span> : <span className="text-purple-400">🎥</span>}</td>
+                                <td className="p-2">{cat.docente ? <span className="text-emerald-600 font-medium">{cat.docente}</span> : cat.criterio === 'ABRIR' ? <span className="text-red-400 italic">Pendiente</span> : <span className="text-slate-600">{cat.criterio==='ASINCRÓNICA'?'🎥':cat.criterio==='REVISAR APERTURA'?'Revisar':'—'}</span>}</td>
                               </tr>
                             )))}
                           </tbody>
@@ -3555,7 +3483,7 @@ function PlanCarreraView({ cuatrimestre }) {
                 );
               }) : <p className="text-slate-400 text-center p-8">Seleccioná una sede</p>}
         </>
-      )}
+      ))}
     </div>
   );
 }
@@ -3840,7 +3768,7 @@ function CursosView({ cursos, sedes, recargar }) {
         <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm" value={buscar} onChange={e => setBuscar(e.target.value)} />
         <select className="border rounded-lg px-3 py-2 text-sm" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
           <option value="">Todas las sedes</option>
-          {sedes.filter(s => SEDES_OPERATIVAS.includes(s.nombre)).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
+          {sedes.map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}
         </select>
       </div>
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
@@ -3971,16 +3899,15 @@ function BceBeaView({ catedras, docentes, sedes, cuatrimestre, cuatrimestres, re
 }
 
 // ==================== IMPORTAR VIEW (v4.0 con apertura y alumnos consolidados) ====================
-function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
+function ImportarView({ recargar, cuatrimestres, cuatrimestre, sedes, initialKind='horarios', module='general' }) {
+  const { puedeEditar } = usarRol();
   const [uploading, setUploading] = useState('');
   const [resultado, setResultado] = useState(null);
-  const [horariosPreview, setHorariosPreview] = useState(null);
-  const [cuatriSeleccionado, setCuatriSeleccionado] = useState(
-    cuatrimestre !== 'todos' ? cuatrimestre : ((cuatrimestres||[])[0]?.id?.toString() || '1')
-  );
+  const cuatriSeleccionado=cuatrimestre;
 
   // v18.0: 'multiple' permite subir varios archivos de una (BCE/BEA usa uno por cátedra)
   const subirArchivo = async (endpoint, label, extraParams = '', multiple = false, campo = 'file') => {
+    if(!puedeEditar)return;
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.xlsx,.xls';
     if (multiple) input.multiple = true;
@@ -4002,7 +3929,7 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
 
   // v4.0 MEJORA 12: Replicar cuatrimestre
   const [replicarOrigen, setReplicarOrigen] = useState('');
-  const [replicarDestino, setReplicarDestino] = useState('');
+  const replicarDestino = cuatrimestre;
   const [replicando, setReplicando] = useState(false);
 
   const replicar = async () => {
@@ -4021,11 +3948,39 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
     setReplicando(false);
   };
 
+  if(module==='bce')return <div className="p-8"><div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
+        <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
+        <p className="text-sm text-slate-500 mb-1">
+          BCE y BEA son <strong>100% virtuales</strong>: no tienen turno ni día. El sistema
+          simplemente cuenta cuántos alumnos (DNI) hay en cada cátedra.
+        </p>
+        <p className="text-xs text-slate-500 mb-1">
+          📄 <strong>Un archivo por cátedra.</strong> El código se toma del nombre del archivo,
+          por ejemplo <code className="bg-slate-100 px-1 rounded">c_2028_Lengua_I_-_BCE.xlsx</code> → c.2028.
+        </p>
+        <p className="text-xs text-slate-500 mb-3">
+          Si la cátedra todavía no existe en el sistema, se crea automáticamente.
+          Los DNI repetidos dentro del archivo se cuentan una sola vez.
+        </p>
+        <p className="text-xs text-emerald-700 mb-3 font-medium">
+          ✔️ Podés seleccionar varios archivos juntos y se procesan todos de una vez.
+        </p>
+        <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`, true, 'files')}
+          disabled={uploading === 'BCE/BEA'}
+          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-orange-500 text-white hover:bg-orange-600">
+          {uploading === 'BCE/BEA' ? '⏳...' : '📤 Subir archivos BCE/BEA (podés elegir varios)'}
+        </button>
+      </div>
+    {resultado&&<p role={resultado.ok?'status':'alert'} className="mt-4">{resultado.ok?'Importación BCE/BEA completada.':String(resultado.error)}</p>}
+  </div>;
+
   return (
     <div className="p-8">
       <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Importar Datos</h2></div>
+      <ImportWorkflow initialKind={initialKind} lockPeriod periods={cuatrimestres} campuses={sedes} initialPeriod={cuatrimestre} canEdit={puedeEditar} onApplied={recargar} />
+      <details className="mb-6"><summary className="cursor-pointer font-medium">Administrar el molde de carrera existente</summary><AdminMoldeCarrera /></details>
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
-        <p className="text-blue-700 text-sm">ℹ️ Los datos se guardan permanentemente. Si importás un archivo con datos que ya existen, se actualizan sin duplicar.</p>
+        <p className="text-blue-700 text-sm">Los importadores auxiliares de catálogos y módulos específicos se mantienen debajo. El circuito de vista previa y recuperación de esta versión cubre horarios, inscripciones generales y planes de carrera.</p>
       </div>
 
       {/* v4.0 MEJORA 1: Apertura masiva de cátedras */}
@@ -4036,10 +3991,7 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         <p className="text-xs text-slate-400 mb-3 font-mono">Formato: | Número | c.XX Nombre de la cátedra |</p>
         <div className="mb-4">
           <label className="text-sm text-slate-600 font-medium">Cuatrimestre destino:</label>
-          <select className="w-full border-2 border-amber-300 rounded-lg px-3 py-2 mt-1 bg-amber-50"
-            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
-            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
+          <p className="font-semibold text-lg">{cuatrimestres.find(c=>String(c.id)===String(cuatrimestre))?.nombre}</p>
         </div>
         <button onClick={() => subirArchivo('/api/importar/apertura-catedras', 'Apertura Cátedras', `?cuatrimestre_id=${cuatriSeleccionado}`)}
           disabled={uploading === 'Apertura Cátedras'}
@@ -4082,132 +4034,6 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         ))}
       </div>
 
-      <h3 className="font-semibold text-slate-600 mb-3">🗺️ Molde de horarios por carrera</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-blue-200">
-        <p className="text-sm text-slate-500 mb-3">Subí el archivo <strong>Horarios.xlsx</strong> con la estructura de carreras, años y cátedras por sede. Se importa una sola vez y sirve como "molde" para generar sugerencias.</p>
-        <button onClick={() => subirArchivo('/api/importar/plan-carrera', 'Plan Carrera')}
-          disabled={uploading === 'Plan Carrera'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700">
-          {uploading === 'Plan Carrera' ? '⏳ Importando...' : '📤 Importar molde de horarios'}
-        </button>
-        <AdminMoldeCarrera />
-      </div>
-
-      {/* v4.0 MEJORA 4: Alumnos consolidados */}
-      <h3 className="font-semibold text-slate-600 mb-3">Alumnos inscriptos</h3>
-      <div className="bg-white rounded-xl border p-6 mb-6 border-cyan-200">
-        <h3 className="font-semibold mb-2">👥 Importar Alumnos Inscriptos (v6.0)</h3>
-        <p className="text-sm text-slate-500 mb-1">El sistema ahora clasifica automáticamente cada alumno según su CURSO:</p>
-        <p className="text-xs text-slate-500 mb-1">🖥️ <strong>Virtual</strong>: Si el curso dice "CIED" o es "Online-Interior"</p>
-        <p className="text-xs text-slate-500 mb-1">🏫 <strong>Presencial</strong>: Si el curso NO dice "CIED" (requiere profesor en aula)</p>
-        <p className="text-xs text-slate-500 mb-1">📋 <strong>Turno</strong>: Se lee de la MATERIA (Mañana / Noche / Virtual)</p>
-        <p className="text-xs text-slate-400 mb-3">Si el Excel tiene varias hojas, se procesan todas.</p>
-        <div className="mb-4">
-          <label className="text-sm text-slate-600 font-medium">Cuatrimestre:</label>
-          <select className="w-full border-2 border-cyan-300 rounded-lg px-3 py-2 mt-1 bg-cyan-50"
-            value={cuatriSeleccionado} onChange={e => setCuatriSeleccionado(e.target.value)}>
-            {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
-        </div>
-        <button onClick={() => subirArchivo('/api/importar/alumnos', 'Alumnos', `?cuatrimestre_id=${cuatriSeleccionado}`)}
-          disabled={uploading === 'Alumnos'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-cyan-600 text-white hover:bg-cyan-700">
-          {uploading === 'Alumnos' ? '⏳...' : '📤 Subir Excel de inscriptos'}
-        </button>
-      </div>
-
-      <div className="bg-white rounded-xl border p-6 mb-6 border-emerald-200">
-        <h3 className="font-semibold mb-2">📅 Importar Horarios y Designaciones</h3>
-        <p className="text-sm text-slate-500 mb-1">Importa asignaciones con día, hora, sede y docente. <strong>Borra las asignaciones anteriores</strong> y carga las nuevas.</p>
-        <p className="text-xs text-slate-400 mb-3">Paso 1: Vista previa de cambios → Paso 2: Confirmar y aplicar. Docentes no existentes se crean automáticamente.</p>
-        {!horariosPreview ? (
-          <button onClick={async () => {
-            const input = document.createElement('input'); input.type = 'file'; input.accept = '.xlsx';
-            input.onchange = async (ev) => {
-              const file = ev.target.files?.[0]; if (!file) return;
-              setUploading('Preview Horarios');
-              try {
-                const form = new FormData(); form.append('file', file);
-                const res = await fetch(`${API_URL}/api/importar/horarios-preview?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
-                const data = await res.json();
-                console.log('Preview response:', data);
-                if (data.detail || data.error) { alert('Error: ' + (data.detail || data.error)); setUploading(null); return; }
-                setHorariosPreview({ data, file });
-              } catch (e) { alert('Error: ' + e.message); }
-              setUploading(null);
-            }; input.click();
-          }} disabled={uploading === 'Preview Horarios'}
-            className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-emerald-600 text-white hover:bg-emerald-700">
-            {uploading === 'Preview Horarios' ? '⏳ Analizando...' : '🔍 Paso 1: Analizar Excel de horarios'}
-          </button>
-        ) : (
-          <div>
-            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-3">
-              <p className="font-bold text-emerald-800 text-lg mb-2">Vista previa de cambios</p>
-              {horariosPreview.data.error && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
-                  <p className="font-bold text-red-800">⚠️ Error: {horariosPreview.data.error}</p>
-                  {horariosPreview.data.traceback && <pre className="text-[9px] text-red-600 mt-1 overflow-auto max-h-24">{horariosPreview.data.traceback}</pre>}
-                </div>
-              )}
-              {horariosPreview.data._debug && (
-                <p className="text-[10px] text-slate-400 mb-2">DB: {horariosPreview.data._debug.total_catedras_db} cátedras, {horariosPreview.data._debug.total_docentes_db} docentes | No encontradas: {horariosPreview.data._debug.no_cat_count}</p>
-              )}
-              <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-red-600">{horariosPreview.data.asignaciones_actuales_a_borrar ?? 0}</p><p className="text-xs text-slate-500">Se borran</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-emerald-600">{horariosPreview.data.asignaciones_nuevas ?? 0}</p><p className="text-xs text-slate-500">Se crean</p></div>
-                <div className="bg-white rounded p-2 text-center"><p className="text-2xl font-bold text-blue-600">{horariosPreview.data.con_docente_existente ?? 0}</p><p className="text-xs text-slate-500">Con docente</p></div>
-              </div>
-              {horariosPreview.data.docentes_a_crear?.length > 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded p-3 mb-3">
-                  <p className="font-medium text-amber-800 text-sm">🆕 Se crearán {horariosPreview.data.docentes_a_crear.length} docentes nuevos:</p>
-                  <p className="text-xs text-amber-600 mt-1">{horariosPreview.data.docentes_a_crear.join(', ')}</p>
-                </div>
-              )}
-              {horariosPreview.data.catedras_no_encontradas?.length > 0 && (
-                <div className="bg-red-50 border border-red-200 rounded p-3 mb-3">
-                  <p className="font-medium text-red-800 text-sm">⚠️ Cátedras no encontradas:</p>
-                  <p className="text-xs text-red-600 mt-1">{horariosPreview.data.catedras_no_encontradas.join(', ')}</p>
-                </div>
-              )}
-              {horariosPreview.data.preview?.length > 0 && (
-                <details className="mt-2"><summary className="text-xs text-slate-500 cursor-pointer">Ver primeras {horariosPreview.data.preview.length} asignaciones</summary>
-                  <div className="mt-2 max-h-48 overflow-y-auto text-[10px]">
-                    <table className="w-full"><thead><tr className="bg-slate-100"><th className="p-1">Cát.</th><th className="p-1">Nombre</th><th className="p-1">Día</th><th className="p-1">Hora</th><th className="p-1">Sede</th><th className="p-1">Docente</th><th className="p-1">Est.</th></tr></thead>
-                    <tbody>{horariosPreview.data.preview.map((r,i) => <tr key={i} className="border-b"><td className="p-1 font-mono">{r.cat}</td><td className="p-1">{r.nombre}</td><td className="p-1">{r.dia}</td><td className="p-1">{r.hora}</td><td className="p-1">{r.sede}</td><td className="p-1">{r.docente}</td><td className="p-1">{r.estado}</td></tr>)}</tbody></table>
-                  </div>
-                </details>
-              )}
-            </div>
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-2.5 mb-3 text-xs text-blue-800">
-              ↩️ Antes de aplicar, el sistema guarda una copia del estado actual.
-              Si te equivocaste de archivo podés volver atrás desde <b>Deshacer importación</b>.
-            </div>
-            <div className="flex gap-3">
-              <button onClick={async () => {
-                setUploading('Aplicar Horarios');
-                try {
-                  const form = new FormData(); form.append('file', horariosPreview.file);
-                  const res = await fetch(`${API_URL}/api/importar/horarios-aplicar?cuatrimestre_id=${cuatriSeleccionado}`, { method: 'POST', body: form });
-                  if (!res.ok) { const txt = await res.text(); throw new Error(txt); }
-                  const data = await res.json();
-                  if (data.error) { alert('⚠️ ' + data.error); setUploading(null); return; }
-                  setResultado({ ok: true, data, label: 'Importar Horarios' });
-                  setHorariosPreview(null); recargar();
-                } catch (e) { alert('Error: ' + e.message); }
-                setUploading(null);
-              }} disabled={uploading === 'Aplicar Horarios'}
-                className="flex-1 py-2.5 rounded-lg font-bold bg-emerald-600 text-white hover:bg-emerald-700">
-                {uploading === 'Aplicar Horarios' ? '⏳ Aplicando...' : '✅ Confirmar y aplicar cambios'}
-              </button>
-              <button onClick={() => setHorariosPreview(null)} className="px-6 py-2.5 rounded-lg font-medium bg-slate-200 hover:bg-slate-300">
-                ❌ Cancelar
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
       <h3 className="font-semibold text-slate-600 mb-3">👨‍🏫 Docentes</h3>
       <div className="bg-white rounded-xl border p-6 mb-6 border-indigo-200">
         <h3 className="font-semibold mb-2">📋 Importar Docentes desde CUIT</h3>
@@ -4243,30 +4069,6 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border p-6 mb-6 border-orange-200">
-        <h3 className="font-semibold mb-2">🏫 Importar Alumnos BCE / BEA</h3>
-        <p className="text-sm text-slate-500 mb-1">
-          BCE y BEA son <strong>100% virtuales</strong>: no tienen turno ni día. El sistema
-          simplemente cuenta cuántos alumnos (DNI) hay en cada cátedra.
-        </p>
-        <p className="text-xs text-slate-500 mb-1">
-          📄 <strong>Un archivo por cátedra.</strong> El código se toma del nombre del archivo,
-          por ejemplo <code className="bg-slate-100 px-1 rounded">c_2028_Lengua_I_-_BCE.xlsx</code> → c.2028.
-        </p>
-        <p className="text-xs text-slate-500 mb-3">
-          Si la cátedra todavía no existe en el sistema, se crea automáticamente.
-          Los DNI repetidos dentro del archivo se cuentan una sola vez.
-        </p>
-        <p className="text-xs text-emerald-700 mb-3 font-medium">
-          ✔️ Podés seleccionar varios archivos juntos y se procesan todos de una vez.
-        </p>
-        <button onClick={() => subirArchivo('/api/importar/alumnos-bce-bea', 'BCE/BEA', `?cuatrimestre_id=${cuatriSeleccionado}`, true, 'files')}
-          disabled={uploading === 'BCE/BEA'}
-          className="w-full py-2.5 rounded-lg font-medium disabled:opacity-50 bg-orange-500 text-white hover:bg-orange-600">
-          {uploading === 'BCE/BEA' ? '⏳...' : '📤 Subir archivos BCE/BEA (podés elegir varios)'}
-        </button>
-      </div>
-
       {/* v4.0 MEJORA 12: Replicar cuatrimestre */}
       <h3 className="font-semibold text-slate-600 mb-3">🔄 Replicar cuatrimestre anterior</h3>
       <div className="bg-white rounded-xl border p-6 mb-6 border-violet-200">
@@ -4281,10 +4083,7 @@ function ImportarView({ recargar, cuatrimestres, cuatrimestre }) {
           </div>
           <div>
             <label className="text-sm text-slate-600 font-medium">Hacia:</label>
-            <select className="w-full border rounded-lg px-3 py-2 mt-1" value={replicarDestino} onChange={e => setReplicarDestino(e.target.value)}>
-              <option value="">Seleccionar destino</option>
-              {(cuatrimestres||[]).map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </select>
+            <p className="font-semibold text-lg">{cuatrimestres.find(c=>String(c.id)===String(cuatrimestre))?.nombre}</p>
           </div>
         </div>
         <button onClick={replicar} disabled={replicando}
@@ -4743,7 +4542,7 @@ function AdminMoldeCarrera() {
   );
 }
 
-function ExportarView({ cuatrimestre, cuatrimestres }) {
+function ExportarView({ cuatrimestre, cuatrimestres, sedes }) {
   const [descargando, setDescargando] = useState(null);
   const [modulos, setModulos] = useState([]);
   const [elegidos, setElegidos] = useState(new Set());
@@ -4814,11 +4613,11 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
             </p>
             <p className="text-xs text-amber-700 mt-2">
               Las columnas amarillas se completan a mano; las celestes las calcula el sistema.
-              Cuando esté lista, se sube en <b>Importar → Horarios y Designaciones</b> y el sistema
-              detecta los solapamientos antes de aplicar nada.
+              Cuando esté lista, se sube en <b>Importar → Cargar, revisar y confirmar</b> y el sistema
+              muestra las diferencias y los errores de datos antes de confirmar.
             </p>
             <p className="text-xs text-amber-700 mt-1">
-              Si una cátedra queda <b>sin docente</b>, se dicta igual como asincrónica. Eso es válido y esperado.
+              Un docente vacío queda pendiente. La modalidad asincrónica debe indicarse explícitamente cuando corresponda.
             </p>
             <div className="mt-3 bg-white/60 rounded-lg p-3 border border-amber-200">
               <label className="text-xs font-bold text-amber-900 block mb-1">
@@ -4826,16 +4625,12 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
               </label>
               <p className="text-[11px] text-amber-700 mb-2">
                 Si varias personas arman horarios al mismo tiempo, conviene que cada una baje sólo su sede.
-                Al reimportar, el archivo reemplaza todas las asignaciones del cuatrimestre: si dos personas
-                suben planillas completas distintas, la última pisa a la anterior.
+                Al reimportar, elegí el alcance y revisá los cambios. Actualizar conserva los ausentes; Reemplazar propone sus bajas solo dentro de la sede y el cuatrimestre elegidos.
               </p>
               <select value={sedePlanilla} onChange={e => setSedePlanilla(e.target.value)}
                 className="w-full border rounded-lg px-3 py-2 text-sm">
                 <option value="">Todas las sedes (archivo completo)</option>
-                <option value="Avellaneda">Sólo Avellaneda</option>
-                <option value="Caballito">Sólo Caballito</option>
-                <option value="Vicente López">Sólo Vicente López</option>
-                <option value="CIED">Sólo CIED / Online</option>
+                {(sedes||[]).map(s=><option key={s.id} value={s.nombre}>Solo {s.nombre}</option>)}
               </select>
             </div>
             <button onClick={exportarPlanilla} disabled={descargando === 'planilla'}
@@ -4892,84 +4687,123 @@ function ExportarView({ cuatrimestre, cuatrimestres }) {
 }
 
 // ==================== APP PRINCIPAL ====================
-export default function App() {
-  const [autenticado, setAutenticado] = useState(() => localStorage.getItem('iea_auth') === 'true');
-  const [rol, setRol] = useState(() => localStorage.getItem('iea_rol') || 'editor');
-  const puedeEditar = rol !== 'consulta';
-  const [activeView, setActiveView] = useState('dashboard');
-  const [cuatrimestre, setCuatrimestre] = useState('todos');
-  const [catedras, setCatedras] = useState([]);
-  const [cursos, setCursos] = useState([]);
-  const [docentes, setDocentes] = useState([]);
-  const [sedes, setSedes] = useState([]);
-  const [cuatrimestres, setCuatrimestres] = useState([]);
-  const [solapamientos, setSolapamientos] = useState([]);
-  const [necesitanDocente, setNecesitanDocente] = useState([]);
-  const [solapCarrerasCount, setSolapCarrerasCount] = useState(0);
-  const [loading, setLoading] = useState(true);
+function SistemaApp() {
+  const institucion=useInstitution();
+  const [autenticado,setAutenticado]=useState(()=>localStorage.getItem('iea_auth')==='true');
+  const [rol,setRol]=useState(()=>localStorage.getItem('iea_rol')||'editor');
+  const puedeEditar=rol!=='consulta';
+  const [activeView,setView]=useState('dashboard');
+  const [importKind,setImportKind]=useState('horarios');
+  const [cuatrimestre,setPeriod]=useState('');
+  const periodRef=useRef(cuatrimestre);periodRef.current=cuatrimestre;
+  const [catedras,setCatedras]=useState([]),[cursos,setCursos]=useState([]),[docentes,setDocentes]=useState([]);
+  const [sedes,setSedes]=useState([]),[cuatrimestres,setCuatrimestres]=useState([]);
+  const [solapamientos,setSolapamientos]=useState([]),[necesitanDocente,setNecesitanDocente]=useState([]);
+  const [solapCarrerasCount,setSolapCarrerasCount]=useState(0);
+  const [catalogStatus,setCatalogStatus]=useState('loading'),[catalogAttempt,setCatalogAttempt]=useState(0);
+  const [loading,setLoading]=useState(false),[loadError,setLoadError]=useState(''),[loadedPeriod,setLoadedPeriod]=useState(null);
+  const requestRef=useRef(0);
+  const menu=menuFor(institucion),item=currentItem(menu,activeView);
+  const contentView=activeView.startsWith('iea_')?activeView.slice(4):activeView;
+  const storageKey='horarios.periodo.'+institucion.id;
+  const setActiveView=view=>{if(flattenMenu(menu).some(i=>i.id===view))setView(view);};
+  const setCuatrimestre=value=>{
+    if(!cuatrimestres.some(p=>String(p.id)===value))return;
+    periodRef.current=value;setPeriod(value);
+    try{localStorage.setItem(storageKey,value);}catch(e){/* The selection still works when storage is unavailable. */}
+  };
 
-  const cargarDatos = useCallback(async () => {
-    const cuatId = cuatrimestre !== 'todos' ? cuatrimestre : null;
-    const qParam = cuatId ? `?cuatrimestre_id=${cuatId}` : '';
-    try { setSedes(await apiFetch('/api/sedes')); } catch (e) { console.error(e); }
-    try { setCuatrimestres(await apiFetch('/api/cuatrimestres')); } catch (e) { console.error(e); }
-    try { setCatedras(await apiFetch(`/api/catedras${qParam}`)); } catch (e) { console.error(e); }
-    try { setCursos(await apiFetch('/api/cursos')); } catch (e) { console.error(e); }
-    try { setDocentes(await apiFetch(`/api/docentes${qParam}`)); } catch (e) { console.error(e); }
-    try { setSolapamientos(await apiFetch(`/api/horarios/solapamientos${qParam}`)); } catch (e) { console.error(e); }
-    try { setNecesitanDocente(await apiFetch(`/api/catedras/necesitan-docente${qParam}`)); } catch (e) { console.error(e); }
-    try { const sc = await apiFetch(`/api/solapamientos-carreras${qParam}`); setSolapCarrerasCount(sc.total || 0); } catch (e) { console.error(e); }
-    setLoading(false);
-  }, [cuatrimestre]);
+  useEffect(()=>{
+    if(!autenticado)return;
+    const controller=new AbortController();let active=true;
+    setCatalogStatus('loading');
+    Promise.all(['/api/cuatrimestres','/api/sedes','/api/cursos'].map(path=>apiFetch(path,{signal:controller.signal})))
+      .then(([periods,campuses,courses])=>{
+        if(!active)return;
+        if(![periods,campuses,courses].every(Array.isArray))throw new Error('Catálogos incompletos');
+        const valid=periods.filter(p=>Number.isInteger(p.id)&&p.id>0&&p.nombre);
+        setCuatrimestres(valid);setSedes(campuses);setCursos(courses);
+        let saved='';try{saved=localStorage.getItem(storageKey)||'';}catch(e){}
+        const selected=choosePeriod(valid,saved);periodRef.current=selected;setPeriod(selected);
+        setCatalogStatus('ready');
+      }).catch(e=>{if(active)setCatalogStatus('error');});
+    return ()=>{active=false;controller.abort();};
+  },[autenticado,storageKey,catalogAttempt]);
 
-  useEffect(() => { if (autenticado) cargarDatos(); }, [cargarDatos, autenticado]);
+  const cargarDatos=useCallback(async()=>{
+    if(!cuatrimestre||periodRef.current!==cuatrimestre)return;
+    const request=++requestRef.current;setLoading(true);setLoadError('');
+    const qp='?cuatrimestre_id='+encodeURIComponent(cuatrimestre);
+    try{
+      const [cats,docs,overlaps,missing,careerOverlaps,courses,campuses]=await Promise.all([
+        '/api/catedras','/api/docentes','/api/horarios/solapamientos','/api/catedras/necesitan-docente','/api/solapamientos-carreras'
+      ].map(path=>apiFetch(path+qp)).concat([apiFetch('/api/cursos'),apiFetch('/api/sedes')]));
+      if(request!==requestRef.current||periodRef.current!==cuatrimestre)return;
+      if(![cats,docs,overlaps,missing,courses,campuses].every(Array.isArray))throw new Error('El servidor devolvió datos incompletos.');
+      setCatedras(cats);setDocentes(docs);setSolapamientos(overlaps);setNecesitanDocente(missing);setCursos(courses);setSedes(campuses);
+      setSolapCarrerasCount(careerOverlaps.total||0);setLoadedPeriod(cuatrimestre);setLoading(false);
+    }catch(e){if(request===requestRef.current){setLoadError(e.message);setLoading(false);}}
+  },[cuatrimestre]);
+  useEffect(()=>{
+    if(autenticado&&catalogStatus==='ready'&&cuatrimestre)cargarDatos();
+    return ()=>{requestRef.current++;};
+  },[autenticado,catalogStatus,cuatrimestre,cargarDatos]);
 
-  if (!autenticado) return <LoginScreen onLogin={() => {
-    setRol(localStorage.getItem('iea_rol') || 'editor');
-    setAutenticado(true);
-  }} />;
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><p className="text-xl">⏳ Cargando sistema...</p></div>;
-
-  return (
-    <RolContext.Provider value={{ rol, puedeEditar }}>
-    <div className="flex min-h-screen bg-slate-100">
-      {!puedeEditar && (
-        <div className="fixed top-0 left-0 right-0 z-50 bg-amber-400 text-slate-900 text-center py-1 text-xs font-bold">
-          👁️ Modo consulta — podés ver y exportar, pero no modificar datos
-        </div>
-      )}
-      <Sidebar activeView={activeView} setActiveView={setActiveView} cuatrimestre={cuatrimestre}
-        setCuatrimestre={setCuatrimestre} sedes={sedes} cuatrimestres={cuatrimestres}
-        solapamientosCount={solapamientos.length} necesitanDocenteCount={necesitanDocente.length} solapCarrerasCount={solapCarrerasCount} />
-      <main className="flex-1 overflow-auto">
-        {activeView === 'dashboard' && <DashboardView cuatrimestre={cuatrimestre} setActiveView={setActiveView} />}
-        {activeView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
-        {activeView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
-        {activeView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
-        {activeView === 'decisiones' && <DecisionesView catedras={catedras} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
-        {activeView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} docentes={docentes} recargar={cargarDatos} />}
-        {activeView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
-        {activeView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
-        {activeView === 'sugerencias' && <SugerenciasArmadoView cuatrimestre={cuatrimestre} />}
-        {activeView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
-        {activeView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} />}
-        {activeView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
-        {activeView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
-        {activeView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
-        {activeView === 'carga_horaria' && <CargaHorariaView cuatrimestre={cuatrimestre} />}
-        {activeView === 'chequeo' && <ChequeoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} setActiveView={setActiveView} />}
-        {activeView === 'comparar' && <CompararView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
-        {activeView === 'nombres_docentes' && <NombresDocentesView docentes={docentes} recargar={cargarDatos} />}
-        {activeView === 'respaldos' && <RespaldosView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
-        {activeView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
-        {activeView === 'edi_alumnos' && <EdiAlumnosView cuatrimestre={cuatrimestre} />}
-        {activeView === 'importar' && <ImportarView recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} />}
-        {activeView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+  if(!autenticado)return <LoginScreen onLogin={()=>{setRol(localStorage.getItem('iea_rol')||'editor');setAutenticado(true);}} />;
+  if(catalogStatus!=='ready')return <div className="app-shell"><div className="app-period-state" role={catalogStatus==='error'?'alert':'status'}>
+    {catalogStatus==='error'?<>No se pudieron cargar los cuatrimestres y catálogos.<br/><button onClick={()=>setCatalogAttempt(x=>x+1)}>Reintentar</button></>:'Cargando cuatrimestres y catálogos…'}
+  </div></div>;
+  if(!cuatrimestre)return <div className="app-shell"><div className="app-period-state">
+    <h1 className="text-2xl font-bold">Elegí un cuatrimestre de trabajo</h1>
+    {cuatrimestres.length?<><p>Seleccioná el cuatrimestre cuya carga querés consultar o preparar.</p><label htmlFor="initial-period">Cuatrimestre</label>
+    <select id="initial-period" value="" onChange={e=>setCuatrimestre(e.target.value)}><option value="" disabled>Elegí un cuatrimestre</option>{cuatrimestres.map(p=><option key={p.id} value={String(p.id)}>{p.nombre}</option>)}</select></>:<p>No hay cuatrimestres disponibles. Cargá el calendario institucional antes de planificar.</p>}
+  </div></div>;
+  const ready=!loading&&!loadError&&loadedPeriod===cuatrimestre;
+  return <RolContext.Provider value={{rol,puedeEditar}}>
+    <div className="app-shell">
+      <Navigation profile={institucion} activeView={activeView} onNavigate={setActiveView} footer={<PieSidebar/>}
+        counts={ready?{solapamientos:solapamientos.length,necesitan_docente:necesitanDocente.length,solap_carreras:solapCarrerasCount}:{}} />
+      <main className="app-main">
+        <PeriodHeader period={cuatrimestre} periods={cuatrimestres} onChange={setCuatrimestre} item={item} readOnly={!puedeEditar}/>
+        <SectionTabs item={item} onNavigate={setActiveView}/>
+        {!ready?<div className="app-period-state" role={loadError?'alert':'status'}>
+          {loadError?<><p>No se pudieron cargar los datos de este cuatrimestre: {loadError}</p><button onClick={cargarDatos}>Reintentar carga</button></>:<p>Cargando {cuatrimestres.find(p=>String(p.id)===cuatrimestre)?.nombre}…</p>}
+        </div>:<div className="app-content" key={cuatrimestre+':'+activeView}>
+          {activeView.startsWith('iea_')&&contentView!=='bce_import'&&<p className="mx-8 mt-5 text-slate-600">IEA · Carreras terciarias. Estos horarios comparten el plan y los datos del apartado general.</p>}
+        {contentView === 'dashboard' && <DashboardView cuatrimestre={cuatrimestre} setActiveView={setActiveView} />}
+        {contentView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {contentView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
+        {contentView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
+        {contentView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
+        {contentView === 'decisiones' && <DecisionesView catedras={catedras} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
+        {contentView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} docentes={docentes} recargar={cargarDatos} />}
+        {contentView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
+        {contentView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {contentView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
+        {contentView === 'sugerencias' && <SugerenciasArmadoView cuatrimestre={cuatrimestre} />}
+        {contentView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
+        {contentView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} onImport={()=>{setImportKind('plan');setActiveView('importar');}} />}
+        {contentView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
+        {contentView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
+        {contentView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+        {contentView === 'carga_horaria' && <CargaHorariaView cuatrimestre={cuatrimestre} />}
+        {contentView === 'chequeo' && <ChequeoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} setActiveView={setActiveView} />}
+        {contentView === 'comparar' && <CompararView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
+        {contentView === 'nombres_docentes' && <NombresDocentesView docentes={docentes} recargar={cargarDatos} />}
+        {contentView === 'respaldos' && <RespaldosView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {contentView === 'bce_bea' && <BceBeaView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
+        {contentView === 'control_insc' && <ControlInscripcionesView cuatrimestre={cuatrimestre} />}
+        {contentView === 'edi_alumnos' && <EdiAlumnosView cuatrimestre={cuatrimestre} />}
+        {contentView === 'importar' && <ImportarView initialKind={importKind} recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} sedes={sedes} />}
+        {contentView === 'exportar' && <ExportarView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} sedes={sedes} />}
+        {contentView === 'bce_import' && <ImportarView module="bce" recargar={cargarDatos} cuatrimestres={cuatrimestres} cuatrimestre={cuatrimestre} sedes={sedes} />}
+        </div>}
       </main>
     </div>
-    </RolContext.Provider>
-  );
+  </RolContext.Provider>;
+}
+
+
+export default function App() {
+  return <InstitutionProvider><SistemaApp /></InstitutionProvider>;
 }

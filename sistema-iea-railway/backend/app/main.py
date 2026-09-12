@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -8,6 +8,8 @@ from typing import List, Optional
 import io
 import re
 
+from app.institution import INSTITUCION
+from app.import_routes import router as import_router
 from app.database import engine, get_db, Base
 from app.models.models import (
     Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
@@ -16,7 +18,13 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Sistema Horarios IEA", version="16.0")
+app = FastAPI(title=INSTITUCION.titulo, version="20.0")
+app.include_router(import_router)
+
+@app.get("/api/institucion")
+def get_institucion():
+    """Perfil público de reglas; administrado por configuración del despliegue."""
+    return INSTITUCION.public_config()
 
 app.add_middleware(
     CORSMiddleware,
@@ -76,8 +84,9 @@ def minutos_a_hora(m):
     if m is None: return None
     return f"{int(m)//60:02d}:{int(m)%60:02d}"
 
-def rangos_se_pisan(ini_a, fin_a, ini_b, fin_b, dur_default=90):
+def rangos_se_pisan(ini_a, fin_a, ini_b, fin_b, dur_default=None):
     """Compara dos franjas horarias reales. Si no hay hora_fin usa duración por defecto."""
+    if dur_default is None: dur_default = INSTITUCION.duracion_clase_minutos
     a1 = hora_a_minutos(ini_a); b1 = hora_a_minutos(ini_b)
     if a1 is None or b1 is None: return False
     a2 = hora_a_minutos(fin_a) or (a1 + dur_default)
@@ -271,6 +280,15 @@ def run_migration(db):
                 """))
                 db.commit(); resultado.append("✅ tabla configuracion")
             except Exception: db.rollback()
+        # Campos de intercambio y recuperación de la versión 19.
+        for column in ('comision', 'carrera', 'turno'):
+            db.execute(text(f'ALTER TABLE asignaciones ADD COLUMN IF NOT EXISTS {column} VARCHAR'))
+        db.execute(text("""CREATE TABLE IF NOT EXISTS importaciones_historial (
+            id SERIAL PRIMARY KEY, tipo VARCHAR NOT NULL, cuatrimestre_id INTEGER,
+            sede_id INTEGER, archivo VARCHAR, creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            restaurada_en TIMESTAMP, datos TEXT NOT NULL
+        )"""))
+        db.commit()
         # --- v18.0: respaldos automáticos antes de cada importación ---
         if 'respaldo_asignaciones' not in tables:
             try:
@@ -381,6 +399,9 @@ def run_migration(db):
             db.rollback()
     except Exception as e:
         resultado.append(f"❌ {e}")
+    db.execute(text("SELECT comision, carrera, turno FROM asignaciones LIMIT 0"))
+    db.execute(text("SELECT datos, restaurada_en FROM importaciones_historial LIMIT 0"))
+    db.commit()
     return resultado
 
 
@@ -391,7 +412,11 @@ async def startup():
     for m in migr:
         print(f"  [MIG] {m}")
     try:
-        from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+        if INSTITUCION.id == 'iea':
+            from app.seed_data import SEDES, CATEDRAS, CURSOS, DOCENTES
+        else:
+            # Los perfiles de otras instituciones empiezan sin catálogos ni personas del IEA.
+            SEDES, CATEDRAS, CURSOS, DOCENTES = (), (), (), ()
         for nombre, color in SEDES:
             if not db.query(Sede).filter(Sede.nombre == nombre).first():
                 db.add(Sede(nombre=nombre, color=color))
@@ -426,7 +451,7 @@ async def startup():
     except Exception as e:
         print(f"  ⚠️ Seed: {e}")
     db.close()
-    print("🚀 IEA Horarios v11.0 iniciado")
+    print(f"{INSTITUCION.titulo} iniciado")
 
 # v18.1: dos niveles de acceso, con claves guardadas en la base de datos
 # para poder cambiarlas desde el sistema sin tocar el código.
@@ -703,7 +728,7 @@ def get_catedras(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
             sede_cab = desg['tm_cab'] + desg['tn_cab']
             sede_vl = desg['tm_vl'] + desg['tn_vl']
             sede_cied = desg['tm_cied'] + desg['tn_cied'] + desg['virt_cied']
-            docentes_sugeridos = (1 if inscriptos <= 100 else (1 + -(-max(0, inscriptos - 100) // 100))) if inscriptos >= 10 else 0
+            docentes_sugeridos = INSTITUCION.docentes_sugeridos(inscriptos)
             cursos_vinc = []
             try:
                 for cc in (cat.cursos or []):
@@ -834,9 +859,9 @@ def get_catedras_necesitan_docente(cuatrimestre_id: int = None, db: Session = De
     all_cats = db.query(Catedra).all()
     for cat in all_cats:
         total = total_map.get(cat.id, 0)
-        if total < 10: continue
+        if not INSTITUCION.requiere_docente(total): continue
         # Docentes necesarios vs asignados
-        docs_necesarios = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+        docs_necesarios = INSTITUCION.docentes_sugeridos(total)
         asigs = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
         if cuatrimestre_id: asigs = asigs.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
         asigs_list = asigs.all()
@@ -1019,11 +1044,11 @@ def checklist_cierre(cuatrimestre_id: int, limite_horas: int = 20, db: Session =
     for cat_id in se_dictan:
         if cat_id in con_docente: continue
         n = inscriptos.get(cat_id, 0)
-        if n >= 10:
+        if INSTITUCION.requiere_docente(n):
             cat = cats.get(cat_id)
             if cat: faltan_docente.append(f"{cat.codigo} {cat.nombre[:32]} ({n} inscriptos)")
     controles.append({
-        "id": "sin_docente", "titulo": "Cátedras con 10 o más inscriptos sin docente",
+        "id": "sin_docente", "titulo": f"Cátedras con {INSTITUCION.minimo_inscriptos_apertura} o más inscriptos sin docente",
         "explicacion": "Por criterio deberían abrirse con docente. Si van a quedar asincrónicas a propósito, forzá la decisión en Cátedras que se dictan.",
         "estado": "error" if faltan_docente else "ok",
         "cantidad": len(faltan_docente), "detalle": sorted(faltan_docente)[:30],
@@ -1159,7 +1184,7 @@ def checklist_cierre(cuatrimestre_id: int, limite_horas: int = 20, db: Session =
 def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
                            db: Session = Depends(get_db)):
     """Horas semanales acumuladas por docente, sumando todas sus cátedras y sedes.
-    Si una clase no tiene hora de fin se estima en 1h30."""
+    Si una clase no tiene hora de fin se usa la duración del perfil institucional."""
     q = db.query(Asignacion).filter(Asignacion.docente_id.isnot(None))
     if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = q.all()
@@ -1174,7 +1199,7 @@ def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
         })
         ini = hora_a_minutos(a.hora_inicio)
         fin = hora_a_minutos(getattr(a, 'hora_fin', None))
-        dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else 90
+        dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else INSTITUCION.duracion_clase_minutos
         info["minutos"] += dur
         info["clases"] += 1
         if a.catedra: info["catedras"].add(a.catedra.codigo)
@@ -1253,7 +1278,7 @@ def exportar_horarios_docentes(cuatrimestre_id: int = None, docente_id: int = No
         total_min = 0
         for a in sorted(info["asigs"], key=lambda x: (orden_dias.get(x.dia, 9), x.hora_inicio or "")):
             ini = hora_a_minutos(a.hora_inicio); fin = hora_a_minutos(getattr(a, 'hora_fin', None))
-            dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else 90
+            dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else INSTITUCION.duracion_clase_minutos
             total_min += dur
             valores = [
                 a.dia or "A confirmar", a.hora_inicio or "—",
@@ -1287,36 +1312,19 @@ def exportar_horarios_docentes(cuatrimestre_id: int = None, docente_id: int = No
 # Antes de cada importación que borra asignaciones se guarda una copia del estado anterior.
 # Si alguien sube el archivo equivocado, se restaura con un clic.
 
-def crear_respaldo(db, cuatrimestre_id, motivo="Importación de horarios"):
-    """Guarda el estado actual de las asignaciones del cuatrimestre. Devuelve el id del respaldo."""
+def crear_respaldo(db, cuatrimestre_id, motivo="Estado previo a restauración antigua", commit=True):
+    """Compatibilidad con respaldos antiguos; guarda todos los campos de asignaciones."""
     from sqlalchemy import text
     import json
     try:
-        asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).all()
-        datos = []
-        for a in asigs:
-            datos.append({
-                "catedra_id": a.catedra_id, "docente_id": a.docente_id,
-                "cuatrimestre_id": a.cuatrimestre_id, "dia": a.dia,
-                "hora_inicio": a.hora_inicio, "hora_fin": getattr(a, 'hora_fin', None),
-                "sede_id": a.sede_id, "modalidad": a.modalidad,
-                "recibe_alumnos_presenciales": getattr(a, 'recibe_alumnos_presenciales', False),
-            })
-        res = db.execute(text(
-            "INSERT INTO respaldo_asignaciones (cuatrimestre_id, motivo, cantidad, datos) "
-            "VALUES (:c, :m, :n, :d) RETURNING id"
-        ), {"c": cuatrimestre_id, "m": motivo, "n": len(datos), "d": json.dumps(datos)})
-        nuevo_id = res.scalar()
-        # Conservar sólo los últimos 15 respaldos por cuatrimestre
-        db.execute(text(
-            "DELETE FROM respaldo_asignaciones WHERE cuatrimestre_id = :c AND id NOT IN "
-            "(SELECT id FROM respaldo_asignaciones WHERE cuatrimestre_id = :c ORDER BY id DESC LIMIT 15)"
-        ), {"c": cuatrimestre_id})
-        db.commit()
+        datos = [dict(r._mapping) for r in db.execute(text("SELECT * FROM asignaciones WHERE cuatrimestre_id=:p ORDER BY id"), {"p":cuatrimestre_id})]
+        nuevo_id = db.execute(text("INSERT INTO respaldo_asignaciones (cuatrimestre_id,motivo,cantidad,datos) VALUES (:p,:m,:n,:d) RETURNING id"),
+            {"p":cuatrimestre_id,"m":motivo,"n":len(datos),"d":json.dumps(datos,default=str)}).scalar_one()
+        if commit: db.commit()
         return nuevo_id
     except Exception:
         db.rollback()
-        return None
+        raise HTTPException(500, "No se pudo crear el respaldo previo. Se canceló la operación.")
 
 @app.get("/api/respaldos")
 def listar_respaldos(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
@@ -1340,49 +1348,34 @@ def listar_respaldos(cuatrimestre_id: int = None, db: Session = Depends(get_db))
 
 @app.post("/api/respaldos/{respaldo_id}/restaurar")
 def restaurar_respaldo(respaldo_id: int, db: Session = Depends(get_db)):
-    """Deshace una importación: borra lo cargado y repone el estado guardado."""
+    """Restauración atómica de archivos antiguos; no inventa datos que no guardaron."""
     from sqlalchemy import text
+    from app.import_service import lock_state
     import json
     try:
-        row = db.execute(text(
-            "SELECT cuatrimestre_id, datos, cantidad, motivo FROM respaldo_asignaciones WHERE id = :id"
-        ), {"id": respaldo_id}).fetchone()
-    except Exception:
-        db.rollback()
-        raise HTTPException(status_code=404, detail="No se pudo leer el respaldo")
-    if not row: raise HTTPException(status_code=404, detail="Respaldo no encontrado")
-    cuatrimestre_id = row[0]
-    try:
-        datos = json.loads(row[1] or "[]")
-    except Exception:
-        raise HTTPException(status_code=400, detail="El respaldo está dañado")
-
-    # Antes de restaurar, respaldar el estado actual (por si la restauración también fue un error)
-    crear_respaldo(db, cuatrimestre_id, motivo="Estado previo a una restauración")
-
-    try:
-        db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
-        repuestas = 0
-        for d in datos:
-            a = Asignacion(
-                catedra_id=d.get("catedra_id"), docente_id=d.get("docente_id"),
-                cuatrimestre_id=cuatrimestre_id, dia=d.get("dia"),
-                hora_inicio=d.get("hora_inicio"), sede_id=d.get("sede_id"),
-                modalidad=d.get("modalidad"))
-            db.add(a); db.flush()
-            if d.get("hora_fin"):
-                try:
-                    db.execute(text("UPDATE asignaciones SET hora_fin = :h WHERE id = :id"),
-                               {"h": d["hora_fin"], "id": a.id})
-                except Exception: pass
-            repuestas += 1
+        lock_state(db)
+        row = db.execute(text("SELECT cuatrimestre_id,datos FROM respaldo_asignaciones WHERE id=:id"), {"id":respaldo_id}).fetchone()
+        if not row: raise HTTPException(404,"Respaldo no encontrado")
+        period = row[0]
+        try: records = json.loads(row[1])
+        except Exception: raise HTTPException(422,"El respaldo está dañado")
+        allowed = {column.name for column in Asignacion.__table__.columns}
+        if not isinstance(records,list) or any(not isinstance(r,dict) or r.get('cuatrimestre_id',period)!=period for r in records):
+            raise HTTPException(422,"El respaldo no coincide con su período")
+        crear_respaldo(db,period,motivo="Estado previo a restauración antigua",commit=False)
+        db.execute(text("DELETE FROM asignaciones WHERE cuatrimestre_id=:p"), {"p":period})
+        for record in records:
+            values = {k:v for k,v in record.items() if k in allowed}
+            values['cuatrimestre_id'] = period
+            columns=list(values)
+            db.execute(text("INSERT INTO asignaciones ("+', '.join(columns)+") VALUES ("+', '.join(':'+c for c in columns)+")"),values)
         db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error restaurando: {str(e)[:200]}")
-    return {"ok": True, "asignaciones_restauradas": repuestas,
-            "cuatrimestre_id": cuatrimestre_id,
-            "mensaje": f"Se repusieron {repuestas} asignaciones al estado anterior."}
+        return {"ok":True,"asignaciones_restauradas":len(records),"cuatrimestre_id":period,
+                "mensaje":"Se recuperaron las asignaciones guardadas. Este respaldo antiguo no incluye otros datos."}
+    except HTTPException:
+        db.rollback(); raise
+    except Exception:
+        db.rollback(); raise HTTPException(422,"No se pudo restaurar el respaldo. Se conservaron los datos anteriores.")
 
 @app.delete("/api/respaldos/{respaldo_id}")
 def borrar_respaldo(respaldo_id: int, db: Session = Depends(get_db)):
@@ -1427,7 +1420,7 @@ def _inscriptos_por_catedra(db, cuatrimestre_id):
 
 def _estado_catedra(total, tiene_docente, se_dicta, forzada):
     """Devuelve (estado, sugerido). Estado real considera el forzado manual."""
-    if total >= 10: sugerido = "ABRIR"
+    if INSTITUCION.requiere_docente(total): sugerido = "ABRIR"
     elif total >= 1: sugerido = "ASINCRONICA"
     else: sugerido = "SIN_ALUMNOS"
     if not se_dicta: return "NO_SE_DICTA", sugerido
@@ -1653,8 +1646,8 @@ def asignar_docente_rapido(catedra_id: int, data: dict, db: Session = Depends(ge
 @app.get("/api/catedras/criterio-apertura")
 def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     """
-    >=10 total → ABRIR. 1 doc hasta 100, luego +1 cada 100 adicionales.
-    1-9 total → ASINCRÓNICA
+    Mínimo de apertura y cantidad por docente: definidos por el perfil institucional.
+    Entre 1 y el mínimo de apertura → ASINCRÓNICA
     0 → SIN ALUMNOS
     """
     from sqlalchemy import text
@@ -1671,10 +1664,10 @@ def get_criterio_apertura(cuatrimestre_id: int = None, db: Session = Depends(get
         total = total_map.get(cat.id, 0)
         if total == 0:
             sin_alumnos.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": 0})
-        elif total < 10:
+        elif not INSTITUCION.requiere_docente(total):
             asincronica.append({"codigo": cat.codigo, "nombre": cat.nombre, "total": total})
         else:
-            docs = 1 if total <= 100 else (1 + -(-max(0, total - 100) // 100))
+            docs = INSTITUCION.docentes_sugeridos(total)
             # Check if already has asignacion
             tiene = db.query(Asignacion).filter(Asignacion.catedra_id == cat.id)
             if cuatrimestre_id: tiene = tiene.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
@@ -2330,104 +2323,8 @@ async def importar_links_meet(file: UploadFile = File(...), db: Session = Depend
 
 # ===== v5.0: Importar alumnos con clasificación sede/turno/modalidad =====
 @app.post("/api/importar/alumnos")
-async def importar_alumnos(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
-    from sqlalchemy import text
-    try:
-        content = await file.read()
-        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-        creados = 0; inscripciones = 0; actualizados = 0; errores = []; edi_total = 0
-        stats = {'virtual': 0, 'presencial': 0, 'turnos': {}, 'sedes': {}}
-        for ws in wb:
-            # v16.0: Collect all rows, find dominant code per sheet for EDI matching
-            all_rows = list(ws.iter_rows(min_row=2, values_only=True))
-            sheet_codes = {}
-            for pre_row in all_rows:
-                pv = [str(c).strip() if c is not None else "" for c in pre_row]
-                if len(pv) < 4: continue
-                pm = re.match(r'^(c\.\d+)', pv[3], re.IGNORECASE)
-                if pm:
-                    pc = pm.group(1)
-                    sheet_codes[pc] = sheet_codes.get(pc, 0) + 1
-            dominant_code = max(sheet_codes, key=sheet_codes.get) if sheet_codes else None
-            edi_count = 0
-            for row_num, row in enumerate(all_rows, start=2):
-                vals = [str(c).strip() if c is not None else "" for c in row]
-                if len(vals) < 4: continue
-                alumno_texto = vals[1]
-                dni_raw = str(vals[2]).strip() if vals[2] else ""
-                materia_texto = vals[3]
-                curso_texto = vals[4] if len(vals) > 4 else ""
-                dni = re.sub(r'[.\-\s]', '', dni_raw)
-                if '.' in dni:
-                    try: dni = str(int(float(dni)))
-                    except: pass
-                if not dni or len(dni) < 6: continue
-                m_nombre = re.match(r'^(.+?)\s*\(\d+\)', alumno_texto)
-                nombre_completo = m_nombre.group(1).strip() if m_nombre else alumno_texto
-                partes = nombre_completo.strip().split(' ')
-                nombre = ' '.join(partes[:-1]) if len(partes) >= 2 else nombre_completo
-                apellido = partes[-1] if len(partes) >= 2 else ""
-                m_cod = re.match(r'^(c\.\d+)', materia_texto, re.IGNORECASE)
-                is_edi = False; edi_mat = None
-                if not m_cod:
-                    # v16.0: If it says EDI, use the dominant cátedra code of this sheet
-                    if 'EDI' in materia_texto.upper() and dominant_code:
-                        codigo = dominant_code
-                        is_edi = True; edi_mat = materia_texto[:100]
-                        edi_count += 1
-                    else:
-                        continue
-                else:
-                    codigo = m_cod.group(1)
-                catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-                if not catedra: continue
-                # v5.0: Clasificar por curso
-                modalidad_alumno, sede_ref, es_cied = clasificar_alumno_curso(curso_texto)
-                turno = extraer_turno_materia(materia_texto)
-                alumno = db.query(Alumno).filter(Alumno.dni == dni).first()
-                if not alumno:
-                    alumno = Alumno(dni=dni, nombre=nombre, apellido=apellido)
-                    db.add(alumno); db.flush(); creados += 1
-                existe = db.query(Inscripcion).filter(
-                    Inscripcion.alumno_id == alumno.id,
-                    Inscripcion.catedra_id == catedra.id,
-                    Inscripcion.cuatrimestre_id == cuatrimestre_id
-                ).first()
-                if not existe:
-                    insc = Inscripcion(alumno_id=alumno.id, catedra_id=catedra.id, cuatrimestre_id=cuatrimestre_id)
-                    db.add(insc); db.flush()
-                    try:
-                        db.execute(text(
-                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso, es_edi = :edi, edi_materia = :edim WHERE id = :id"
-                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "edi": is_edi, "edim": edi_mat, "id": insc.id})
-                    except Exception:
-                        pass
-                    inscripciones += 1
-                else:
-                    try:
-                        db.execute(text(
-                            "UPDATE inscripciones SET turno = :turno, modalidad_alumno = :mod, sede_referencia = :sede, curso_nombre = :curso, es_edi = :edi, edi_materia = :edim WHERE id = :id"
-                        ), {"turno": turno, "mod": modalidad_alumno, "sede": sede_ref, "curso": curso_texto[:200] if curso_texto else None, "edi": is_edi, "edim": edi_mat, "id": existe.id})
-                        actualizados += 1
-                    except Exception:
-                        pass
-                # Contar stats siempre
-                stats[modalidad_alumno] = stats.get(modalidad_alumno, 0) + 1
-                if turno: stats['turnos'][turno] = stats['turnos'].get(turno, 0) + 1
-                if sede_ref: stats['sedes'][sede_ref] = stats['sedes'].get(sede_ref, 0) + 1
-            edi_total += edi_count
-        db.commit(); wb.close()
-        return {
-            "alumnos_nuevos": creados, "inscripciones_nuevas": inscripciones,
-            "inscripciones_actualizadas": actualizados,
-            "edi_contabilizados": edi_total,
-            "virtuales": stats.get('virtual', 0), "presenciales": stats.get('presencial', 0),
-            "por_turno": stats['turnos'], "por_sede": stats['sedes'],
-            "errores": errores[:20]
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+async def importar_alumnos(file: UploadFile = File(...)):
+    raise HTTPException(status_code=409, detail="Actualizá la interfaz y usá Importaciones recuperables: primero vista previa y después confirmación con sede y período explícitos.")
 
 
 # ===== v16.0: EDI Inscripciones — listar alumnos EDI por cátedra =====
@@ -2734,7 +2631,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
     # v17.0: Pasos alineados al flujo real de trabajo del equipo
     pasos = [
         {"num": 1, "titulo": "Marcar qué cátedras se dictan",
-         "desc": "Selector masivo. Incluye las asincrónicas: se dictan aunque no tengan docente.",
+         "desc": "Seleccioná las materias que integran la oferta de este cuatrimestre.",
          "completo": se_dictan > 0,
          "parcial": False,
          "detalle": (f"{se_dictan} cátedras marcadas para dictarse"
@@ -2753,7 +2650,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
                      if se_dictan and total_insc else "Completá los pasos 1 y 2 primero"),
          "seccion": "exportar"},
         {"num": 4, "titulo": "Reimportar la planilla completada",
-         "desc": "El sistema detecta solapamientos y deja todo asignado.",
+         "desc": "Revisá las diferencias de la planilla y confirmá su importación. Después verificá cruces y restricciones.",
          "completo": cats_con_horario > 0 and solaps == 0,
          "parcial": cats_con_horario > 0,
          "detalle": (f"{cats_con_horario} cátedras con horario cargado"
@@ -2764,7 +2661,7 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
          "desc": "Verificar solapamientos, completar faltantes y exportar el archivo final.",
          "completo": cats_con_horario > 0 and solaps == 0 and sin_docente == 0,
          "parcial": cats_con_horario > 0,
-         "detalle": (f"{cats_abiertas_doc} abiertas con docente · {cats_asincronicas} asincrónicas"
+         "detalle": (f"{cats_abiertas_doc} con docente · {cats_asincronicas} sin docente asignado"
                      + (f" · {sin_docente} sin resolver" if sin_docente else "")),
          "seccion": "exportar"},
     ]
@@ -2787,113 +2684,8 @@ def get_dashboard(cuatrimestre_id: int = None, db: Session = Depends(get_db)):
 
 # ===== v13.0: Plan Carrera - Importar molde de horarios =====
 @app.post("/api/importar/plan-carrera")
-async def importar_plan_carrera(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    from openpyxl import load_workbook
-    from sqlalchemy import text
-    import io
-    content = await file.read()
-    wb = load_workbook(io.BytesIO(content), read_only=True)
-    total = 0
-    # Clear existing plan
-    try: db.execute(text("DELETE FROM plan_carrera")); db.commit()
-    except: db.rollback()
-    # PHASE 1: Collect all records first, then deduplicate
-    all_records = []  # [(sede, carrera, anno, codigo, nombre, dtm, htm, dtn, htn)]
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        sede = sheet_name.strip()
-        raw_rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        carrera_act = ''
-        current_anno = ''
-        pending_cats = []  # cats before first año label
-        expect_reset = False  # set after Practica Formativa
-        edi_counter = {}  # (sede, carrera, anno) → count
-        def flush_pending(anno_to_use):
-            nonlocal pending_cats
-            for pc in pending_cats:
-                all_records.append((sede, carrera_act, anno_to_use, pc[0], pc[1], pc[2], pc[3], pc[4], pc[5]))
-            pending_cats = []
-        for vals in raw_rows:
-            if len(vals) < 5: continue
-            b = str(vals[1] or '').strip()
-            c = str(vals[2] or '').strip()
-            d = str(vals[3] or '').strip()
-            e = str(vals[4] or '').strip()
-            # Detect carrera in columns B, C, or D
-            for txt in [b, c, d]:
-                t_up = txt.upper()
-                if ('TECNICO' in t_up or 'TECNICATURA' in t_up) and len(txt) > 15:
-                    flush_pending(current_anno)
-                    carrera_act = txt.strip()
-                    current_anno = ''
-            c_up = c.upper()
-            e_up = e.upper()
-            if 'INSCRIPCION' in c_up or 'INSCRIPCIÓN' in c_up:
-                current_anno = ''
-                continue
-            # "Practica Formativa" without code: set flag to reset AFTER next Profesionalizante (if any)
-            if 'PRACTICA FORMATIVA' in e_up:
-                expect_reset = True
-                continue
-            # "CARRERA / AÑO / CODIGO" header row = start of new carrera block
-            if d.upper().strip() == 'CODIGO' and e_up.strip() == 'MATERIA':
-                current_anno = ''
-                continue
-            if ('1ER' in c_up or '2DO' in c_up or '3ER' in c_up or '4TO' in c_up) and 'AÑO' in c_up:
-                new_anno = c.strip()
-                flush_pending(new_anno)
-                current_anno = new_anno
-            # Extract horarios
-            dia_tm = str(vals[6] or '').strip() if len(vals) > 6 else ''
-            hora_tm = str(vals[7] or '').strip() if len(vals) > 7 else ''
-            dia_tn = str(vals[9] or '').strip() if len(vals) > 9 else ''
-            hora_tn = str(vals[10] or '').strip() if len(vals) > 10 else ''
-            # Detect catedra code
-            try:
-                cod_num = int(float(d))
-                if cod_num > 0 and e and carrera_act:
-                    cod = f'c.{cod_num}'
-                    e_up_check = e.upper()
-                    is_prof = 'PROFESIONALIZANTE' in e_up_check
-                    # If we saw "Practica Formativa" and this is NOT a Profesionalizante → reset year first
-                    if expect_reset and not is_prof and current_anno:
-                        current_anno = ''
-                        expect_reset = False
-                    if current_anno:
-                        all_records.append((sede, carrera_act, current_anno, cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
-                        # Práctica Profesionalizante = last item of a year block → reset
-                        if is_prof:
-                            current_anno = ''
-                            expect_reset = False
-                    else:
-                        pending_cats.append((cod, e.strip(), dia_tm, hora_tm, dia_tn, hora_tn))
-            except:
-                # EDI detection: no code, but "EDI" in column E
-                if e.strip().upper() == 'EDI' and carrera_act and current_anno:
-                    edi_key = (sede, carrera_act)  # per carrera, NOT per anno
-                    edi_count = edi_counter.get(edi_key, 0) + 1
-                    edi_counter[edi_key] = edi_count
-                    all_records.append((sede, carrera_act, current_anno, f'EDI-{edi_count}', f'EDI {edi_count} (Espacio de Definición Institucional)', '', '', '', ''))
-        flush_pending(current_anno or 'AÑO')
-    # PHASE 2: Deduplicate — one code per carrera per sede
-    seen = set()
-    unique_records = []
-    for rec in all_records:
-        key = (rec[0], rec[1], rec[3])  # (sede, carrera, codigo)
-        if key in seen: continue
-        seen.add(key)
-        unique_records.append(rec)
-    # PHASE 3: Insert
-    for rec in unique_records:
-        try:
-            db.execute(text("""INSERT INTO plan_carrera (sede,carrera,anno,codigo_catedra,nombre_catedra,dia_tm,hora_tm,dia_tn,hora_tn)
-                VALUES (:s,:ca,:an,:co,:no,:dtm,:htm,:dtn,:htn)"""),
-                {"s":rec[0],"ca":rec[1],"an":rec[2],"co":rec[3],"no":rec[4],"dtm":rec[5],"htm":rec[6],"dtn":rec[7],"htn":rec[8]})
-            total += 1
-        except: pass
-    db.commit()
-    wb.close()
-    return {"importados": total, "hojas": wb.sheetnames}
+async def importar_plan_carrera(file: UploadFile = File(...)):
+    raise HTTPException(status_code=409, detail="Actualizá la interfaz y usá Importaciones recuperables: primero vista previa y después confirmación con sede y período explícitos.")
 
 # ===== v15.0: Importar docentes desde archivo CUIT =====
 @app.post("/api/importar/docentes-cuit")
@@ -3198,290 +2990,45 @@ DOCENTE_TYPO_MAP = {
     # NOT mapping: KAREN PAMELA FLORENTIN → goes to Caren Pamela, not Isaul
 }
 
-def _parse_horarios_excel(file_content, db, cuatrimestre_id):
-    """Parse horarios Excel and return structured data without applying changes."""
-    from openpyxl import load_workbook
-    import io
-    wb = load_workbook(io.BytesIO(file_content))
-    all_cats = {c.codigo: c for c in db.query(Catedra).all()}
-    all_docs = db.query(Docente).all()
-    # v18.0: equivalencias de nombres ya aprendidas
-    alias_guardados = cargar_alias(db)
-    docentes_por_id = {d.id: d for d in all_docs}
-    alias_nuevos = {}
-    doc_by_apellido = {}
-    for d in all_docs:
-        ap = (d.apellido or '').upper().strip()
-        if ap: doc_by_apellido[ap] = d
-        full = f"{(d.apellido or '')} {(d.nombre or '')}".upper().strip()
-        if full: doc_by_apellido[full] = d
-        full2 = f"{(d.nombre or '')} {(d.apellido or '')}".upper().strip()
-        if full2: doc_by_apellido[full2] = d
-        # Also match by full name as typed (e.g. "Luciano Salinas")
-        full3 = f"{(d.nombre or '')} {(d.apellido or '')}".strip()
-        if full3: doc_by_apellido[full3.upper()] = d
-    all_sedes = {s.nombre: s for s in db.query(Sede).all()}
-    dia_map = {'LUNES':'Lunes','MARTES':'Martes','MIERCOLES':'Miércoles','MIÉRCOLES':'Miércoles',
-        'JUEVES':'Jueves','VIERNES':'Viernes','SABADO':'Sábado','SÁBADO':'Sábado'}
-    def _limpiar_hora(h):
-        h = str(h or '').replace('.', ':').replace(' HS', '').replace(' hs', '').replace('HS', '').strip()
-        if h and ':' in h:
-            partes = h.split(':')
-            try: h = f"{int(partes[0]):02d}:{partes[1].strip()[:2]}"
-            except Exception: pass
-        return h
-
-    def _parece_hora(v):
-        return bool(re.match(r'^\s*\d{1,2}[:.]\d{2}', str(v or '').strip()))
-
-    results = []; no_cat = []; no_doc = set(); doc_to_create = set()
-    for ws in wb.worksheets:
-        if ws.title.strip().lower() in ('instructivo', 'instrucciones'): continue
-        filas = list(ws.iter_rows(values_only=True))
-        # v17.0: autodetección de formato.
-        # Formato CLÁSICO:  A=cod B=materia C=dia D=hora E=sede F=docente G=meet
-        # Formato PLANILLA: A=cod B=materia C=dia D=hora_ini E=hora_fin F=sede G=docente H=meet
-        formato_planilla = False
-        for f in filas[:6]:
-            textos = [str(x or '').upper().strip() for x in list(f)[:9]]
-            if any('HORA FIN' in t for t in textos):
-                formato_planilla = True; break
-        if not formato_planilla:
-            # Heurística: si la columna E parece una hora en varias filas de datos, es planilla
-            hits = 0; muestras = 0
-            for f in filas:
-                v = list(f)
-                if len(v) < 6: continue
-                try:
-                    if int(float(str(v[0] or ''))) <= 0: continue
-                except Exception: continue
-                muestras += 1
-                if _parece_hora(v[4]): hits += 1
-                if muestras >= 12: break
-            if muestras and hits >= max(2, muestras // 2): formato_planilla = True
-
-        for row in filas:
-            vals = list(row)
-            if len(vals) < 5: continue
-            try: cod_num = int(float(str(vals[0] or '')))
-            except: continue
-            if cod_num <= 0: continue
-            codigo = f'c.{cod_num}'
-            materia = str(vals[1] or '').strip()
-            dia_raw = str(vals[2] or '').strip()
-            hora_raw = str(vals[3] or '').strip()
-            if formato_planilla:
-                hora_fin_raw = str(vals[4] or '').strip() if len(vals) > 4 else ''
-                sede_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
-                doc_raw = str(vals[6] or '').strip() if len(vals) > 6 else ''
-                meet_link = str(vals[7] or '').strip() if len(vals) > 7 else ''
-            else:
-                hora_fin_raw = ''
-                sede_raw = str(vals[4] or '').strip()
-                doc_raw = str(vals[5] or '').strip() if len(vals) > 5 else ''
-                meet_link = str(vals[6] or '').strip() if len(vals) > 6 else ''
-            if doc_raw.lower() in ('none', 'nan'): doc_raw = ''
-            hora_fin = _limpiar_hora(hora_fin_raw) if hora_fin_raw else ''
-            if not dia_raw or not hora_raw: continue
-            dia = dia_map.get(dia_raw.upper().strip(), dia_raw.strip().title())
-            hora = _limpiar_hora(hora_raw)
-            cat = all_cats.get(codigo)
-            if not cat: no_cat.append(f"{codigo} {materia}"); continue
-            sede_nombre = normalizar_sede(sede_raw) or sede_raw or ''
-            sede_obj = None
-            def _strip_accents(s):
-                import unicodedata
-                return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-            for sn, so in all_sedes.items():
-                if _strip_accents(sn.lower()).replace(' ','') == _strip_accents(sede_nombre.lower()).replace(' ',''): sede_obj = so; break
-            if not sede_obj:
-                for sn, so in all_sedes.items():
-                    if _strip_accents(sede_nombre.lower())[:4] in _strip_accents(sn.lower()): sede_obj = so; break
-            docente_obj = None; doc_display = ''
-            if doc_raw and not doc_raw.lower().startswith('ver '):
-                doc_clean = doc_raw.upper().strip()
-                if doc_clean.startswith('VER '): doc_clean = doc_clean[4:].strip()
-                # Apply typo map
-                # v18.0: primero el diccionario de equivalencias guardado en la base.
-                # Es lo que antes se corregía a mano en un Excel antes de cada importación.
-                clave = _clave_alias(doc_raw)
-                if clave in alias_guardados:
-                    docente_obj = docentes_por_id.get(alias_guardados[clave])
-                if not docente_obj:
-                    corrected = DOCENTE_TYPO_MAP.get(doc_clean, doc_clean)
-                    docente_obj = doc_by_apellido.get(corrected)
-                    if not docente_obj:
-                        for key, d in doc_by_apellido.items():
-                            if corrected in key or key in corrected: docente_obj = d; break
-                if docente_obj:
-                    doc_display = f"{docente_obj.nombre} {docente_obj.apellido}"
-                    # Aprende la variante para la próxima vez
-                    if clave and clave not in alias_guardados:
-                        alias_nuevos[clave] = (doc_raw, docente_obj.id)
-                else:
-                    doc_display = doc_raw
-                    doc_to_create.add(doc_raw)
-            modalidad = 'remoto' if sede_nombre in ['Online - Interior', 'ONLINE'] else 'presencial_virtual'
-            results.append({
-                'cat_id': cat.id, 'cat_codigo': codigo, 'cat_nombre': cat.nombre,
-                'dia': dia, 'hora': hora, 'hora_fin': hora_fin,
-                'sede_id': sede_obj.id if sede_obj else None,
-                'sede_nombre': sede_nombre, 'docente_id': docente_obj.id if docente_obj else None,
-                'docente_display': doc_display, 'modalidad': modalidad,
-                'doc_raw': doc_raw, 'meet_link': meet_link if meet_link.startswith('http') else '',
-            })
-    wb.close()
-    # Guardar las variantes nuevas que se resolvieron bien
-    for clave, (texto, did) in alias_nuevos.items():
-        guardar_alias(db, texto, did, origen='automatico')
-    return results, list(set(no_cat)), sorted(list(doc_to_create))
 
 # ===== v15.0: Preview horarios import =====
 @app.post("/api/importar/horarios-preview")
-async def horarios_preview(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
-    try:
-        content = await file.read()
-        results, no_cat, doc_to_create = _parse_horarios_excel(content, db, cuatrimestre_id)
-        current_count = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).count()
-        con_doc = len([r for r in results if r['docente_id']])
-        sin_doc = len([r for r in results if not r['docente_id'] and not r['doc_raw']])
-        doc_new = len([r for r in results if not r['docente_id'] and r['doc_raw']])
-        con_meet = len([r for r in results if r.get('meet_link')])
-        return {
-            "asignaciones_actuales_a_borrar": current_count,
-            "asignaciones_nuevas": len(results),
-            "con_docente_existente": con_doc,
-            "sin_docente": sin_doc,
-            "con_docente_nuevo_a_crear": doc_new,
-            "links_meet": con_meet,
-            "docentes_a_crear": doc_to_create,
-            "catedras_no_encontradas": no_cat[:20],
-            "_debug": {"total_catedras_db": len(db.query(Catedra).all()), "total_docentes_db": len(db.query(Docente).all()), "no_cat_count": len(no_cat)},
-            "preview": [{"cat": r['cat_codigo'], "nombre": r['cat_nombre'][:30], "dia": r['dia'],
-                "hora": r['hora'], "sede": r['sede_nombre'], "docente": r['docente_display'] or '—',
-                "estado": "✅" if r['docente_id'] else ("🆕 Crear" if r['doc_raw'] else "—")} for r in results[:50]],
-        }
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "traceback": traceback.format_exc()[-500:],
-            "asignaciones_actuales_a_borrar": 0, "asignaciones_nuevas": 0, "con_docente_existente": 0,
-            "docentes_a_crear": [], "catedras_no_encontradas": [], "preview": []}
+async def horarios_preview(file: UploadFile = File(...)):
+    raise HTTPException(status_code=409, detail="Actualizá la interfaz y usá Importaciones recuperables: primero vista previa y después confirmación con sede y período explícitos.")
 
 # ===== v15.0: Apply horarios import (after preview) =====
 @app.post("/api/importar/horarios-aplicar")
-async def horarios_aplicar(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
-    content = await file.read()
-    results, no_cat, doc_to_create = _parse_horarios_excel(content, db, cuatrimestre_id)
-    # 1) Create missing docentes
-    nuevos_docs = 0
-    doc_created_map = {}
-    for doc_name in doc_to_create:
-        parts = doc_name.strip().split(' ', 1)
-        if len(parts) == 2:
-            apellido = parts[0].strip().title()
-            nombre = parts[1].strip().title()
-        else:
-            apellido = parts[0].strip().title()
-            nombre = ''
-        # v17.0: el DNI ya es opcional, se crea sin placeholder
-        new_doc = Docente(nombre=nombre, apellido=apellido, dni=None)
-        db.add(new_doc); db.flush()
-        doc_created_map[doc_name.upper()] = new_doc
-        nuevos_docs += 1
-    # v18.0: respaldo automático ANTES de borrar nada. Permite deshacer la importación
-    # si se subió el archivo equivocado o una versión incompleta.
-    respaldo_id = crear_respaldo(db, cuatrimestre_id,
-                                 motivo=f"Antes de importar {getattr(file, 'filename', 'horarios')}"[:120])
-
-    # 2) Delete existing asignaciones for this cuatrimestre
-    try:
-        deleted = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).delete()
-        db.flush()
-    except Exception as e:
-        db.rollback()
-        return {"error": f"Error borrando asignaciones: {str(e)}"}
-    # 3) Create new asignaciones + update meet links
-    creados = 0; meet_updated = 0
-    from sqlalchemy import text as sql_text
-    for r in results:
-        doc_id = r['docente_id']
-        if not doc_id and r['doc_raw']:
-            created = doc_created_map.get(r['doc_raw'].upper())
-            if created: doc_id = created.id
-        asig = Asignacion(
-            catedra_id=r['cat_id'], docente_id=doc_id,
-            cuatrimestre_id=cuatrimestre_id, dia=r['dia'], hora_inicio=r['hora'],
-            sede_id=r['sede_id'], modalidad=r['modalidad'])
-        db.add(asig)
-        db.flush()
-        # v17.0: hora_fin va por SQL (columna creada por migración, no está en el modelo)
-        if r.get('hora_fin'):
-            try:
-                db.execute(sql_text("UPDATE asignaciones SET hora_fin = :hf WHERE id = :id"),
-                           {"hf": r['hora_fin'], "id": asig.id})
-            except Exception: pass
-        creados += 1
-        # v16.0: Update meet link on cátedra if provided
-        if r.get('meet_link'):
-            try:
-                db.execute(sql_text("UPDATE catedras SET link_meet = :link WHERE id = :id"),
-                    {"link": r['meet_link'], "id": r['cat_id']})
-                meet_updated += 1
-            except: pass
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        return {"error": f"Error guardando: {str(e)[:200]}"}
-
-    # v17.0: al importar la planilla ya queda todo resuelto.
-    # Toda cátedra que aparece en el archivo SE DICTA; si trae docente además queda ABIERTA,
-    # y si no trae docente queda como ASINCRÓNICA (video pregrabado). Ya no queda "pendiente".
-    cats_en_archivo = {r['cat_id'] for r in results}
-    cats_con_docente = {r['cat_id'] for r in results if r['docente_id'] or r['doc_raw']}
-    dictadas = 0; decididas = 0
-    for cat_id in cats_en_archivo:
-        try:
-            db.execute(sql_text("""
-                INSERT INTO catedra_dictado (catedra_id, cuatrimestre_id, se_dicta)
-                VALUES (:cat, :cuat, TRUE)
-                ON CONFLICT (catedra_id, cuatrimestre_id) DO UPDATE SET se_dicta = TRUE
-            """), {"cat": cat_id, "cuat": cuatrimestre_id})
-            dictadas += 1
-        except Exception:
-            db.rollback()
-        decision = 'ABRIR' if cat_id in cats_con_docente else 'ASINCRONICA'
-        if sql_set(db, "catedras", "decision_apertura", decision, cat_id):
-            decididas += 1
-    try: db.commit()
-    except Exception: db.rollback()
-
-    return {
-        "respaldo_id": respaldo_id,
-        "se_puede_deshacer": respaldo_id is not None,
-        "asignaciones_borradas": deleted,
-        "asignaciones_creadas": creados,
-        "links_meet_actualizados": meet_updated,
-        "catedras_marcadas_se_dicta": dictadas,
-        "decisiones_resueltas": decididas,
-        "catedras_abiertas": len(cats_con_docente),
-        "catedras_asincronicas": len(cats_en_archivo - cats_con_docente),
-        "docentes_creados": nuevos_docs,
-        "docentes_nuevos": doc_to_create,
-        "catedras_no_encontradas": no_cat[:20],
-    }
+async def horarios_aplicar(file: UploadFile = File(...)):
+    raise HTTPException(status_code=409, detail="Actualizá la interfaz y usá Importaciones recuperables: primero vista previa y después confirmación con sede y período explícitos.")
 
 # ===== v13.0: Sugerencias de horarios cruzando plan + inscriptos =====
+def _require_work_period(db, period):
+    if period is None:
+        raise HTTPException(422, "Elegí un cuatrimestre de trabajo")
+    if not db.query(Cuatrimestre).filter(Cuatrimestre.id == period).first():
+        raise HTTPException(404, "El cuatrimestre seleccionado no existe")
+
+
+def _career_assignment_matches(assignment, campus):
+    from app.import_adapters import norm
+    def key(value):
+        normalized = norm(value)
+        if INSTITUCION.id == 'iea':
+            return {'cied':'onlineinterior', 'online':'onlineinterior', 'vtelopez':'vicentelopez'}.get(normalized, normalized)
+        return normalized
+    # A remote shared session remains visible; physical sessions stay in their campus.
+    return not assignment.get('sede') or key(assignment['sede']) == key(campus)
+
+
 @app.get("/api/plan-carrera/sugerencias")
 def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
+    _require_work_period(db, cuatrimestre_id)
     # Get plan
     q = "SELECT * FROM plan_carrera"
-    filters = []
-    if sede: filters.append(f"sede = '{sede}'")
-    if filters: q += " WHERE " + " AND ".join(filters)
+    if sede: q += " WHERE sede = :sede"
     q += " ORDER BY sede, carrera, anno, codigo_catedra"
-    try: rows = db.execute(text(q)).fetchall()
+    try: rows = db.execute(text(q), {"sede":sede}).fetchall()
     except: return {"sedes": [], "plan_importado": False}
     if not rows: return {"sedes": [], "plan_importado": False}
     # Get inscriptos totales
@@ -3524,11 +3071,11 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
         cat_id = cat_info["id"] if cat_info else None
         insc = total_map.get(cat_id, 0) if cat_id else 0
         # Criterio
-        if insc >= 10: criterio = "ABRIR"
-        elif insc > 0: criterio = "ASINCRÓNICA"
+        if INSTITUCION.requiere_docente(insc): criterio = "ABRIR"
+        elif insc > 0: criterio = "ASINCRÓNICA" if INSTITUCION.id == "iea" else "REVISAR APERTURA"
         else: criterio = "SIN ALUMNOS"
         # Current assignment
-        asig_actual = asig_map.get(cat_id, []) if cat_id else []
+        asig_actual = [a for a in asig_map.get(cat_id, []) if _career_assignment_matches(a, sede_n)] if cat_id else []
         tiene_docente = any(a['docente'] for a in asig_actual)
         docente_actual = ', '.join([a['docente'] for a in asig_actual if a['docente']]) or None
         horario_actual_tm = next((f"{a['dia']} {a['hora']}" for a in asig_actual if a['hora'] and a['hora'] < '15:00'), None)
@@ -3548,49 +3095,15 @@ def get_sugerencias_plan(cuatrimestre_id: int = None, sede: str = None, db: Sess
 
 
 # ===== v16.0: Control de Inscripciones =====
-CARRERA_NORMALIZE = {
-    'ACOMPAÑANTE TERAPÉUTICO': 'TECNICO SUPERIOR EN ACOMPAÑANTE  TERAPEUTICO',
-    'ADMINISTRACIÓN DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
-    'ADMINISTRACION DE EMPRESAS': 'TECNICO SUPERIOR EN ADMINISTRACION DE EMPRESAS',
-    'ADMINISTRACION AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
-    'ADMINISTRACIÓN AGROPECUARIA': 'TECNICO SUPERIOR  EN ADMINISTRACION AGROPECUARIA',
-    'ADMINISTRACIÓN BANCARIA': 'TECNICO SUPERIOR EN ADMINISTRACION BANCARIA',
-    'CIENCIA DE DATOS E INTELIGENCIA ARTIFICIAL': 'TECNICO SUPERIOR EN CIENCIA DE DATOS',
-    'COMERCIO INTERNACIONAL': 'TECNICO SUPERIOR EN COMERCIO',
-    'COUNSELING': 'TECNICO SUPERIOR EN COUSELING',
-    'DESARROLLO HUMANO': 'TECNICO SUPERIOR EN DESARROLLO HUMANO',
-    'DESPACHANTE DE ADUANAS': 'TECNICO SUPERIOR EN DESPACHO ADUANERO',
-    'FINANZAS': 'TECNICO SUPERIOR EN FINANZAS',
-    'GESTORÍA': 'TECNICO SUPERIOR EN GESTORIA',
-    'GUIA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
-    'GUÍA DE TURISMO': 'TECNICO SUPERIOR EN GUIA DE TURISMO',
-    'HOTELERÍA': 'TECNICO SUPERIOR EN HOTELERIA',
-    'LOGÍSTICA': 'TECNICO SUPERIOR EN LOGISTICA',
-    'LOGISTICA': 'TECNICO SUPERIOR EN LOGISTICA',
-    'MARKETING': 'TECNICO SUPERIOR EN MARKETING',
-    'NEGOCIOS DIGITALES': 'TECNICO SUPERIOR EN NEGOCIOS DIGITALES',
-    'ORGANIZACIÓN DE EVENTOS': 'TECNICO SUPERIOR EN ORGANIZACION DE EVENTOS',
-    'PERIODISMO DEPORTIVO': 'TECNICO SUPERIOR EN PERIODISMO DEPORTIVO',
-    'PSICOPEDAGOGÍA': 'TECNICO SUPERIOR EN PSICOPEDAGOGIA',
-    'PUBLICIDAD': 'TECNICO SUPERIOR EN PUBLICIDAD',
-    'RECURSOS HUMANOS': 'TECNICO SUPERIOR EN RECURSOS HUMANOS',
-    'RELACIONES PUBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
-    'RELACIONES PÚBLICAS': 'TECNICO SUPERIOR EN RELACIONES PUBLICAS',
-    'RÉGIMEN ADUANERO': 'TECNICO SUPERIOR EN REGIMEN ADUANERO',
-    'SEGURIDAD E HIGIENE': 'TECNICO SUPERIOR EN HIGIENE Y SEGURIDAD',
-    'SEGUROS': 'TECNICO SUPERIOR EN SEGUROS',
-    'TRABAJO SOCIAL': 'TECNICO SUPERIOR EN TRABAJO SOCIAL',
-    'TURISMO': 'TECNICO SUPERIOR EN TURISMO',
-}
 
 def _extract_carrera(curso):
     import re
     c = curso.upper().strip()
     c = re.split(r'\s*[\(]\s*(AVELLANEDA|CABALLITO|VICENTE|LINIERS|ONLINE|VIRTUAL|PILAR|MONTE|LA PLATA)', c)[0].strip()
     c = re.split(r'\s*[\-]\s*(CIED|CURSADA|CFE|DCFE|RDCFE|RMEDGC|RMEIGC|NO DISP|RD |RM |RES)', c)[0].strip().strip(' -')
-    return CARRERA_NORMALIZE.get(c, None)
+    return INSTITUCION.alias_carreras.get(c, c or None)
 
-def _calc_anno(fecha_str, inicio_str):
+def _calc_anno(fecha_str, inicio_str, anio_actual, numero_actual):
     import math
     try:
         if '/' in fecha_str:
@@ -3600,13 +3113,18 @@ def _calc_anno(fecha_str, inicio_str):
         else: return '3ER AÑO'
         inicio = (inicio_str or '').strip().lower()
         start = (year - 2020) * 2 + (1 if 'agosto' in inicio or 'ago' in inicio else 0)
-        current = (2026 - 2020) * 2  # Marzo 2026
+        current = (anio_actual - 2020) * 2 + numero_actual - 1
         cuats = max(1, current - start + 1)
         return {1:'1ER AÑO', 2:'2DO AÑO', 3:'3ER AÑO'}[min(3, math.ceil(cuats / 2))]
     except: return '3ER AÑO'
 
 @app.post("/api/control-inscripciones")
 async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    periodo = db.query(Cuatrimestre).filter(Cuatrimestre.id == cuatrimestre_id).first()
+    if not periodo:
+        raise HTTPException(status_code=404, detail="Seleccioná un período existente para el control")
+    if periodo.numero not in (1, 2):
+        raise HTTPException(status_code=422, detail="Este control requiere un calendario de dos períodos por año")
     from openpyxl import load_workbook
     import io, re
     content = await file.read()
@@ -3690,7 +3208,7 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
             stats['total'] += 1
             is_doble = 'DOBLE' in curso.upper()
             if is_doble: stats['doble'] += 1
-            anno = _calc_anno(fecha, inicio)
+            anno = _calc_anno(fecha, inicio, periodo.anio, periodo.numero)
             carrera_norm = _extract_carrera(curso)
             sede_norm = norm_sede_plan(sede, curso)
             plan_key = find_plan_key(sede_norm, carrera_norm)
@@ -3745,6 +3263,11 @@ async def control_inscripciones(file: UploadFile = File(...), cuatrimestre_id: i
 
 @app.post("/api/control-inscripciones/exportar")
 async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
+    periodo = db.query(Cuatrimestre).filter(Cuatrimestre.id == cuatrimestre_id).first()
+    if not periodo:
+        raise HTTPException(status_code=404, detail="Seleccioná un período existente para el control")
+    if periodo.numero not in (1, 2):
+        raise HTTPException(status_code=422, detail="Este control requiere un calendario de dos períodos por año")
     from openpyxl import load_workbook, Workbook
     from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
     from starlette.responses import Response
@@ -3804,7 +3327,7 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
             fecha = str(vals[4] or '').strip(); inicio = str(vals[5] or '').strip()
             sede = str(vals[9] or '').strip(); curso = str(vals[10] or '').strip()
             if not nombre or not curso or curso == 'None': continue
-            anno = _calc_anno(fecha, inicio)
+            anno = _calc_anno(fecha, inicio, periodo.anio, periodo.numero)
             carrera_norm = _extract_carrera(curso)
             sede_n = _norm_sede_exp(sede, curso)
             plan_key = _find_pk(sede_n, carrera_norm)
@@ -3857,11 +3380,12 @@ async def control_inscripciones_exportar(file: UploadFile = File(...), cuatrimes
 @app.get("/api/sugerencias-armado")
 def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
+    _require_work_period(db, cuatrimestre_id)
     # 1) Get plan_carrera entries
     q = "SELECT sede, carrera, anno, codigo_catedra, nombre_catedra FROM plan_carrera"
-    if sede: q += f" WHERE sede = '{sede}'"
+    if sede: q += " WHERE sede = :sede"
     q += " ORDER BY sede, carrera, anno"
-    try: plan = db.execute(text(q)).fetchall()
+    try: plan = db.execute(text(q), {"sede":sede}).fetchall()
     except: return {"sedes": {}, "stats": {}}
     if not plan: return {"sedes": {}, "stats": {}}
     # 2) Get inscriptos count
@@ -3892,7 +3416,7 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
             if a.docente_id not in docente_busy: docente_busy[a.docente_id] = set()
             docente_busy[a.docente_id].add((a.dia, a.hora_inicio))
     # 5) Docentes with availability and references
-    docentes = db.query(Docente).all()
+    docentes = db.query(Docente).filter(text("activo IS DISTINCT FROM FALSE")).all()
     disp_map = {}
     try:
         for r in db.execute(text("SELECT docente_id, dia, hora FROM docente_disponibilidad WHERE disponible = TRUE")).fetchall():
@@ -3901,8 +3425,9 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
     except: pass
     # Build docente lookup for suggestions
     doc_info = {}
+    reference_map = dict(db.execute(text("SELECT id, catedras_referencia FROM docentes")).fetchall())
     for d in docentes:
-        refs = (getattr(d, 'catedras_referencia', '') or '').strip()
+        refs = (reference_map.get(d.id) or '').strip()
         ref_codes = [r.strip() for r in refs.split(',') if r.strip()] if refs else []
         avail = disp_map.get(d.id, set())
         busy = docente_busy.get(d.id, set())
@@ -3914,15 +3439,15 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
         }
     # 6) Build result per sede → carrera → anno → catedras with suggestions
     sedes_result = {}
-    stats = {"total": 0, "con_docente": 0, "sugerido": 0, "sin_sugerencia": 0, "asincronica": 0}
+    stats = {"total": 0, "con_docente": 0, "sugerido": 0, "sin_sugerencia": 0, "asincronica": 0, "revisar": 0}
     for r in plan:
         sede_n, carrera, anno, cod, nombre_plan = r[0], r[1], r[2], r[3], r[4]
         cat_info = cat_map.get(cod)
         cat_id = cat_info["id"] if cat_info else None
         insc = total_map.get(cat_id, 0) if cat_id else 0
-        criterio = "ABRIR" if insc >= 10 else ("ASINCRÓNICA" if insc > 0 else "SIN ALUMNOS")
+        criterio = "ABRIR" if INSTITUCION.requiere_docente(insc) else (("ASINCRÓNICA" if INSTITUCION.id == "iea" else "REVISAR APERTURA") if insc > 0 else "SIN ALUMNOS")
         # Current assignments
-        current_asigs = asig_map.get(cat_id, []) if cat_id else []
+        current_asigs = [a for a in asig_map.get(cat_id, []) if _career_assignment_matches(a, sede_n)] if cat_id else []
         tiene_docente = any(a['docente'] for a in current_asigs)
         docente_actual = ', '.join(set(a['docente'] for a in current_asigs if a['docente'])) or None
         horarios_actuales = [f"{a['dia']} {a['hora']}" for a in current_asigs if a['dia']] if current_asigs else []
@@ -3952,6 +3477,9 @@ def get_sugerencias_armado(cuatrimestre_id: int = None, sede: str = None, db: Se
             else:
                 estado = "sin_sugerencia"  # red
                 stats["sin_sugerencia"] += 1
+        elif criterio == "REVISAR APERTURA":
+            estado = "revisar"
+            stats["revisar"] += 1
         elif criterio == "ASINCRÓNICA":
             estado = "asincronica"
             stats["asincronica"] += 1
@@ -4075,8 +3603,8 @@ def get_solapamientos_carreras(cuatrimestre_id: int = None, db: Session = Depend
 def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool = True,
                               sede: str = None, db: Session = Depends(get_db)):
     """PASO 3 del flujo. Excel con las cátedras que se dictan y sus inscriptos desglosados.
-    Las últimas columnas van vacías para que el equipo las complete y reimporte el archivo
-    en 'Importar Horarios y Designaciones' (mismo formato de columnas)."""
+    Conserva los IDs de las asignaciones existentes para revisarlas y reimportarlas
+    con el circuito de vista previa."""
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from sqlalchemy import text
@@ -4084,19 +3612,29 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
         cu = db.query(Cuatrimestre).first()
         cuatrimestre_id = cu.id if cu else 1
 
+    from app.import_adapters import norm
+    campus_obj = None
+    if sede:
+        canonical = normalizar_sede(sede)
+        if norm(canonical) == 'cied': canonical = 'Online - Interior'
+        campus_obj = next((c for c in db.query(Sede).all() if norm(c.nombre)==norm(canonical)), None)
+        if not campus_obj: raise HTTPException(422, "Sede de exportación desconocida")
+    inscriptos_sede = {}
     dictado = _mapa_dictado(db, cuatrimestre_id)
     # Desglose de inscriptos por turno/sede
     desglose = {}
     try:
         q = ("SELECT catedra_id, turno, modalidad_alumno, sede_referencia, COUNT(*) "
              "FROM inscripciones WHERE cuatrimestre_id = :c GROUP BY catedra_id, turno, modalidad_alumno, sede_referencia")
-        for cid, turno, mod, sede, cnt in db.execute(text(q), {"c": cuatrimestre_id}).fetchall():
+        for cid, turno, mod, sede_fila, cnt in db.execute(text(q), {"c": cuatrimestre_id}).fetchall():
             d = desglose.setdefault(cid, {"total": 0, "tm": 0, "tn": 0, "cied": 0,
                                           "av": 0, "cab": 0, "vl": 0})
             d["total"] += cnt
+            if campus_obj and norm(normalizar_sede(sede_fila)) == norm(campus_obj.nombre):
+                inscriptos_sede[cid] = inscriptos_sede.get(cid,0) + cnt
             if mod == 'virtual': d["cied"] += cnt
             else:
-                sl = (sede or '').lower()
+                sl = (sede_fila or '').lower()
                 if 'avellaneda' in sl: d["av"] += cnt
                 elif 'caballito' in sl: d["cab"] += cnt
                 elif 'vicente' in sl: d["vl"] += cnt
@@ -4109,7 +3647,7 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
     asigs = db.query(Asignacion).filter(Asignacion.cuatrimestre_id == cuatrimestre_id).all()
     asig_por_cat = {}
     for a in asigs:
-        if a.dia or a.docente_id:
+        if a.dia or a.docente_id or a.modalidad == "asincronica":
             asig_por_cat.setdefault(a.catedra_id, []).append(a)
 
     wb = Workbook(); ws = wb.active; ws.title = "Planilla de trabajo"
@@ -4121,7 +3659,7 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
 
     headers = ["CODIGO", "MATERIA", "DIA", "HORA INICIO", "HORA FIN", "SEDE", "DOCENTE",
                "LINK MEET", "— INSCRIPTOS —", "TOTAL", "TM", "TN", "CIED",
-               "AVELL", "CABA", "VTE LOPEZ", "SUGERENCIA"]
+               "AVELL", "CABA", "VTE LOPEZ", "SUGERENCIA", "ASIGNACION_ID", "COMISION", "CARRERA", "TURNO", "MODALIDAD", "RECIBE_ALUMNOS_PRESENCIALES", "PERIODO_ID"]
     ws.append(headers)
     for i, _ in enumerate(headers, 1):
         c = ws.cell(row=1, column=i)
@@ -4130,23 +3668,17 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
         c.border = borde
 
     cats = sorted(db.query(Catedra).all(), key=lambda c: sort_key_codigo(c.codigo))
-    # v17.0: filtro por sede para que varias personas trabajen en paralelo sin pisarse
-    clave_sede = None
-    if sede:
-        s = sede.lower()
-        if 'avell' in s: clave_sede = 'av'
-        elif 'cabal' in s: clave_sede = 'cab'
-        elif 'vicente' in s or 'vte' in s: clave_sede = 'vl'
-        elif 'cied' in s or 'online' in s: clave_sede = 'cied'
     fila = 2; escritas = 0
     for cat in cats:
         info = dictado.get(cat.id, {})
         if solo_dictadas and not info.get("se_dicta"): continue
         d = desglose.get(cat.id, {"total": 0, "tm": 0, "tn": 0, "cied": 0, "av": 0, "cab": 0, "vl": 0})
-        if clave_sede and d.get(clave_sede, 0) < 1: continue
         total = d["total"]
-        sugerencia = "ABRIR (con docente)" if total >= 10 else ("ASINCRÓNICA (pregrabada)" if total >= 1 else "SIN ALUMNOS")
+        sugerencia = "ABRIR (con docente)" if INSTITUCION.requiere_docente(total) else ("ASINCRÓNICA (pregrabada)" if total >= 1 else "SIN ALUMNOS")
         existentes = asig_por_cat.get(cat.id, [])
+        if campus_obj:
+            existentes = [a for a in existentes if a.sede_id == campus_obj.id]
+            if not existentes and not inscriptos_sede.get(cat.id): continue
         filas_cat = existentes if existentes else [None]
         for a in filas_cat:
             try: num = int(cat.codigo.replace('c.', ''))
@@ -4156,19 +3688,21 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
                 (a.dia if a else "") or "",
                 (a.hora_inicio if a else "") or "",
                 (getattr(a, 'hora_fin', None) if a else "") or "",
-                (a.sede.nombre if a and a.sede else "") or "",
+                (a.sede.nombre if a and a.sede else campus_obj.nombre if campus_obj else "Remoto" if a and not a.sede_id else "") or "",
                 (f"{a.docente.nombre} {a.docente.apellido}" if a and a.docente else ""),
                 getattr(cat, 'link_meet', None) or "",
                 "", total, d["tm"], d["tn"], d["cied"], d["av"], d["cab"], d["vl"], sugerencia,
+                a.id if a else "", a.comision if a else "", a.carrera if a else "", a.turno if a else "",
+                a.modalidad if a else "", bool(a.recibe_alumnos_presenciales) if a else False, cuatrimestre_id,
             ])
             for col in range(1, len(headers) + 1):
                 c = ws.cell(row=fila, column=col)
                 c.border = borde
-                if col <= 8: c.fill = edit_fill
+                if col <= 8 or 19 <= col <= 23: c.fill = edit_fill
                 else: c.fill = info_fill
             fila += 1; escritas += 1
 
-    anchos = [9, 38, 12, 13, 12, 15, 28, 34, 4, 9, 7, 7, 8, 8, 8, 11, 22]
+    anchos = [9, 38, 12, 13, 12, 15, 28, 34, 4, 9, 7, 7, 8, 8, 8, 11, 22, 16, 16, 30, 16, 22, 22, 14]
     for i, w in enumerate(anchos, 1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
     ws.freeze_panes = "C2"
@@ -4178,24 +3712,26 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
     for linea in [
         [f"PLANILLA DE TRABAJO — Armado de horarios{' — ' + sede if sede else ''}"],
         [""],
-        ["Columnas AMARILLAS (A-H): las completa el equipo."],
-        ["Columnas CELESTES (I-Q): sólo informativas, las calcula el sistema. No hace falta tocarlas."],
+        ["Columnas AMARILLAS (A-H y S-W): datos editables."],
+        ["Columnas CELESTES (I-R y X): información e identificadores. Conservá los IDs al editar registros existentes."],
         [""],
         ["Cómo completar:"],
-        ["CODIGO", "Ya viene cargado. Es el número de cátedra sin el prefijo c."],
+        ["CODIGO", "Ya viene cargado. Conservá el código de materia de tu institución."],
         ["DIA", "LUNES / MARTES / MIERCOLES / JUEVES / VIERNES / SABADO"],
         ["HORA INICIO", "Formato 08:00 — se admiten medias horas (08:30, 09:30, etc.)"],
-        ["HORA FIN", "Formato 09:30. Si se deja vacío el sistema asume 1h30 de duración."],
-        ["SEDE", "Avellaneda / Caballito / Vte Lopez / CIED"],
+        ["HORA FIN", f"Formato 09:30. Si se deja vacío, la estimación es de {INSTITUCION.duracion_clase_minutos} minutos."],
+        ["SEDE", "Usá un nombre del catálogo de sedes o Remoto si no corresponde una sede física."],
         ["DOCENTE", "Nombre tal como figura en la sección Docentes."],
-        ["", "IMPORTANTE: si se deja VACÍO, la cátedra se dicta igual pero como ASINCRÓNICA"],
-        ["", "(video pregrabado, sin docente en vivo). Eso es válido y esperado."],
+        ["", "Un docente vacío queda pendiente. Para una clase pregrabada, indicá modalidad asincronica."],
+        ["ASIGNACION_ID", "Conservá el ID para cambiar día, hora o docente del mismo registro. No copies el ID al crear otra franja."],
+        ["COMISION", "Nombre de comisión; una comisión puede tener varias franjas con distintos IDs."],
+        ["PERIODO_ID", "Identifica el período de la planilla. Debe coincidir con el elegido al importar."],
         ["LINK MEET", "Opcional. Si se completa, queda vinculado a la cátedra."],
         [""],
         ["Una vez completada, subir este mismo archivo en:"],
-        ["Importar → Importar Horarios y Designaciones"],
+        ["Importar → Cargar, revisar y confirmar"],
         [""],
-        ["El sistema va a mostrar una vista previa con los solapamientos detectados"],
+        ["El sistema muestra altas, modificaciones, bajas y errores de datos"],
         ["antes de aplicar los cambios."],
     ]:
         ws2.append(linea)
@@ -4206,7 +3742,7 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return StreamingResponse(buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=planilla_trabajo{'_' + sede.replace(' ','_') if sede else ''}.xlsx"})
+        headers={"Content-Disposition": f"attachment; filename=planilla_trabajo_{cuatrimestre_id}_{campus_obj.id if campus_obj else 0}.xlsx"})
 
 
 @app.get("/api/exportar/horarios")
@@ -4274,7 +3810,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
             d.get('tm_av',0) or '', d.get('tm_cab',0) or '', d.get('tm_vl',0) or '', d.get('tm_cied',0) or '', tm_t or '',
             d.get('tn_av',0) or '', d.get('tn_cab',0) or '', d.get('tn_vl',0) or '', d.get('tn_cied',0) or '', tn_t or '',
             d.get('virt',0) or '', s_av or '', s_cab or '', s_vl or '', s_cied or '', tot or ''])
-        if tot >= 10:
+        if INSTITUCION.requiere_docente(tot):
             tiene = any(1 for a in asigs if a.catedra_id == cat.id)
             if not tiene:
                 for cell in ws0[ws0.max_row]: cell.fill = YELLOW
@@ -4299,7 +3835,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
             d.get('virt',0) or '', tot or '',
             f"{a.docente.nombre} {a.docente.apellido}" if a.docente else "Sin asignar", td,
             mod, a.dia or "Pend.", a.hora_inicio or "Pend.", a.sede.nombre if a.sede else "Remoto"])
-        if tot >= 10 and not a.docente_id:
+        if INSTITUCION.requiere_docente(tot) and not a.docente_id:
             for cell in ws1[ws1.max_row]: cell.fill = YELLOW
     for col, w in [('A',4),('B',8),('C',28),('D',7),('E',7),('F',7),('G',7),('H',7),('I',7),('J',7),('K',7),('L',7),('M',7),('N',9),('O',7),('P',26),('Q',10),('R',12),('S',10),('T',7),('U',16)]:
         ws1.column_dimensions[col].width = w
@@ -4530,9 +4066,9 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
         cell.font = hf; cell.fill = PatternFill("solid", fgColor="1E40AF"); cell.alignment = Alignment(horizontal="center")
     for i, cat in enumerate(all_cats, 1):
         ic = total_insc_map.get(cat.id, 0)
-        if ic >= 10:
+        if INSTITUCION.requiere_docente(ic):
             criterio_txt = f"ABRIR ({ic} inscriptos)"
-            docs_sug = 1 if ic <= 100 else (1 + -(-max(0, ic - 100) // 100))
+            docs_sug = INSTITUCION.docentes_sugeridos(ic)
         elif ic > 0:
             criterio_txt = f"ASINCRÓNICA ({ic} inscriptos)"
             docs_sug = 0
@@ -4542,7 +4078,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
         decision = getattr(cat, 'decision_apertura', '') or ''
         notas_c = getattr(cat, 'notas', '') or ''
         ws_dec.append([i, cat.codigo, cat.nombre, ic, criterio_txt, docs_sug or '', decision, notas_c])
-        if ic >= 10 and not decision:
+        if INSTITUCION.requiere_docente(ic) and not decision:
             for cell in ws_dec[ws_dec.max_row]: cell.fill = YELLOW
     for col, w in [('A',4),('B',8),('C',30),('D',14),('E',22),('F',16),('G',28),('H',30)]:
         ws_dec.column_dimensions[col].width = w
@@ -4641,7 +4177,7 @@ def exportar_horarios(cuatrimestre_id: int = None, modulos: str = None, db: Sess
                 sede_p, carrera_p, anno_p, cod_p, nombre_p, dtm, htm, dtn, htn = r
                 cat_id_p = cat_code_to_id.get(cod_p)
                 insc_p = total_insc_map.get(cat_id_p, 0) if cat_id_p else 0
-                crit = "ABRIR" if insc_p >= 10 else ("ASINCRÓNICA" if insc_p > 0 else "SIN ALUMNOS")
+                crit = "ABRIR" if INSTITUCION.requiere_docente(insc_p) else ("ASINCRÓNICA" if insc_p > 0 else "SIN ALUMNOS")
                 # Current assignment
                 cat_asigs = asig_lookup_exp.get(cat_id_p, [])
                 doc_act = ', '.join([f"{a.docente.nombre} {a.docente.apellido}" for a in cat_asigs if a.docente]) or ''
