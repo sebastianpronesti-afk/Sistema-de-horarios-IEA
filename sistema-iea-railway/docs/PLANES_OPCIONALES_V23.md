@@ -20,6 +20,10 @@ En Planificación → Oferta y materias → Carreras y planes de inscriptos:
 Hay búsqueda por nombre/DNI, filtro de pendientes y paginación. Las
 confirmaciones pertenecen al alumno, curso y período: no se propagan a otros
 cuatrimestres. Una carrera puede estar representada por varios cursos de origen.
+Se admite tanto el vínculo curso_id de otras integraciones como el texto
+curso_nombre que conserva el importador IEA. Los nombres informados se agrupan
+por su valor exacto sin crear cursos ni inferir una versión del plan. Los grupos
+de origen tienen identificadores internos estables; no son IDs del catálogo.
 Las inscripciones sin curso se muestran aparte y no pueden vincularse en bloque
 a una carrera: requieren completar primero el dato en la carga.
 

@@ -64,6 +64,25 @@ class EnrollmentPlanTests(unittest.TestCase):
         self.assertEqual(view['detalle_inscriptos']['plan_pendiente'],101)
         self.assertEqual(view['detalle_inscriptos']['plan_confirmado'],0)
 
+    def test_iea_imported_career_text_is_read_without_a_course_foreign_key(self):
+        base.sql("UPDATE inscripciones SET curso_id=NULL,curso_nombre='Carrera de origen IEA - CIED'")
+        row=self.get('/api/inscripciones-planes/1')['courses'][0]
+        self.assertEqual(row['carrera_informada'],'Carrera de origen IEA - CIED')
+        self.assertLess(row['curso_id'],0)
+        self.assertEqual((row['alumnos'],row['planes_pendientes']),(101,101))
+        self.assertEqual(self.associate(course=row['curso_id']).status_code,200)
+        self.assertEqual(self.confirm(course=row['curso_id']).status_code,200)
+        self.assertEqual(base.sql('SELECT count(*) FROM inscripciones WHERE curso_id IS NOT NULL')[0][0],0)
+        self.assertEqual(self.get('/api/inscripciones-planes/1')['courses'][0]['planes_confirmados'],1)
+
+    def test_different_imported_careers_remain_separate_even_when_sharing_student_and_chair(self):
+        base.sql("UPDATE inscripciones SET curso_id=NULL,curso_nombre='Primera carrera'")
+        base.sql("INSERT INTO inscripciones(alumno_id,catedra_id,cuatrimestre_id,curso_nombre) VALUES(1,1,1,'Segunda carrera')")
+        rows=self.get('/api/inscripciones-planes/1')['courses']
+        self.assertEqual({r['carrera_informada'] for r in rows},{'Primera carrera','Segunda carrera'})
+        self.assertEqual(len({r['curso_id'] for r in rows}),2)
+        self.assertEqual(self.get('/api/planificacion/1/planes/p1')['materias'][0]['inscriptos'],101)
+
     def test_confirm_only_same_career_and_pending_can_be_restored(self):
         self.associate()
         self.assertEqual(self.confirm('other-plan').status_code,422)
