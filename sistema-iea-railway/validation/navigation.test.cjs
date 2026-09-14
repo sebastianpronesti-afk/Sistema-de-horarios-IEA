@@ -30,6 +30,12 @@ async function mount(selected=iea,overrides={}){
   };
   root=createRoot(document.getElementById('root'));await act(async()=>root.render(React.createElement(App)));await settle();
 }
+
+const academicCatalog={revision:0,source:null,articulations:[],careers:[{id:'career',nombre:'Carrera de prueba',nivel:'terciario',materias_sin_plan:0,planes:[{id:'p1',etiqueta:'Plan 1',resolucion:'RES-TEST',resumen:{materias:1,por_revisar:0}},{id:'p2',etiqueta:'Plan 2',resolucion:'RES-NUEVA',resumen:{materias:1,por_revisar:0}}]}]};
+const academicView={revision:0,oferta_revision:0,materias:[],plan:{id:'p1'},alcance_inscriptos:'Cátedra y período'};
+const academicFixtures={'/api/planes-estudio':academicCatalog,'/api/planificacion/1/planes/p1':academicView,'/api/planificacion/1/planes/p2':academicView};
+async function choosePlan(id='p1'){const el=document.querySelector('[aria-label="Carrera y versión del plan"]');assert.ok(el);await act(async()=>Simulate.change(el,{target:{value:id}}));await settle();}
+
 afterEach(async()=>{if(root)await act(async()=>root.unmount());root=null;});
 
 test('one explicit period is selected before any period-dependent request',async()=>{
@@ -75,16 +81,15 @@ test('accent-insensitive search finds IEA tertiary functions and Enter opens a r
   await search('asincronicas');assert.match(document.querySelector('nav').textContent,/Materias asincrónicas/);
 });
 
-test('general and IEA career entries use the same period-bound service',async()=>{
-  await mount();await search('horarios por carrera');
-  const results=[...document.querySelectorAll('.app-search-item')].filter(b=>b.querySelector('span').firstChild.textContent==='Horarios por carrera');assert.equal(results.length,2);
-  await click(results[0]);assert.match(document.querySelector('.app-location').textContent,/Planificación/);
-  const first=calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').at(-1);
-  await search('iea horarios por carrera');await click(document.querySelector('.app-search-item'));
-  assert.match(document.querySelector('.app-location').textContent,/IEA/);
-  const second=calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').at(-1);assert.equal(first.href,second.href);
+test('general and IEA career entries use the same catalog and period-bound planning service',async()=>{
+  await mount(iea,academicFixtures);await search('horarios por carrera');
+  await click(document.querySelector('.app-search-item'));await choosePlan();
+  const first=calls.filter(u=>u.pathname==='/api/planificacion/1/planes/p1').at(-1);assert.ok(first);
+  await search('iea horarios por carrera');await click(document.querySelector('.app-search-item'));await choosePlan();
+  const second=calls.filter(u=>u.pathname==='/api/planificacion/1/planes/p1').at(-1);assert.equal(first.href,second.href);
   await click(button('Sugerencias por carrera',document.querySelector('.app-section-tabs')));
-  assert.equal(calls.filter(u=>u.pathname==='/api/sugerencias-armado').at(-1).searchParams.get('cuatrimestre_id'),'1');
+  assert.match(document.querySelector('.app-content').textContent,/Horarios por carrera y plan/);
+  assert.equal(calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').length,0);
 });
 
 test('switching periods hides old data and ignores a late response from the previous choice',async()=>{
@@ -105,19 +110,40 @@ test('failed period load shows retry and never presents old data as current',asy
   handler=null;await click(button('Reintentar carga'));assert.ok(document.querySelector('.app-content'));
 });
 
-test('career import opens the common plan workflow with the global period locked',async()=>{
-  await mount(other);await search('horarios por carrera');await click(document.querySelector('.app-search-item'));
-  await click(button('Importar plan con vista previa'));
-  assert.equal(document.querySelector('[aria-label="Datos a importar"]').value,'plan');
-  assert.equal(document.querySelector('[aria-label="Período de importación"]'),null);
-  assert.equal(document.getElementById('working-period').value,'1');
-  assert.doesNotMatch(document.querySelector('main').textContent,/Importar Alumnos BCE/);
+test('planning opens the complete catalog without an operational period selector',async()=>{
+  await mount(other,academicFixtures);await search('horarios por carrera');await click(document.querySelector('.app-search-item'));await choosePlan();
+  await click(button('Abrir planes de estudio completos'));
+  assert.equal(document.getElementById('working-period'),null);
+  assert.match(document.querySelector('.app-content').textContent,/Carreras y planes de estudio/);
+  assert.equal(calls.filter(u=>u.pathname==='/api/planes-estudio').at(-1).search,'');
 });
 
-test('changing campus in the course view keeps all campus tabs available',async()=>{
-  const plans=structuredClone(fixtures['/api/plan-carrera/sugerencias']);plans.sedes['Campus nuevo']=structuredClone(plans.sedes.Caballito);
-  await mount(other,{'/api/plan-carrera/sugerencias':plans});await search('horarios por carrera');await click(document.querySelector('.app-search-item'));
-  await click(button('Campus nuevo',document.querySelector('.app-content')));
-  assert.ok(button('Caballito',document.querySelector('.app-content')));assert.ok(button('Campus nuevo',document.querySelector('.app-content')));
-  assert.equal(calls.filter(u=>u.pathname==='/api/plan-carrera/sugerencias').length,1);
+test('switching plans preserves every plan choice and loads the selected one',async()=>{
+  await mount(other,academicFixtures);await search('horarios por carrera');await click(document.querySelector('.app-search-item'));
+  await choosePlan('p1');await choosePlan('p2');
+  assert.deepEqual([...document.querySelector('[aria-label="Carrera y versión del plan"]').options].map(o=>o.value),['','p1','p2']);
+  assert.equal(calls.filter(u=>u.pathname==='/api/planificacion/1/planes/p2').length,1);
+});
+
+test('general teachers omit manual hours and institution-specific totals',async()=>{
+  await mount();await search('fichas docentes');await click(document.querySelector('.app-search-item'));
+  assert.equal(document.getElementById('working-period'),null);
+  const content=document.querySelector('.app-content').textContent;
+  assert.match(content,/Cátedras habilitadas/);
+  assert.doesNotMatch(content,/CFPEA|ISFTEA|Materias Avellaneda|Materias Caballito|Horas · Materias/);
+  assert.equal(calls.filter(u=>u.pathname==='/api/docentes'&&!u.search).length,1);
+});
+
+test('saving a class refreshes operational data while retaining the selected plan',async()=>{
+  const subject={id:'s1',nombre:'Materia de prueba',anio:1,cuatrimestre:1,ofertada:true,catedra:{id:1,codigo:'c.1',nombre:'Materia de prueba'},inscriptos:30,criterio:'ABRIR',docentes_requeridos:1,asignaciones:[]};
+  await mount(iea,{...academicFixtures,'/api/planificacion/1/planes/p1':{...academicView,materias:[subject]},'/api/docentes':[{id:1,nombre:'Docente',apellido:'Ficticio'}]});
+  await search('horarios por carrera');await click(document.querySelector('.app-search-item'));await choosePlan();
+  await click(button('Asignar o buscar sugerencias'));
+  const dialog=document.querySelector('[aria-label="Asignar horario"]');
+  const selects=dialog.querySelectorAll('select');
+  await act(async()=>Simulate.change(selects[2],{target:{value:'1'}}));
+  const key=dialog.querySelector('input[type=password]');await act(async()=>Simulate.change(key,{target:{value:'fixture-editor-only'}}));
+  await click(button('Guardar clase'));
+  assert.equal(document.querySelector('[aria-label="Carrera y versión del plan"]').value,'p1');
+  assert.ok(calls.some(u=>u.pathname.endsWith('/s1/asignar')));
 });

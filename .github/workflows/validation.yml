@@ -1,0 +1,56 @@
+name: Validation
+on:
+  push:
+    branches: ['codex/planes-planificacion-v22-20260914']
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: disposable-test-only
+          POSTGRES_DB: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://test:disposable-test-only@127.0.0.1:5432/test
+      TEST_DATABASE_DISPOSABLE: 'yes'
+      PYTHONPATH: sistema-iea-railway/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r sistema-iea-railway/backend/requirements.txt httpx==0.27.2
+      - run: python -m unittest discover -s sistema-iea-railway/backend/tests -v
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+        working-directory: sistema-iea-railway/validation
+      - run: npm test
+        working-directory: sistema-iea-railway/validation
+      - run: npm ci
+        working-directory: sistema-iea-railway/frontend
+      - run: npm run build
+        working-directory: sistema-iea-railway/frontend
+        env:
+          CI: 'false'

@@ -4,6 +4,8 @@ import ImportWorkflow, { ImportHistory } from './ImportWorkflow';
 import {Navigation, PeriodHeader, SectionTabs, menuFor, currentItem, flattenMenu} from './Navigation';
 import {choosePeriod} from './periods';
 import AcademicPlans from './AcademicPlans';
+import CurriculumPlanning from './CurriculumPlanning';
+import {rememberEditorKey} from './AcademicEditors';
 
 const API_URL = '';
 
@@ -165,6 +167,7 @@ function PieSidebar() {
   const { rol, puedeEditar } = usarRol();
   const [modal, setModal] = useState(false);
   const salir = () => {
+    rememberEditorKey('');
     localStorage.removeItem('iea_auth');
     localStorage.removeItem('iea_rol');
     window.location.reload();
@@ -201,6 +204,7 @@ function LoginScreen({ onLogin }) {
     setError(''); setLoading(true);
     try {
       const r = await apiFetch('/api/login', { method: 'POST', body: JSON.stringify({ clave }) });
+      if(r.rol==='editor')rememberEditorKey(clave);
       localStorage.setItem('iea_auth', 'true');
       localStorage.setItem('iea_rol', r.rol || 'editor');
       onLogin();
@@ -1171,275 +1175,36 @@ function AsincronicasView({ cuatrimestre }) {
 }
 
 // ==================== DOCENTES VIEW ====================
-function DocentesView({ docentes, sedes, cuatrimestre, recargar }) {
-  const [modalSedes, setModalSedes] = useState(null);
-  const [modalEditar, setModalEditar] = useState(null);
-  const [modalNuevo, setModalNuevo] = useState(false);
-  const [buscar, setBuscar] = useState('');
-
-  // v15: editStore persiste datos editables en un ref que NUNCA se pierde
-  const editStore = useRef({});
-  const editInitialized = useRef(false);
-  if (!editInitialized.current && docentes.length > 0) {
-    docentes.forEach(d => {
-      if (!editStore.current[d.id]) {
-        editStore.current[d.id] = {
-          horas_asignadas: d.horas_asignadas || 0,
-          materias_av: d.materias_av || 0,
-          materias_cab: d.materias_cab || 0,
-          materias_vl: d.materias_vl || 0,
-          sociedad_cfpea: d.sociedad_cfpea || false,
-          sociedad_isftea: d.sociedad_isftea || false,
-          notas: d.notas || '',
-          especialidades: d.especialidades || [],
-          catedras_referencia: d.catedras_referencia || '',
-        };
-      }
-    });
-    editInitialized.current = true;
-  }
-  // Also add new docentes that weren't there at init
-  docentes.forEach(d => {
-    if (!editStore.current[d.id]) {
-      editStore.current[d.id] = {
-        horas_asignadas: d.horas_asignadas || 0,
-        materias_av: d.materias_av || 0,
-        materias_cab: d.materias_cab || 0,
-        materias_vl: d.materias_vl || 0,
-        sociedad_cfpea: d.sociedad_cfpea || false,
-        sociedad_isftea: d.sociedad_isftea || false,
-        notas: d.notas || '',
-        especialidades: d.especialidades || [],
-        catedras_referencia: d.catedras_referencia || '',
-      };
-    }
-  });
-
-  const stats = useMemo(() => {
-    const s = { PRESENCIAL_VIRTUAL: 0, SEDE_VIRTUAL: 0, REMOTO: 0, SIN_ASIGNACIONES: 0 };
-    let horas_cfpea = 0, horas_isftea = 0, horas_total = 0;
-    let mat_av_total = 0, mat_cab_total = 0, mat_vl_total = 0;
-    const por_sede = {};
-    docentes.forEach(d => {
-      if (s[d.tipo_modalidad] !== undefined) s[d.tipo_modalidad]++;
-      const h = d.horas_asignadas || 0;
-      horas_total += h;
-      if (d.sociedad_cfpea) horas_cfpea += h;
-      if (d.sociedad_isftea) horas_isftea += h;
-      mat_av_total += d.materias_av || 0;
-      mat_cab_total += d.materias_cab || 0;
-      mat_vl_total += d.materias_vl || 0;
-      (d.sedes || []).forEach(sd => {
-        por_sede[sd.nombre] = (por_sede[sd.nombre] || 0) + 1;
-      });
-    });
-    return { ...s, horas_cfpea, horas_isftea, horas_total, mat_av_total, mat_cab_total, mat_vl_total, por_sede };
-  }, [docentes]);
-
-  const [orden, setOrden] = useState('apellido');
-  const [filtroActividad, setFiltroActividad] = useState('todos');
-  const [filtroArea, setFiltroArea] = useState('');
-  const [areas, setAreas] = useState([]);
-  useEffect(() => {
-    apiFetch('/api/areas-especialidad').then(setAreas).catch(() => setAreas([]));
-  }, []);
-
-  // v17.1: "activo" = tiene al menos una cátedra asignada en el cuatrimestre visible.
-  // Se calcula acá con las asignaciones que ya llegaron, sin depender de un campo del backend.
-  const estaActivo = (d) => (d.asignaciones || []).length > 0 || !!d.activo_cuatrimestre;
-
-  const docentesFiltrados = useMemo(() => {
-    let lista = [...docentes];
-    if (filtroActividad === 'activos') lista = lista.filter(estaActivo);
-    else if (filtroActividad === 'inactivos') lista = lista.filter(d => !estaActivo(d));
-    if (filtroArea) lista = lista.filter(d => (d.especialidades || []).includes(filtroArea));
-    if (buscar) {
-      const b = buscar.toLowerCase();
-      lista = lista.filter(d =>
-        (d.nombre || '').toLowerCase().includes(b) ||
-        (d.apellido || '').toLowerCase().includes(b) ||
-        (d.dni || '').includes(b));
-    }
-    lista.sort((a, b) => {
-      const ka = orden === 'apellido'
-        ? `${a.apellido || ''} ${a.nombre || ''}`.toLowerCase()
-        : `${a.nombre || ''} ${a.apellido || ''}`.toLowerCase();
-      const kb = orden === 'apellido'
-        ? `${b.apellido || ''} ${b.nombre || ''}`.toLowerCase()
-        : `${b.nombre || ''} ${b.apellido || ''}`.toLowerCase();
-      return ka.localeCompare(kb, 'es');
-    });
-    return lista;
-  }, [docentes, buscar, orden, filtroActividad, filtroArea]);
-
-  const conteoActivos = useMemo(() => docentes.filter(estaActivo).length, [docentes]);
-
-  const guardarSedes = async (docenteId, sedeIds) => {
-    try { await apiFetch(`/api/docentes/${docenteId}/sedes`, { method: 'PUT', body: JSON.stringify({ sede_ids: sedeIds }) }); recargar(); setModalSedes(null); } catch (e) { alert(e.message); }
-  };
-  const guardarDocente = async (docenteId, data) => {
-    try { await apiFetch(`/api/docentes/${docenteId}`, { method: 'PUT', body: JSON.stringify(data) }); recargar(); setModalEditar(null); } catch (e) { alert(e.message); }
-  };
-  const crearDocente = async (data) => {
-    try { await apiFetch('/api/docentes', { method: 'POST', body: JSON.stringify(data) }); recargar(); setModalNuevo(false); } catch (e) { alert(e.message); }
-  };
-  const eliminarDocente = async (d) => {
-    if (!window.confirm(`¿Eliminar a ${d.nombre} ${d.apellido}?`)) return;
-    try { await apiFetch(`/api/docentes/${d.id}`, { method: 'DELETE' }); recargar(); } catch (e) { alert(e.message); }
-  };
-
-  return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <div><h2 className="text-2xl font-bold text-slate-800">Docentes</h2></div>
-        <button onClick={() => setModalNuevo(true)} className="px-4 py-2 bg-amber-500 text-slate-900 rounded-lg font-medium hover:bg-amber-400">+ Agregar Docente</button>
-      </div>
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        {Object.entries(TIPO_DOCENTE_CONFIG).map(([key, cfg]) => (
-          <div key={key} className={`p-4 rounded-xl border ${cfg.bg}`}>
-            <p className={`font-medium ${cfg.color}`}>{cfg.icon} {cfg.label}</p>
-            <p className={`text-3xl font-bold ${cfg.color}`}>{stats[key] || 0}</p>
-          </div>
-        ))}
-      </div>
-      <div className="grid grid-cols-4 gap-3 mb-4">
-        <div className="bg-slate-800 rounded-xl p-3 text-white"><p className="text-xs opacity-70">Total docentes</p><p className="text-2xl font-bold">{docentes.length}</p></div>
-        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Total horas</p><p className="text-2xl font-bold">{stats.horas_total}h</p></div>
-        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas CFPEA SRL</p><p className="text-2xl font-bold text-blue-600">{stats.horas_cfpea}h</p></div>
-        <div className="bg-white rounded-xl border p-3"><p className="text-xs text-slate-500">Horas ISFTEA SRL</p><p className="text-2xl font-bold text-emerald-600">{stats.horas_isftea}h</p></div>
-      </div>
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="bg-blue-50 rounded-xl border border-blue-200 p-3"><p className="text-xs text-blue-600">Materias Avellaneda</p><p className="text-2xl font-bold text-blue-700">{stats.mat_av_total}</p></div>
-        <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-3"><p className="text-xs text-emerald-600">Materias Caballito</p><p className="text-2xl font-bold text-emerald-700">{stats.mat_cab_total}</p></div>
-        <div className="bg-amber-50 rounded-xl border border-amber-200 p-3"><p className="text-xs text-amber-600">Materias V. López</p><p className="text-2xl font-bold text-amber-700">{stats.mat_vl_total}</p></div>
-      </div>
-      {Object.keys(stats.por_sede).length > 0 && (
-        <div className="flex gap-2 mb-4 flex-wrap">
-          <span className="text-xs text-slate-500 py-1">Docentes por sede:</span>
-          {Object.entries(stats.por_sede).map(([sede, cnt]) => (
-            <span key={sede} className={`px-2 py-1 rounded text-white text-xs ${SEDE_COLORS[sede] || 'bg-gray-500'}`}>{sede}: {cnt}</span>
-          ))}
-        </div>
-      )}
-      <div className="bg-white rounded-xl border p-3 mb-4 space-y-3">
-        <input type="text" placeholder="Buscar por nombre, apellido o DNI..." className="w-full px-3 py-2 border rounded-lg text-sm"
-          value={buscar} onChange={e => setBuscar(e.target.value)} />
-        <div className="flex flex-wrap gap-3 items-center text-xs">
-          <div className="flex items-center gap-1">
-            <span className="text-slate-500">Ordenar:</span>
-            <button onClick={() => setOrden('apellido')}
-              className={`px-2 py-1 rounded ${orden === 'apellido' ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>Apellido, Nombre</button>
-            <button onClick={() => setOrden('nombre')}
-              className={`px-2 py-1 rounded ${orden === 'nombre' ? 'bg-slate-800 text-white' : 'bg-slate-100'}`}>Nombre Apellido</button>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-slate-500">En este cuatrimestre:</span>
-            {[['todos', `Todos (${docentes.length})`],
-              ['activos', `✅ Con cátedra asignada (${conteoActivos})`],
-              ['inactivos', `💤 Sin ninguna asignación (${docentes.length - conteoActivos})`]].map(([k, l]) => (
-              <button key={k} onClick={() => setFiltroActividad(k)}
-                className={`px-2 py-1 rounded ${filtroActividad === k ? 'bg-blue-600 text-white' : 'bg-slate-100'}`}>{l}</button>
-            ))}
-          </div>
-          <select value={filtroArea} onChange={e => setFiltroArea(e.target.value)}
-            className="px-2 py-1 border rounded text-xs">
-            <option value="">Todas las áreas</option>
-            {areas.map(a => <option key={a.id} value={a.id}>{a.nombre}</option>)}
-          </select>
-          <span className="text-slate-400 ml-auto">{docentesFiltrados.length} docentes</span>
-        </div>
-      </div>
-      <div className="bg-white rounded-xl border shadow-sm">
-        <table className="w-full">
-          <thead><tr className="bg-slate-50 border-b">
-            <th className="text-left p-4 text-sm font-semibold">Docente</th>
-            <th className="text-center p-4 text-sm font-semibold">Tipo</th>
-            <th className="text-center p-4 text-sm font-semibold">Sedes</th>
-            <th className="text-center p-2 text-xs font-semibold" colSpan="7">Horas · Materias por sede · CFPEA · ISFTEA · Notas · Especialidad · Cát. ref.</th>
-            <th className="text-center p-2 text-xs font-semibold">Disponib.</th>
-            <th className="text-left p-4 text-sm font-semibold">Asignaciones</th>
-            <th className="text-center p-4 text-sm font-semibold w-36">Acciones</th>
-          </tr></thead>
-          <tbody>
-            {docentesFiltrados.map(d => {
-              const tipoCfg = TIPO_DOCENTE_CONFIG[d.tipo_modalidad] || TIPO_DOCENTE_CONFIG.SIN_ASIGNACIONES;
-              return (
-                <tr key={d.id} className={`border-b hover:bg-slate-50 ${(d.horas_asignadas > 0 || d.asignaciones?.length > 0) ? 'bg-emerald-50/50' : ''}`}>
-                  <td className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center font-bold text-sm">{(d.apellido||'?')[0]}{(d.nombre||'?')[0]}</div>
-                      <div>
-                        <p className="font-medium">
-                          {d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}
-                          {estaActivo(d) && <span className="ml-2 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px] font-bold">{(d.asignaciones || []).length} cát.</span>}
-                        </p>
-                        {d.dni ? <p className="text-xs text-slate-500">DNI: {d.dni}</p>
-                               : <p className="text-xs text-slate-300 italic">sin DNI</p>}
-                        {d.email && <p className="text-xs text-slate-400">{d.email}</p>}
-                        {(d.especialidades || []).length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {(d.especialidades || []).map(eid => {
-                              const a = areas.find(x => x.id === eid);
-                              return <span key={eid} className="px-1.5 py-0.5 rounded text-[9px] text-white"
-                                style={{ backgroundColor: a?.color || '#64748B' }}>{a?.nombre || eid}</span>;
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="p-4 text-center"><span className={`px-3 py-1 rounded-full text-xs font-medium ${tipoCfg.bg} ${tipoCfg.color}`}>{tipoCfg.icon} {tipoCfg.label}</span></td>
-                  <td className="p-4 text-center">
-                    <div className="flex flex-wrap justify-center gap-1">
-                      {d.sedes?.length > 0 ? d.sedes.map(s => <span key={s.id} className={`px-2 py-0.5 rounded text-white text-xs ${SEDE_COLORS[s.nombre]||'bg-gray-500'}`}>{s.nombre}</span>)
-                        : <span className="text-slate-400 text-xs">Sin sedes</span>}
-                    </div>
-                    <button onClick={() => setModalSedes(d)} className="text-xs text-blue-600 hover:underline mt-1">Editar sedes</button>
-                  </td>
-                  <td className="p-1" colSpan="7">
-                    <DocenteEditRow docId={d.id} editStore={editStore} areas={areas} />
-                  </td>
-                  <td className="p-2 text-center text-xs">
-                    <span className={`px-2 py-1 rounded ${d.disponibilidad_resumen === 'Sin asignar' ? 'bg-slate-100 text-slate-400' : 'bg-emerald-100 text-emerald-700'}`}>
-                      {d.disponibilidad_resumen || 'Sin asignar'}
-                    </span>
-                    {d.disponibilidad_franjas?.length > 0 && (
-                      <div className="mt-1 text-[9px] text-slate-400">{d.disponibilidad_franjas.slice(0,3).join(', ')}{d.disponibilidad_franjas.length > 3 ? '...' : ''}</div>
-                    )}
-                  </td>
-                  <td className="p-4">
-                    {d.asignaciones?.length > 0 ? d.asignaciones.map(a => {
-                      const mod = MODALIDAD_CONFIG[a.modalidad] || {};
-                      return (<div key={a.id} className="flex items-center gap-2 text-sm mb-1">
-                        <span className={mod.color}>{mod.icon}</span>
-                        <span className="font-mono bg-slate-100 px-1 rounded text-xs">{a.catedra_codigo}</span>
-                        <span className="text-slate-500 text-xs">{a.dia||'Pend.'} {a.hora_inicio||''}</span>
-                      </div>);
-                    }) : <span className="text-slate-400 text-sm">Sin asignaciones</span>}
-                  </td>
-                  <td className="p-4 text-center">
-                    <div className="flex gap-1 justify-center">
-                      <button onClick={() => setModalEditar(d)} className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">✏️</button>
-                      <button onClick={() => eliminarDocente(d)} className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200">🗑️</button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-sm text-slate-500 mt-3 text-center">{docentesFiltrados.length} docentes</p>
-      {modalSedes && <ModalEditarSedes docente={modalSedes} sedes={sedes} onSave={guardarSedes} onClose={() => setModalSedes(null)} />}
-      {modalEditar && <ModalEditarDocente docente={modalEditar} onSave={guardarDocente} onClose={() => setModalEditar(null)} areas={areas} recargar={recargar} />}
-      {modalNuevo && <ModalNuevoDocente onSave={crearDocente} onClose={() => setModalNuevo(false)} />}
-    </div>
-  );
+function DocentesView({ sedes=[] }) {
+  const {puedeEditar}=usarRol();
+  const [docentes,setDocentes]=useState([]),[areas,setAreas]=useState([]),[error,setError]=useState('');
+  const [buscar,setBuscar]=useState(''),[modalEditar,setModalEditar]=useState(null),[modalNuevo,setModalNuevo]=useState(false),[modalSedes,setModalSedes]=useState(null);
+  const [attempt,setAttempt]=useState(0);
+  const recargar=()=>setAttempt(x=>x+1);
+  useEffect(()=>{let active=true;const c=new AbortController();Promise.all([apiFetch('/api/docentes',{signal:c.signal}),apiFetch('/api/areas-especialidad',{signal:c.signal})]).then(([d,a])=>{if(active){setDocentes(d);setAreas(a);setError('');}}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;c.abort();};},[attempt]);
+  const eliminar=async(d)=>{if(!window.confirm('¿Eliminar la ficha de '+d.apellido+', '+d.nombre+'? Sus clases quedarán sin docente.'))return;try{await apiFetch('/api/docentes/'+d.id,{method:'DELETE'});recargar();}catch(e){setError(e.message);}};
+  const crear=async(form)=>{try{await apiFetch('/api/docentes',{method:'POST',body:JSON.stringify(form)});setModalNuevo(false);recargar();}catch(e){setError(e.message);}};
+  const guardarSedes=async(id,ids)=>{try{await apiFetch('/api/docentes/'+id+'/sedes',{method:'PUT',body:JSON.stringify({sede_ids:ids})});setModalSedes(null);recargar();}catch(e){setError(e.message);}};
+  const rows=docentes.filter(d=>[d.apellido,d.nombre,d.dni,d.email].join(' ').toLowerCase().includes(buscar.toLowerCase()));
+  return <div className="p-8"><h2 className="text-2xl font-bold">Docentes</h2><p className="my-3">Datos de contacto, cátedras habilitadas y notas. La carga horaria se calcula en Planificación a partir de las clases de cada período.</p>
+    <input type="search" aria-label="Buscar docente" placeholder="Nombre, apellido, documento o email" className="border rounded p-3 w-full my-3" value={buscar} onChange={e=>setBuscar(e.target.value)}/>
+    {puedeEditar&&<button onClick={()=>setModalNuevo(true)} className="bg-blue-700 text-white px-4 py-2 rounded my-3">Agregar docente</button>}
+    {error&&<p role="alert">{error} <button onClick={recargar}>Reintentar</button></p>}
+    <div className="academic-table-wrap"><table className="academic-table"><thead><tr><th>Docente</th><th>Contacto</th><th>Cátedras habilitadas</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>
+      {rows.map(d=><tr key={d.id}><td>{d.apellido}, {d.nombre}<small>{d.dni}</small></td><td>{d.email||'Sin email'}</td><td>{d.catedras_referencia||'Por completar'}</td><td>{d.notas||'—'}</td><td>{puedeEditar&&<><button className="text-blue-700 underline block" onClick={()=>setModalEditar(d)}>Editar ficha</button><button className="text-blue-700 underline block" onClick={()=>setModalSedes(d)}>Sedes disponibles</button><button className="text-red-700 underline block" onClick={()=>eliminar(d)}>Eliminar docente</button></>}</td></tr>)}
+    </tbody></table></div>
+    {modalEditar&&<ModalEditarDocente docente={modalEditar} areas={areas} recargar={recargar} onClose={()=>setModalEditar(null)}/>}
+    {modalNuevo&&<ModalNuevoDocente onSave={crear} onClose={()=>setModalNuevo(false)}/>}
+    {modalSedes&&<ModalEditarSedes docente={modalSedes} sedes={sedes} onSave={guardarSedes} onClose={()=>setModalSedes(null)}/>}
+  </div>;
 }
 
-// ==================== v17.2: FICHA DEL DOCENTE ====================
-// Los datos de acá son PERMANENTES: no dependen del cuatrimestre. Se guardan en la base
-// y el modal vuelve a leerlos del servidor para confirmar que quedaron grabados de verdad.
+function GeneralChairs(){
+  const [rows,setRows]=useState([]),[error,setError]=useState(''),[query,setQuery]=useState('');
+  useEffect(()=>{const c=new AbortController();let active=true;apiFetch('/api/planes-estudio/opciones',{signal:c.signal}).then(d=>{if(active)setRows(d.catedras);}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;c.abort();};},[]);
+  return <div className="academic-catalog"><h2 className="text-2xl font-bold">Catálogo de cátedras</h2><p>Una cátedra conserva su código y puede asociarse a materias de varios planes.</p><label>Buscar cátedra<input className="border rounded p-3 w-full my-3" type="search" value={query} onChange={e=>setQuery(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<table className="academic-table"><thead><tr><th>Código</th><th>Cátedra</th></tr></thead><tbody>{rows.filter(c=>[c.codigo,c.nombre].join(' ').toLowerCase().includes(query.toLowerCase())).map(c=><tr key={c.id}><td>{c.codigo}</td><td>{c.nombre}</td></tr>)}</tbody></table></div>;
+}
+
 function ModalEditarDocente({ docente, onSave, onClose, areas = [], recargar }) {
   const [form, setForm] = useState(null);
   const [cargando, setCargando] = useState(true);
@@ -2198,7 +1963,7 @@ function CargaHorariaView({ cuatrimestre }) {
           <h2 className="text-2xl font-bold text-slate-800">⏱️ Carga horaria por docente</h2>
           <p className="text-slate-500 text-sm mt-1">
             Horas semanales de cada docente sumando todas sus cátedras y sedes.
-            Si una clase no tiene hora de fin, se estima en 1 hora y media.
+            Las clases sin hora de fin usan la duración institucional estimada; las clases sin horario completo quedan pendientes.
           </p>
         </div>
         <button onClick={() => bajarHorarios(null)}
@@ -2263,7 +2028,7 @@ function CargaHorariaView({ cuatrimestre }) {
                       </span>
                       {d.excede_limite && <span className="block text-[9px] text-red-500">supera el límite</span>}
                     </td>
-                    <td className="p-2 text-center">{d.clases}</td>
+                    <td className="p-2 text-center">{d.clases}{d.clases_pendientes>0&&<small className="block text-amber-800">{d.clases_pendientes} pendientes de horario</small>}{d.clases_estimadas>0&&<small className="block text-slate-600">{d.clases_estimadas} con duración estimada</small>}</td>
                     <td className="p-2 text-center">{d.cantidad_catedras}</td>
                     <td className="p-2 text-xs text-slate-500">{d.sedes.join(', ') || '—'}</td>
                     <td className="p-2 text-center">
@@ -3764,7 +3529,7 @@ function CursosView({ cursos, sedes, recargar }) {
   }, [cursos, buscar, filtroSede]);
   return (
     <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cursos / Carreras</h2></div>
+      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cursos de inscripción</h2></div>
       <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
         <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm" value={buscar} onChange={e => setBuscar(e.target.value)} />
         <select className="border rounded-lg px-3 py-2 text-sm" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
@@ -4706,7 +4471,7 @@ function SistemaApp() {
   const requestRef=useRef(0);
   const menu=menuFor(institucion),item=currentItem(menu,activeView);
   const contentView=activeView==='iea_planes_secundario'?'planes_estudio':activeView.startsWith('iea_')?activeView.slice(4):activeView;
-  const catalogMode=contentView==='planes_estudio';
+  const catalogMode=['planes_estudio','cursos','docentes','catedras_catalogo'].includes(contentView);
   const storageKey='horarios.periodo.'+institucion.id;
   const setActiveView=view=>{if(flattenMenu(menu).some(i=>i.id===view))setView(view);};
   const setCuatrimestre=value=>{
@@ -4732,9 +4497,9 @@ function SistemaApp() {
     return ()=>{active=false;controller.abort();};
   },[autenticado,storageKey,catalogAttempt]);
 
-  const cargarDatos=useCallback(async()=>{
+  const cargarDatos=useCallback(async(quiet=false)=>{
     if(!cuatrimestre||periodRef.current!==cuatrimestre)return;
-    const request=++requestRef.current;setLoading(true);setLoadError('');
+    const request=++requestRef.current;if(quiet!==true)setLoading(true);setLoadError('');
     const qp='?cuatrimestre_id='+encodeURIComponent(cuatrimestre);
     try{
       const [cats,docs,overlaps,missing,careerOverlaps,courses,campuses]=await Promise.all([
@@ -4769,10 +4534,10 @@ function SistemaApp() {
       <main className="app-main">
         <PeriodHeader period={cuatrimestre} periods={cuatrimestres} onChange={setCuatrimestre} item={item} readOnly={!puedeEditar} catalogMode={catalogMode}/>
         <SectionTabs item={item} onNavigate={setActiveView}/>
-        {catalogMode?<div className="app-content" key={activeView}><AcademicPlans initialLevel={activeView==='iea_planes_secundario'?'secundario':activeView==='iea_planes_estudio'?'terciario':''}/></div>:!ready?<div className="app-period-state" role={loadError?'alert':'status'}>
+        {catalogMode?<div className="app-content" key={activeView}>{contentView==='planes_estudio'?<AcademicPlans puedeEditar={puedeEditar} initialLevel={activeView==='iea_planes_secundario'?'secundario':activeView==='iea_planes_estudio'?'terciario':''}/>:contentView==='docentes'?<DocentesView sedes={sedes}/>:contentView==='cursos'?<CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos}/>:<GeneralChairs/>}</div>:!ready?<div className="app-period-state" role={loadError?'alert':'status'}>
           {loadError?<><p>No se pudieron cargar los datos de este cuatrimestre: {loadError}</p><button onClick={cargarDatos}>Reintentar carga</button></>:<p>Cargando {cuatrimestres.find(p=>String(p.id)===cuatrimestre)?.nombre}…</p>}
         </div>:<div className="app-content" key={cuatrimestre+':'+activeView}>
-          {activeView.startsWith('iea_')&&contentView!=='bce_import'&&<p className="mx-8 mt-5 text-slate-600">IEA · Carreras terciarias. Estos horarios comparten el plan y los datos del apartado general.</p>}
+          {activeView.startsWith('iea_')&&contentView!=='bce_import'&&<p className="mx-8 mt-5 text-slate-600">IEA · Carreras terciarias. La planificación utiliza las cátedras confirmadas de los planes de estudio.</p>}
         {contentView === 'dashboard' && <DashboardView cuatrimestre={cuatrimestre} setActiveView={setActiveView} />}
         {contentView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {contentView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
@@ -4783,9 +4548,9 @@ function SistemaApp() {
         {contentView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {contentView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {contentView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
-        {contentView === 'sugerencias' && <SugerenciasArmadoView cuatrimestre={cuatrimestre} />}
+        {contentView === 'sugerencias' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
         {contentView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
-        {contentView === 'plan_carrera' && <PlanCarreraView cuatrimestre={cuatrimestre} onImport={()=>{setImportKind('plan');setActiveView('importar');}} />}
+        {contentView === 'plan_carrera' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
         {contentView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {contentView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {contentView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}
