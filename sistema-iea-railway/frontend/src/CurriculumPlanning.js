@@ -39,37 +39,48 @@ function AssignmentEditor({period,plan,subject,campuses,onSaved,onClose,existing
     <p className="text-sm mt-3">Al guardar se vuelven a comprobar demanda, habilitación, disponibilidad y cruces. La clase se comparte con todos los planes vinculados a esta cátedra.</p>
   </section>;
 }
-export default function CurriculumPlanning({cuatrimestre,puedeEditar=false,onCatalog,onSaved}){
+export default function CurriculumPlanning({cuatrimestre,puedeEditar=false,onCatalog,onEnrollments,onSaved}){
   const [catalog,setCatalog]=useState(null),[campuses,setCampuses]=useState([]),[selected,setSelected]=useState('');
   const [data,setData]=useState(null),[error,setError]=useState(''),[attempt,setAttempt]=useState(0),[configuring,setConfiguring]=useState(false);
   const [selectedSubjects,setSelectedSubjects]=useState([]),[editor,setEditor]=useState(null),[busy,setBusy]=useState(false);
+  const [showAll,setShowAll]=useState(false);
   useEffect(()=>{let active=true;const controller=new AbortController();Promise.all([read('/api/planes-estudio',controller.signal),read('/api/sedes',controller.signal)]).then(([c,s])=>{if(active){setCatalog(c);setCampuses(s);}}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;controller.abort();};},[attempt]);
   useEffect(()=>{setData(null);setEditor(null);setConfiguring(false);if(!selected)return;let active=true;const controller=new AbortController();setError('');read('/api/planificacion/'+cuatrimestre+'/planes/'+selected,controller.signal).then(d=>{if(active){setData(d);setSelectedSubjects(d.materias.filter(s=>s.ofertada).map(s=>s.id));}}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;controller.abort();};},[selected,cuatrimestre,attempt]);
   const saveOffer=async()=>{setBusy(true);setError('');try{await saveAcademic('/api/planificacion/'+cuatrimestre+'/planes/'+selected+'/oferta',{revision:data.oferta_revision,catalog_revision:data.revision,materia_ids:selectedSubjects},'PUT');setAttempt(a=>a+1);}catch(e){setError(e.message);}finally{setBusy(false);}};
   const plans=(catalog?.careers||[]).flatMap(c=>c.planes.map(p=>({...p,carrera:c.nombre})));
-  const rows=(data?.materias||[]).filter(s=>configuring||s.ofertada).sort((a,b)=>(a.anio??99)-(b.anio??99)||(a.cuatrimestre??99)-(b.cuatrimestre??99));
+  const configured=data?.estado_oferta==='configurada'||data?.materias?.some(s=>s.ofertada);
+  const rows=(data?.materias||[]).filter(s=>configuring||showAll||!configured||s.ofertada).sort((a,b)=>(a.anio??99)-(b.anio??99)||(a.cuatrimestre??99)-(b.cuatrimestre??99));
   return <div className="academic-catalog">
     <h2 className="text-2xl font-bold">Horarios por carrera y plan</h2>
     <p>Cátedras → plan de estudios → inscriptos del período → apertura y disponibilidad docente.</p>
+    <p className="my-3">Este apartado sirve para elegir qué materias ofrecer en el cuatrimestre, consultar sus inscriptos y organizar las clases. Los planes de estudio completos se editan en el catálogo académico.</p>
     <label className="block my-4">Carrera y versión del plan<select aria-label="Carrera y versión del plan" className="border rounded p-3 block w-full" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Elegí un plan</option>{plans.map(p=><option key={p.id} value={p.id}>{p.carrera} · {p.etiqueta} · {p.jurisdiccion||'Jurisdicción pendiente'} · {p.resolucion||'Resolución pendiente'}</option>)}</select></label>
     {!catalog&&!error&&<p role="status">Cargando planes…</p>}
     {error&&<p role="alert" className="text-red-700">{error} <button onClick={()=>setAttempt(a=>a+1)}>Reintentar</button></p>}
     {selected&&!data&&!error&&<p role="status">Cargando oferta del período…</p>}
     {data&&<>
       <p className="bg-blue-50 p-3 my-3">{data.alcance_inscriptos}</p>
+      <p className="my-3">El plan específico de cada alumno puede quedar pendiente. Eso no impide planificar con los inscriptos de la cátedra. Los pendientes de una carrera son un grupo por validar, no alumnos asignados a cada uno de sus planes.</p>
+      {onEnrollments&&<button className="text-blue-700 underline my-2" onClick={onEnrollments}>Revisar carreras informadas y planes de los inscriptos</button>}
+      {!configured&&<section className="border rounded bg-amber-50 p-4 my-3" aria-label="Oferta pendiente de configurar"><h3 className="font-bold">Todavía no se confirmó la oferta de este plan para el cuatrimestre</h3>
+        <p>Abajo podés revisar sus materias vinculadas, los inscriptos y las clases que ya existan. Se muestran como referencia: consultar esta pantalla no activa materias ni crea horarios.</p>
+        <p>{puedeEditar?'Para preparar la oferta, pulsá «Configurar materias de este período», seleccioná las materias y guardá.':'Estás en modo consulta. Una persona con acceso de edición debe seleccionar y guardar las materias que se ofrecerán.'}</p>
+      </section>}
+      {configured&&!puedeEditar&&<p className="bg-amber-50 p-3">Modo consulta: para cambiar la oferta o asignar clases, ingresá con la clave de edición.</p>}
       {puedeEditar&&<button className="bg-slate-800 text-white px-4 py-2 rounded my-2" onClick={()=>setConfiguring(!configuring)}>{configuring?'Volver a horarios':'Configurar materias de este período'}</button>}
       <button className="ml-3 text-blue-700 underline" onClick={onCatalog}>Abrir planes de estudio completos</button>
+      {configured&&!configuring&&<label className="block my-3"><input type="checkbox" checked={showAll} onChange={e=>setShowAll(e.target.checked)}/> Mostrar también materias no ofrecidas</label>}
       {configuring&&<><p>Elegí las materias a ofrecer. El año y cuatrimestre del plan no se deducen del calendario del período.</p><EditKey/><button disabled={busy} onClick={saveOffer} className="bg-blue-700 text-white rounded px-4 py-2 my-3">Guardar oferta del período</button></>}
       {editor&&<AssignmentEditor key={editor.subject.id+':'+(editor.existing?.id||'new')} period={cuatrimestre} plan={selected} subject={editor.subject} existing={editor.existing} catalogRevision={data.revision} offerRevision={data.oferta_revision} campuses={campuses} onSaved={()=>{setEditor(null);setAttempt(a=>a+1);onSaved?.();}} onClose={()=>setEditor(null)}/>}
       <div className="academic-table-wrap"><table className="academic-table"><thead><tr>{configuring&&<th>Ofrecer</th>}<th>Año</th><th>Cuatrimestre del plan</th><th>Materia y cátedra</th><th>Inscriptos de la cátedra</th><th>Apertura</th><th>Clases del período</th></tr></thead>
       <tbody>{rows.map(s=><tr key={s.id}>
         {configuring&&<td><input aria-label={'Ofrecer '+s.nombre} type="checkbox" checked={selectedSubjects.includes(s.id)} disabled={!s.catedra||!s.anio||!s.cuatrimestre} onChange={e=>setSelectedSubjects(e.target.checked?[...selectedSubjects,s.id]:selectedSubjects.filter(id=>id!==s.id))}/></td>}
-        <td>{s.anio||'Pendiente'}</td><td>{s.cuatrimestre||'Pendiente'}</td><td><strong>{s.nombre}</strong><p>{s.catedra?s.catedra.codigo+' · '+s.catedra.nombre:'Confirmá la cátedra en el plan'}</p></td>
-        <td>{s.inscriptos??'Sin asociación'}</td><td>{s.criterio}{s.docentes_requeridos>0&&<p>{s.docentes_requeridos} docente(s) según el criterio institucional</p>}</td>
+        <td>{s.anio||'Pendiente'}</td><td>{s.cuatrimestre||'Pendiente'}</td><td><strong>{s.nombre}</strong><p>{s.catedra?s.catedra.codigo+' · '+s.catedra.nombre:'Confirmá la cátedra en el plan'}</p><span className="academic-tag">{s.ofertada?'Incluida en la oferta':'Referencia · no ofrecida'}</span></td>
+        <td>{s.inscriptos??'Sin asociación'}{s.catedra&&s.detalle_inscriptos&&<details><summary>Desglose por carrera y plan</summary><p>{s.detalle_inscriptos.carrera||0} con vínculo confirmado a esta carrera</p><p>{s.detalle_inscriptos.plan_confirmado||0} con este plan confirmado</p><p>{s.detalle_inscriptos.plan_pendiente||0} de esta carrera con plan pendiente de validar</p><p>{s.detalle_inscriptos.carrera_sin_asociar||0} sin vínculo de carrera confirmado en el catálogo; no se atribuyen a este plan</p></details>}</td><td>{s.criterio}{s.docentes_requeridos>0&&<p>{s.docentes_requeridos} docente(s) según el criterio institucional</p>}</td>
         <td>{s.asignaciones.map(a=><div key={a.id} className="mb-2"><p>{a.docente||'Docente pendiente'} · {a.dia||'Día pendiente'} {a.hora_inicio}–{a.hora_fin||'Fin pendiente'} {a.comision&&'· '+a.comision}</p>{puedeEditar&&s.ofertada&&<button className="text-blue-700 underline" onClick={()=>setEditor({subject:s,existing:a})}>Editar clase</button>}</div>)}
           {puedeEditar&&s.ofertada&&s.criterio==='ABRIR'&&<button className="text-blue-700 underline" onClick={()=>setEditor({subject:s})}>Asignar o buscar sugerencias</button>}</td>
       </tr>)}</tbody></table></div>
-      {!rows.length&&<p className="academic-empty">Este plan todavía no tiene materias configuradas para el período. Completá sus asociaciones y seleccioná la oferta.</p>}
+      {!rows.length&&<p className="academic-empty">{!data.materias.length?'Este plan todavía no tiene materias cargadas en el catálogo académico.':'La oferta guardada no incluye materias. Podés consultar las demás activando «Mostrar también materias no ofrecidas».'}</p>}
       <p className="mt-4">Las cátedras compartidas muestran las mismas clases en sus distintos planes; no se crean copias por carrera.</p>
     </>}
   </div>;

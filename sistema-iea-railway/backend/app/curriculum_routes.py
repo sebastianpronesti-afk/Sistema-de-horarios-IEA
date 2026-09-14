@@ -58,7 +58,7 @@ def edit(data:dict,db:Session=Depends(get_db)):
     editor(data,db)
     operation=data.get("operation")
     required={"plan":("plan_id",),"subject":("plan_id","subject_id"),"move":("career_id","plan_id","subject_id"),
-              "new_plan":("career_id",),"new_subject":("plan_id",)}
+              "pending_subject":("career_id","subject_id"),"new_plan":("career_id",),"new_subject":("plan_id",)}
     if operation not in required or any(not isinstance(data.get(k),str) for k in required[operation]):
         raise HTTPException(422,"Solicitud de edición incompleta")
     if not isinstance(data.get("changes",{}),dict): raise HTTPException(422,"Campos inválidos")

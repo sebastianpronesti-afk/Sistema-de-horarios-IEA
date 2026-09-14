@@ -5,7 +5,7 @@ const tab=(id,label,keywords='')=>({id,label,keywords});
 export const GENERAL_MENU=[
   {id:'inicio',label:'Inicio',items:[panel('dashboard','Panel general')]},
   {id:'planificacion',label:'Planificación',items:[
-    panel('oferta','Oferta y materias',[tab('dictado','Oferta del cuatrimestre','cátedras que se dictan apertura'),tab('catedras','Materias y asignaciones','cátedras'),tab('decisiones','Decisiones de apertura','toma de decisiones'),tab('inscriptos_curso','Inscriptos del período','alumnos inscripciones por curso')]),
+    panel('oferta','Oferta y materias',[tab('dictado','Oferta del cuatrimestre','cátedras que se dictan apertura'),tab('catedras','Materias y asignaciones','cátedras'),tab('decisiones','Decisiones de apertura','toma de decisiones'),tab('inscriptos_curso','Inscriptos del período','alumnos inscripciones por curso'),tab('inscripciones_planes','Carreras y planes de inscriptos','alumnos carrera informada plan opcional pendiente validar')]),
     panel('horarios','Horarios',[tab('calendario','Calendario'),tab('docentes_dia','Horarios por día','docentes día')]),
     panel('carreras','Horarios por carrera',[tab('plan_carrera','Horarios por carrera','plan molde sede'),tab('sugerencias','Sugerencias por carrera','sugerencia horarios armado')]),
     panel('carga_horaria','Carga horaria docente'),
@@ -57,7 +57,7 @@ export function Navigation({profile,activeView,onNavigate,footer,counts={}}){
     </button>;
   });
   return <aside className="app-sidebar">
-    <div className="app-brand"><h1>{profile.titulo}</h1><p>Planificación académica · v22.0</p></div>
+    <div className="app-brand"><h1>{profile.titulo}</h1><p>Planificación académica · v23.0</p></div>
     <label className="app-menu-search">Buscar en el menú
       <input type="search" value={query} placeholder="Ej.: docentes, horarios, EDI…" onChange={e=>setQuery(e.target.value)}
         onKeyDown={e=>{if(e.key==='Enter'&&query&&results[0]){e.preventDefault();navigate(results[0].id);}if(e.key==='Escape')setQuery('');}} />

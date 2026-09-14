@@ -13,6 +13,7 @@ from app.institution import INSTITUCION
 from app.import_routes import router as import_router
 from app.curriculum_routes import router as curriculum_router
 from app.academic_routes import router as academic_router
+from app.enrollment_routes import router as enrollment_router
 from app.database import engine, get_db, Base
 from app.models.models import (
     Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
@@ -21,10 +22,11 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title=INSTITUCION.titulo, version="22.0")
+app = FastAPI(title=INSTITUCION.titulo, version="23.0")
 app.include_router(import_router)
 app.include_router(curriculum_router)
 app.include_router(academic_router)
+app.include_router(enrollment_router)
 
 @app.get("/api/institucion")
 def get_institucion():

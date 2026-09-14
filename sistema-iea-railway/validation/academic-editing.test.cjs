@@ -44,3 +44,12 @@ test('conflicting save remains open and displays the server explanation',async()
   await mount();global.fetch=async()=>({ok:false,json:async()=>({detail:'El catálogo cambió. Recargá antes de guardar.'})});
   await click('Guardar materia');assert.equal(saved,false);assert.match(document.querySelector('[role=alert]').textContent,/catálogo cambió/);
 });
+test('a pending subject can select any chair and save while its destination plan stays unknown',async()=>{
+  await mount({subject:{id:'pending',nombre:'Pendiente',vinculo:{candidatas:[]}},plan:null,career:{id:'career',planes:[]}});
+  const selectors=document.querySelectorAll('select');
+  assert.equal(selectors[0].value,'');assert.equal(selectors[1].options.length,3);
+  await change(selectors[1],'2');await click('Guardar materia');
+  const body=JSON.parse(requests.find(([,o])=>o.method==='POST')[1].body);
+  assert.equal(body.operation,'pending_subject');assert.equal(body.changes.catedra_id,2);
+  assert.equal(body.plan_id,'');assert.equal('correlativa_ids' in body.changes,false);assert.equal(saved,true);
+});
