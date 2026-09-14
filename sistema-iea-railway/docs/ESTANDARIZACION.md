@@ -108,6 +108,11 @@ una implementación comercial completa para un segundo cliente.
 
 ## Próximas entregas técnicas
 
+El catálogo académico de carreras y planes incorporado en v21 se documenta en
+[PLANES_V21.md](PLANES_V21.md), con su alcance, criterios de importación,
+pendientes académicos y validación. Las limitaciones descritas abajo deben
+interpretarse junto con las entregas posteriores.
+
 1. Hacer atómicas y recuperables las importaciones: validar antes de reemplazar,
    diferenciar actualización y reemplazo completo, respetar sede/período y detener
    cambios si no hay respaldo válido. Corregir la restauración incompleta.

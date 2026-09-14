@@ -48,6 +48,18 @@ test('ambiguous calendars ask for a concrete period without loading combined dat
   await select('initial-period','9');assert.equal(document.getElementById('working-period').value,'9');
 });
 
+test('curriculum can be consulted without choosing an operational semester',async()=>{
+  const periods=[{id:8,nombre:'Anterior 1',anio:1990,numero:1,activo:false},{id:9,nombre:'Anterior 2',anio:1990,numero:2,activo:false}];
+  await mount(iea,{'/api/cuatrimestres':periods,'/api/planes-estudio':{careers:[],articulations:[],source:null}});
+  await click(button('Consultar carreras y planes de estudio'));
+  assert.ok(document.querySelector('.academic-catalog'));
+  assert.equal(document.getElementById('working-period'),null);
+  assert.equal(calls.filter(u=>scoped.includes(u.pathname)).length,0);
+  assert.equal(calls.filter(u=>u.pathname==='/api/planes-estudio').length,1);
+  await search('horarios por carrera');await click(document.querySelector('.app-search-item'));
+  assert.ok(document.getElementById('initial-period'));
+});
+
 test('IEA tools are nested and are absent from another institution menu and search',async()=>{
   await mount(other);await search('edi');
   assert.doesNotMatch(document.querySelector('nav').textContent,/EDI por cátedra/);
