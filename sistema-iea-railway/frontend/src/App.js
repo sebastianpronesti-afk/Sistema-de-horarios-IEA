@@ -1182,6 +1182,7 @@ function DocentesView({ sedes=[] }) {
   const [attempt,setAttempt]=useState(0);
   const recargar=()=>setAttempt(x=>x+1);
   useEffect(()=>{let active=true;const c=new AbortController();Promise.all([apiFetch('/api/docentes',{signal:c.signal}),apiFetch('/api/areas-especialidad',{signal:c.signal})]).then(([d,a])=>{if(active){setDocentes(d);setAreas(a);setError('');}}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;c.abort();};},[attempt]);
+  const eliminar=async(d)=>{if(!window.confirm('¿Eliminar la ficha de '+d.apellido+', '+d.nombre+'? Sus clases quedarán sin docente.'))return;try{await apiFetch('/api/docentes/'+d.id,{method:'DELETE'});recargar();}catch(e){setError(e.message);}};
   const crear=async(form)=>{try{await apiFetch('/api/docentes',{method:'POST',body:JSON.stringify(form)});setModalNuevo(false);recargar();}catch(e){setError(e.message);}};
   const guardarSedes=async(id,ids)=>{try{await apiFetch('/api/docentes/'+id+'/sedes',{method:'PUT',body:JSON.stringify({sede_ids:ids})});setModalSedes(null);recargar();}catch(e){setError(e.message);}};
   const rows=docentes.filter(d=>[d.apellido,d.nombre,d.dni,d.email].join(' ').toLowerCase().includes(buscar.toLowerCase()));
@@ -1190,7 +1191,7 @@ function DocentesView({ sedes=[] }) {
     {puedeEditar&&<button onClick={()=>setModalNuevo(true)} className="bg-blue-700 text-white px-4 py-2 rounded my-3">Agregar docente</button>}
     {error&&<p role="alert">{error} <button onClick={recargar}>Reintentar</button></p>}
     <div className="academic-table-wrap"><table className="academic-table"><thead><tr><th>Docente</th><th>Contacto</th><th>Cátedras habilitadas</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>
-      {rows.map(d=><tr key={d.id}><td>{d.apellido}, {d.nombre}<small>{d.dni}</small></td><td>{d.email||'Sin email'}</td><td>{d.catedras_referencia||'Por completar'}</td><td>{d.notas||'—'}</td><td>{puedeEditar&&<><button className="text-blue-700 underline block" onClick={()=>setModalEditar(d)}>Editar ficha</button><button className="text-blue-700 underline block" onClick={()=>setModalSedes(d)}>Sedes disponibles</button></>}</td></tr>)}
+      {rows.map(d=><tr key={d.id}><td>{d.apellido}, {d.nombre}<small>{d.dni}</small></td><td>{d.email||'Sin email'}</td><td>{d.catedras_referencia||'Por completar'}</td><td>{d.notas||'—'}</td><td>{puedeEditar&&<><button className="text-blue-700 underline block" onClick={()=>setModalEditar(d)}>Editar ficha</button><button className="text-blue-700 underline block" onClick={()=>setModalSedes(d)}>Sedes disponibles</button><button className="text-red-700 underline block" onClick={()=>eliminar(d)}>Eliminar docente</button></>}</td></tr>)}
     </tbody></table></div>
     {modalEditar&&<ModalEditarDocente docente={modalEditar} areas={areas} recargar={recargar} onClose={()=>setModalEditar(null)}/>}
     {modalNuevo&&<ModalNuevoDocente onSave={crear} onClose={()=>setModalNuevo(false)}/>}
@@ -2027,7 +2028,7 @@ function CargaHorariaView({ cuatrimestre }) {
                       </span>
                       {d.excede_limite && <span className="block text-[9px] text-red-500">supera el límite</span>}
                     </td>
-                    <td className="p-2 text-center">{d.clases}</td>
+                    <td className="p-2 text-center">{d.clases}{d.clases_pendientes>0&&<small className="block text-amber-800">{d.clases_pendientes} pendientes de horario</small>}{d.clases_estimadas>0&&<small className="block text-slate-600">{d.clases_estimadas} con duración estimada</small>}</td>
                     <td className="p-2 text-center">{d.cantidad_catedras}</td>
                     <td className="p-2 text-xs text-slate-500">{d.sedes.join(', ') || '—'}</td>
                     <td className="p-2 text-center">
@@ -3528,7 +3529,7 @@ function CursosView({ cursos, sedes, recargar }) {
   }, [cursos, buscar, filtroSede]);
   return (
     <div className="p-8">
-      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cursos / Carreras</h2></div>
+      <div className="mb-6"><h2 className="text-2xl font-bold text-slate-800">Cursos de inscripción</h2></div>
       <div className="bg-white rounded-xl border p-3 mb-4 flex gap-3">
         <input type="text" placeholder="Buscar curso..." className="flex-1 px-3 py-2 border rounded-lg text-sm" value={buscar} onChange={e => setBuscar(e.target.value)} />
         <select className="border rounded-lg px-3 py-2 text-sm" value={filtroSede} onChange={e => setFiltroSede(e.target.value)}>
