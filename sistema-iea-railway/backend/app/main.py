@@ -6,10 +6,12 @@ from sqlalchemy import func, and_, or_
 from openpyxl import load_workbook
 from typing import List, Optional
 import io
+import os
 import re
 
 from app.institution import INSTITUCION
 from app.import_routes import router as import_router
+from app.curriculum_routes import router as curriculum_router
 from app.database import engine, get_db, Base
 from app.models.models import (
     Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
@@ -18,8 +20,9 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title=INSTITUCION.titulo, version="20.0")
+app = FastAPI(title=INSTITUCION.titulo, version="21.0")
 app.include_router(import_router)
+app.include_router(curriculum_router)
 
 @app.get("/api/institucion")
 def get_institucion():
@@ -453,17 +456,12 @@ async def startup():
     db.close()
     print(f"{INSTITUCION.titulo} iniciado")
 
-# v18.1: dos niveles de acceso, con claves guardadas en la base de datos
-# para poder cambiarlas desde el sistema sin tocar el código.
-#
-# Editor  : importa, modifica y borra.
-# Consulta: sólo mira y exporta.
-#
-# La clave IEA2026 pasó a ser la de CONSULTA, porque ya la conoce todo el equipo.
-# La de edición es nueva y sólo la tienen quienes arman los horarios.
-CLAVE_EDITOR_INICIAL = "Capitalismo2026"
-CLAVE_CONSULTA_INICIAL = "IEA2026"
-CLAVE_ACCESO = CLAVE_EDITOR_INICIAL   # se mantiene por compatibilidad interna
+# Las claves personalizadas se conservan en la base. Las claves de arranque
+# se configuran en el despliegue y nunca se incluyen en el código publicado.
+def clave_inicial(rol):
+    variable = {"editor": "BOOTSTRAP_EDITOR_PASSWORD",
+                "consulta": "BOOTSTRAP_CONSULTA_PASSWORD"}[rol]
+    return os.environ.get(variable, "").strip()
 
 def _hash_clave(texto):
     import hashlib
@@ -493,7 +491,7 @@ def guardar_config(db, clave, valor):
 
 def verificar_clave(db, ingresada):
     """Devuelve 'editor', 'consulta' o None.
-    Si nunca se cambiaron, valen las claves iniciales."""
+    Si nunca se cambiaron, se usan las claves configuradas en el despliegue."""
     ingresada = (ingresada or "").strip()
     if not ingresada: return None
     h = _hash_clave(ingresada)
@@ -501,11 +499,11 @@ def verificar_clave(db, ingresada):
     h_consulta = leer_config(db, "clave_consulta")
     if h_editor:
         if h == h_editor: return "editor"
-    elif ingresada == CLAVE_EDITOR_INICIAL:
+    elif ingresada == clave_inicial("editor"):
         return "editor"
     if h_consulta:
         if h == h_consulta: return "consulta"
-    elif ingresada == CLAVE_CONSULTA_INICIAL:
+    elif ingresada == clave_inicial("consulta"):
         return "consulta"
     return None
 
@@ -581,7 +579,7 @@ def cambiar_clave(data: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400,
             detail="Esa contraseña ya está en uso para el otro nivel de acceso")
     if not hash_otra:
-        inicial = CLAVE_CONSULTA_INICIAL if cual == "editor" else CLAVE_EDITOR_INICIAL
+        inicial = clave_inicial("consulta" if cual == "editor" else "editor")
         if nueva == inicial:
             raise HTTPException(status_code=400,
                 detail="Esa contraseña ya está en uso para el otro nivel de acceso")
@@ -592,8 +590,9 @@ def cambiar_clave(data: dict, db: Session = Depends(get_db)):
 
     # Al cambiar una, dejar la otra fijada también, para que no siga valiendo la inicial
     if not leer_config(db, otra):
-        inicial = CLAVE_CONSULTA_INICIAL if cual == "editor" else CLAVE_EDITOR_INICIAL
-        guardar_config(db, otra, _hash_clave(inicial))
+        inicial = clave_inicial("consulta" if cual == "editor" else "editor")
+        if inicial:
+            guardar_config(db, otra, _hash_clave(inicial))
 
     return {"ok": True, "cual": cual,
             "mensaje": f"Contraseña de {'edición' if cual == 'editor' else 'consulta'} actualizada."}

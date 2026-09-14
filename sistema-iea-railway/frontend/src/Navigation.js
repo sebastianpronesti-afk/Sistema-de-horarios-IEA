@@ -12,16 +12,17 @@ export const GENERAL_MENU=[
   ]},
   {id:'datos',label:'Personas y datos académicos',items:[
     panel('personal','Docentes',[tab('docentes','Fichas docentes'),tab('disponibilidad','Disponibilidad'),tab('carga_horaria','Carga horaria'),tab('necesitan_docente','Asignaciones pendientes','necesitan docente faltantes'),tab('nombres_docentes','Nombres y equivalencias','alias duplicados')]),
-    panel('academicos','Carreras e inscripciones',[tab('cursos','Carreras y cursos'),tab('inscriptos_curso','Inscripciones por curso','alumnos inscriptos')]),
+    panel('academicos','Carreras y planes de estudio',[tab('planes_estudio','Planes de estudio','carreras resoluciones ministeriales jurisdicción catálogo materias correlatividades dobles titulaciones'),tab('cursos','Carreras y cursos'),tab('inscriptos_curso','Inscripciones por curso','alumnos inscriptos')]),
   ]},
   {id:'archivos',label:'Archivos y seguimiento',items:[panel('importar','Importar datos'),panel('exportar','Exportar'),panel('respaldos','Respaldos y recuperación',[tab('respaldos','Respaldos y recuperación','deshacer importación')]),panel('comparar','Comparar cuatrimestres')]},
 ];
 export const IEA_MENU={id:'iea',label:'IEA',items:[
   {id:'terciarias',label:'Carreras terciarias',items:[
+    panel('iea_planes_estudio','Planes de estudio',[tab('iea_planes_estudio','Planes de estudio','resoluciones jurisdicción catálogo materias dobles titulaciones')]),
     panel('iea_carreras','Horarios y sugerencias',[tab('iea_plan_carrera','Horarios por carrera','plan molde'),tab('iea_sugerencias','Sugerencias por carrera','sugerencia horarios armado')]),
     panel('edi_alumnos','EDI por cátedra'),panel('control_insc','Control de inscripciones'),
   ]},
-  panel('bce','BCE y BEA',[tab('bce_bea','Materias BCE y BEA'),tab('iea_bce_import','Importar inscripciones BCE y BEA')]),panel('asincronicas','Materias asincrónicas'),
+  panel('bce','BCE y BEA',[tab('bce_bea','Materias BCE y BEA'),tab('iea_planes_secundario','Planes de estudio de secundario','catálogo módulos'),tab('iea_bce_import','Importar inscripciones BCE y BEA')]),panel('asincronicas','Materias asincrónicas'),
 ]};
 export function menuFor(profile){return profile.id==='iea'?[...GENERAL_MENU,IEA_MENU]:GENERAL_MENU;}
 export function flattenMenu(nodes,path=[]){return nodes.flatMap(node=>node.items?flattenMenu(node.items,[...path,node.label]):node.tabs.map(item=>({...item,panel:node,path:[...path,node.label]})));}
@@ -55,7 +56,7 @@ export function Navigation({profile,activeView,onNavigate,footer,counts={}}){
     </button>;
   });
   return <aside className="app-sidebar">
-    <div className="app-brand"><h1>{profile.titulo}</h1><p>Planificación académica · v20.0</p></div>
+    <div className="app-brand"><h1>{profile.titulo}</h1><p>Planificación académica · v21.0</p></div>
     <label className="app-menu-search">Buscar en el menú
       <input type="search" value={query} placeholder="Ej.: docentes, horarios, EDI…" onChange={e=>setQuery(e.target.value)}
         onKeyDown={e=>{if(e.key==='Enter'&&query&&results[0]){e.preventDefault();navigate(results[0].id);}if(e.key==='Escape')setQuery('');}} />
@@ -78,14 +79,14 @@ export function SectionTabs({item,onNavigate}){
   </nav>;
 }
 
-export function PeriodHeader({period,periods,onChange,item,readOnly}){
+export function PeriodHeader({period,periods,onChange,item,readOnly,catalogMode=false}){
   return <header className="app-context-header">
     <div className="app-location"><p>{item.path.join(' / ')}</p><h2>{item.panel.label}</h2>{readOnly&&<span className="app-access">Acceso de consulta</span>}</div>
-    <div className="app-period-box"><label htmlFor="working-period">Cuatrimestre de trabajo</label>
+    {catalogMode?<div className="app-period-box"><strong>Catálogo de planes de estudio</strong><p>La ubicación curricular de las materias pertenece a cada plan.</p></div>:<div className="app-period-box"><label htmlFor="working-period">Cuatrimestre de trabajo</label>
       <select id="working-period" value={period} onChange={e=>onChange(e.target.value)} disabled={!periods.length}>
         {!periods.length&&<option value="">Sin cuatrimestres disponibles</option>}
         {periods.map(p=><option key={p.id} value={String(p.id)}>{p.nombre}</option>)}
       </select><p>Horarios, inscripciones y carga docente de este cuatrimestre.</p>
-    </div>
+    </div>}
   </header>;
 }

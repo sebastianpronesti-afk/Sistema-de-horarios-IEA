@@ -3,6 +3,7 @@ import { InstitutionProvider, useInstitution } from './InstitutionContext';
 import ImportWorkflow, { ImportHistory } from './ImportWorkflow';
 import {Navigation, PeriodHeader, SectionTabs, menuFor, currentItem, flattenMenu} from './Navigation';
 import {choosePeriod} from './periods';
+import AcademicPlans from './AcademicPlans';
 
 const API_URL = '';
 
@@ -4704,7 +4705,8 @@ function SistemaApp() {
   const [loading,setLoading]=useState(false),[loadError,setLoadError]=useState(''),[loadedPeriod,setLoadedPeriod]=useState(null);
   const requestRef=useRef(0);
   const menu=menuFor(institucion),item=currentItem(menu,activeView);
-  const contentView=activeView.startsWith('iea_')?activeView.slice(4):activeView;
+  const contentView=activeView==='iea_planes_secundario'?'planes_estudio':activeView.startsWith('iea_')?activeView.slice(4):activeView;
+  const catalogMode=contentView==='planes_estudio';
   const storageKey='horarios.periodo.'+institucion.id;
   const setActiveView=view=>{if(flattenMenu(menu).some(i=>i.id===view))setView(view);};
   const setCuatrimestre=value=>{
@@ -4753,10 +4755,11 @@ function SistemaApp() {
   if(catalogStatus!=='ready')return <div className="app-shell"><div className="app-period-state" role={catalogStatus==='error'?'alert':'status'}>
     {catalogStatus==='error'?<>No se pudieron cargar los cuatrimestres y catálogos.<br/><button onClick={()=>setCatalogAttempt(x=>x+1)}>Reintentar</button></>:'Cargando cuatrimestres y catálogos…'}
   </div></div>;
-  if(!cuatrimestre)return <div className="app-shell"><div className="app-period-state">
+  if(!cuatrimestre&&!catalogMode)return <div className="app-shell"><div className="app-period-state">
     <h1 className="text-2xl font-bold">Elegí un cuatrimestre de trabajo</h1>
     {cuatrimestres.length?<><p>Seleccioná el cuatrimestre cuya carga querés consultar o preparar.</p><label htmlFor="initial-period">Cuatrimestre</label>
     <select id="initial-period" value="" onChange={e=>setCuatrimestre(e.target.value)}><option value="" disabled>Elegí un cuatrimestre</option>{cuatrimestres.map(p=><option key={p.id} value={String(p.id)}>{p.nombre}</option>)}</select></>:<p>No hay cuatrimestres disponibles. Cargá el calendario institucional antes de planificar.</p>}
+    <button onClick={()=>setActiveView('planes_estudio')}>Consultar carreras y planes de estudio</button>
   </div></div>;
   const ready=!loading&&!loadError&&loadedPeriod===cuatrimestre;
   return <RolContext.Provider value={{rol,puedeEditar}}>
@@ -4764,9 +4767,9 @@ function SistemaApp() {
       <Navigation profile={institucion} activeView={activeView} onNavigate={setActiveView} footer={<PieSidebar/>}
         counts={ready?{solapamientos:solapamientos.length,necesitan_docente:necesitanDocente.length,solap_carreras:solapCarrerasCount}:{}} />
       <main className="app-main">
-        <PeriodHeader period={cuatrimestre} periods={cuatrimestres} onChange={setCuatrimestre} item={item} readOnly={!puedeEditar}/>
+        <PeriodHeader period={cuatrimestre} periods={cuatrimestres} onChange={setCuatrimestre} item={item} readOnly={!puedeEditar} catalogMode={catalogMode}/>
         <SectionTabs item={item} onNavigate={setActiveView}/>
-        {!ready?<div className="app-period-state" role={loadError?'alert':'status'}>
+        {catalogMode?<div className="app-content" key={activeView}><AcademicPlans initialLevel={activeView==='iea_planes_secundario'?'secundario':activeView==='iea_planes_estudio'?'terciario':''}/></div>:!ready?<div className="app-period-state" role={loadError?'alert':'status'}>
           {loadError?<><p>No se pudieron cargar los datos de este cuatrimestre: {loadError}</p><button onClick={cargarDatos}>Reintentar carga</button></>:<p>Cargando {cuatrimestres.find(p=>String(p.id)===cuatrimestre)?.nombre}…</p>}
         </div>:<div className="app-content" key={cuatrimestre+':'+activeView}>
           {activeView.startsWith('iea_')&&contentView!=='bce_import'&&<p className="mx-8 mt-5 text-slate-600">IEA · Carreras terciarias. Estos horarios comparten el plan y los datos del apartado general.</p>}
