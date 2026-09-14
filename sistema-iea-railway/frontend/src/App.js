@@ -4497,9 +4497,9 @@ function SistemaApp() {
     return ()=>{active=false;controller.abort();};
   },[autenticado,storageKey,catalogAttempt]);
 
-  const cargarDatos=useCallback(async()=>{
+  const cargarDatos=useCallback(async(quiet=false)=>{
     if(!cuatrimestre||periodRef.current!==cuatrimestre)return;
-    const request=++requestRef.current;setLoading(true);setLoadError('');
+    const request=++requestRef.current;if(quiet!==true)setLoading(true);setLoadError('');
     const qp='?cuatrimestre_id='+encodeURIComponent(cuatrimestre);
     try{
       const [cats,docs,overlaps,missing,careerOverlaps,courses,campuses]=await Promise.all([
@@ -4548,9 +4548,9 @@ function SistemaApp() {
         {contentView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {contentView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {contentView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
-        {contentView === 'sugerencias' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={cargarDatos}/>}
+        {contentView === 'sugerencias' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
         {contentView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
-        {contentView === 'plan_carrera' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={cargarDatos}/>}
+        {contentView === 'plan_carrera' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
         {contentView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {contentView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {contentView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}

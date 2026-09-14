@@ -133,3 +133,17 @@ test('general teachers omit manual hours and institution-specific totals',async(
   assert.doesNotMatch(content,/CFPEA|ISFTEA|Materias Avellaneda|Materias Caballito|Horas · Materias/);
   assert.equal(calls.filter(u=>u.pathname==='/api/docentes'&&!u.search).length,1);
 });
+
+test('saving a class refreshes operational data while retaining the selected plan',async()=>{
+  const subject={id:'s1',nombre:'Materia de prueba',anio:1,cuatrimestre:1,ofertada:true,catedra:{id:1,codigo:'c.1',nombre:'Materia de prueba'},inscriptos:30,criterio:'ABRIR',docentes_requeridos:1,asignaciones:[]};
+  await mount(iea,{...academicFixtures,'/api/planificacion/1/planes/p1':{...academicView,materias:[subject]},'/api/docentes':[{id:1,nombre:'Docente',apellido:'Ficticio'}]});
+  await search('horarios por carrera');await click(document.querySelector('.app-search-item'));await choosePlan();
+  await click(button('Asignar o buscar sugerencias'));
+  const dialog=document.querySelector('[aria-label="Asignar horario"]');
+  const selects=dialog.querySelectorAll('select');
+  await act(async()=>Simulate.change(selects[2],{target:{value:'1'}}));
+  const key=dialog.querySelector('input[type=password]');await act(async()=>Simulate.change(key,{target:{value:'fixture-editor-only'}}));
+  await click(button('Guardar clase'));
+  assert.equal(document.querySelector('[aria-label="Carrera y versión del plan"]').value,'p1');
+  assert.ok(calls.some(u=>u.pathname.endsWith('/s1/asignar')));
+});
