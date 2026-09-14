@@ -40,22 +40,25 @@ export function SubjectEditor({subject,plan,career,revision,onSaved,onClose}){
   const set=(key,value)=>setForm({...form,[key]:value});
   const save=async()=>{setBusy(true);setError('');try{
     const changes={...form,anio:form.anio===''?null:Number(form.anio),cuatrimestre:form.cuatrimestre===''?null:Number(form.cuatrimestre),catedra_id:form.catedra_id===''?null:Number(form.catedra_id)};
-    await saveAcademic('/api/planes-estudio/editar',{operation:moving?'move':subject.id?'subject':'new_subject',revision,plan_id:target,career_id:career?.id,subject_id:subject.id,changes});onSaved();
+    if(moving&&!target)delete changes.correlativa_ids;
+    await saveAcademic('/api/planes-estudio/editar',{operation:moving?(target?'move':'pending_subject'):subject.id?'subject':'new_subject',revision,plan_id:target,career_id:career?.id,subject_id:subject.id,changes});onSaved();
   }catch(e){setError(e.message);}finally{setBusy(false);}};
   const visible=chairs.filter(c=>String(c.id)===String(form.catedra_id)||[c.codigo,c.nombre].join(' ').toLowerCase().includes(query.toLowerCase()));
   return <section role="dialog" aria-label="Editar materia" className="bg-slate-50 border rounded p-5 my-4">
-    <h3 className="font-bold text-xl">{moving?'Asignar materia pendiente a un plan':'Editar materia del plan'}</h3>
-    {moving&&<label>Plan de destino<select className="border rounded p-2 block w-full" value={target} onChange={e=>{setTarget(e.target.value);set('correlativa_ids',[]);}}><option value="">Elegí un plan de esta carrera</option>{career.planes.map(p=><option key={p.id} value={p.id}>{p.etiqueta} · {p.resolucion||'Resolución pendiente'}</option>)}</select></label>}
+    <h3 className="font-bold text-xl">{moving?'Completar materia pendiente':'Editar materia del plan'}</h3>
+    {moving&&<><p>Podés asociar la cátedra ahora y dejar el plan pendiente. Elegí un destino únicamente cuando esté confirmado.</p><label>Plan de destino (opcional)<select className="border rounded p-2 block w-full" value={target} onChange={e=>{setTarget(e.target.value);set('correlativa_ids',[]);}}><option value="">Dejar plan pendiente de validar</option>{career.planes.map(p=><option key={p.id} value={p.id}>{p.etiqueta} · {p.resolucion||'Resolución pendiente'}</option>)}</select></label></>}
     <div className="grid md:grid-cols-3 gap-3"><TextField label="Materia del plan" value={form.nombre} onChange={v=>set('nombre',v)}/><TextField label="Año académico" type="number" value={form.anio} onChange={v=>set('anio',v)}/><TextField label="Cuatrimestre académico" type="number" value={form.cuatrimestre} onChange={v=>set('cuatrimestre',v)}/></div>
     <label className="block my-3">Buscar cátedra<input className="border rounded p-2 block w-full" type="search" value={query} onChange={e=>setQuery(e.target.value)}/></label>
     <label>Cátedra asociada<select className="border rounded p-2 block w-full" value={form.catedra_id} onChange={e=>set('catedra_id',e.target.value)}><option value="">Sin asociación confirmada</option>{visible.map(c=><option key={c.id} value={c.id}>{c.codigo} · {c.nombre}</option>)}</select></label>
-    <fieldset className="my-3"><legend className="font-bold">Correlatividades dentro de este plan</legend>
+    <p className="text-sm my-2">El selector incluye todas las cátedras del sistema, no solo las sugeridas para esta materia.</p>
+    <fieldset disabled={moving&&!targetPlan} className="my-3"><legend className="font-bold">Correlatividades dentro de este plan</legend>
+      {moving&&!targetPlan&&<p>Las correlatividades se podrán seleccionar cuando se confirme el plan.</p>}
       <p>Seleccioná las materias requeridas. Ninguna selección significa que no tiene correlatividades.</p>
       <div className="max-h-60 overflow-auto border rounded p-3">{(targetPlan?.materias||[]).filter(s=>s.id!==subject.id).map(s=><label key={s.id} className="block"><input type="checkbox" checked={form.correlativa_ids.includes(s.id)} onChange={e=>set('correlativa_ids',e.target.checked?[...form.correlativa_ids,s.id]:form.correlativa_ids.filter(id=>id!==s.id))}/> {s.nombre}</label>)}</div>
       {subject.correlatividades&&<details><summary>Texto del archivo de origen</summary><p>{subject.correlatividades}</p></details>}
     </fieldset>
     <TextField label="Nota de la revisión" value={form.revision_nota} onChange={v=>set('revision_nota',v)}/>
     <EditKey/>{error&&<p role="alert" className="text-red-700">{error}</p>}
-    <button disabled={busy||!target||!targetPlan} className="bg-blue-700 text-white rounded px-4 py-2" onClick={save}>Guardar materia</button> <button disabled={busy} onClick={onClose}>Cancelar</button>
+    <button disabled={busy||(!moving&&(!target||!targetPlan))||(moving&&!!target&&!targetPlan)} className="bg-blue-700 text-white rounded px-4 py-2" onClick={save}>Guardar materia</button> <button disabled={busy} onClick={onClose}>Cancelar</button>
   </section>;
 }

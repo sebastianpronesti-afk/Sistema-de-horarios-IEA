@@ -4,6 +4,7 @@ import re
 from sqlalchemy import text
 from app.academic_store import resolved_catalog, offering, find_plan, reject
 from app.models.models import Asignacion, Cuatrimestre, Inscripcion, Catedra, Docente, DocenteSede, Sede
+from app.enrollment_plans import demand_breakdown
 
 DAYS = ("Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo")
 
@@ -57,6 +58,7 @@ def view_plan(db,institution,period,plan_id):
     ctx=scheduling_context(db,institution,period)
     career,plan=find_plan(ctx["catalog"],plan_id)
     selected=set(ctx["offering"]["plans"].get(plan_id,[]))
+    breakdown=demand_breakdown(db,institution.id,period,career['id'],plan_id,(ctx['catalog'],ctx['revision']))
     rows=[]
     for s in plan["materias"]:
         chair=ctx["chairs"].get(s.get("catedra_id"))
@@ -65,6 +67,7 @@ def view_plan(db,institution,period,plan_id):
         rows.append({**s,"ofertada":s["id"] in selected,
             "catedra":{"id":chair.id,"codigo":chair.codigo,"nombre":chair.nombre} if chair else None,
             "inscriptos":total,
+            "detalle_inscriptos":breakdown.get(chair.id,{}) if chair else {},
             "criterio":"ASOCIAR CÁTEDRA" if chair is None else "ABRIR" if institution.requiere_docente(total) else "REVISAR APERTURA" if total else "SIN ALUMNOS",
             "docentes_requeridos":institution.docentes_sugeridos(total) if total is not None else None,
             "asignaciones":[{"id":a.id,"docente_id":a.docente_id,"docente":f"{a.docente.apellido}, {a.docente.nombre}" if a.docente else None,
@@ -74,6 +77,7 @@ def view_plan(db,institution,period,plan_id):
     return {"plan":{k:v for k,v in plan.items() if k not in ("materias","modulos")},
             "carrera":career["nombre"],"revision":ctx["revision"],"oferta_revision":ctx["offer_revision"],
             "cuatrimestre_id":period,"materias":rows,
+            "estado_oferta":"configurada" if plan_id in ctx['offering']['plans'] else "sin_configurar",
             "demanda_catedras":sum(len(ctx["demand"].get(c,set())) for c in unique_chairs),
             "alumnos_distintos":len(set().union(*(ctx["demand"].get(c,set()) for c in unique_chairs))),
             "alcance_inscriptos":"Cátedra y período; incluye alumnos de todos los planes y sedes. No es un conteo por plan."}

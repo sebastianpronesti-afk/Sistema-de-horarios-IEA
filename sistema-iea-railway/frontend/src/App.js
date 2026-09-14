@@ -5,6 +5,7 @@ import {Navigation, PeriodHeader, SectionTabs, menuFor, currentItem, flattenMenu
 import {choosePeriod} from './periods';
 import AcademicPlans from './AcademicPlans';
 import CurriculumPlanning from './CurriculumPlanning';
+import EnrollmentPlans from './EnrollmentPlans';
 import {rememberEditorKey} from './AcademicEditors';
 
 const API_URL = '';
@@ -4542,15 +4543,16 @@ function SistemaApp() {
         {contentView === 'catedras' && <CatedrasView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {contentView === 'cursos' && <CursosView cursos={cursos} sedes={sedes} recargar={cargarDatos} />}
         {contentView === 'inscriptos_curso' && <InscriptosPorCursoView cuatrimestre={cuatrimestre} />}
+        {contentView === 'inscripciones_planes' && <EnrollmentPlans key={cuatrimestre} cuatrimestre={cuatrimestre} puedeEditar={puedeEditar}/>}
         {contentView === 'docentes' && <DocentesView docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {contentView === 'decisiones' && <DecisionesView catedras={catedras} cuatrimestre={cuatrimestre} recargar={cargarDatos} />}
         {contentView === 'necesitan_docente' && <NecesitanDocenteView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} docentes={docentes} recargar={cargarDatos} />}
         {contentView === 'asincronicas' && <AsincronicasView cuatrimestre={cuatrimestre} />}
         {contentView === 'disponibilidad' && <DisponibilidadView docentes={docentes} catedras={catedras} sedes={sedes} cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} recargar={cargarDatos} />}
         {contentView === 'docentes_dia' && <DocentesDiaView catedras={catedras} />}
-        {contentView === 'sugerencias' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
+        {contentView === 'sugerencias' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onEnrollments={()=>setActiveView('inscripciones_planes')} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
         {contentView === 'calendario' && <CalendarioView catedras={catedras} docentes={docentes} sedes={sedes} cuatrimestre={cuatrimestre} />}
-        {contentView === 'plan_carrera' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
+        {contentView === 'plan_carrera' && <CurriculumPlanning cuatrimestre={cuatrimestre} puedeEditar={puedeEditar} onEnrollments={()=>setActiveView('inscripciones_planes')} onCatalog={()=>setActiveView('planes_estudio')} onSaved={()=>cargarDatos(true)}/>}
         {contentView === 'solapamientos' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="horarios" />}
         {contentView === 'solap_carreras' && <SolapamientosView solapamientos={solapamientos} cuatrimestre={cuatrimestre} tab="carreras" />}
         {contentView === 'dictado' && <DictadoView cuatrimestre={cuatrimestre} cuatrimestres={cuatrimestres} />}

@@ -29,6 +29,7 @@ function Subjects({rows=[],onEdit}){
         <td>{s.anio?`${s.anio}° año`:'Año pendiente'}</td><td>{s.cuatrimestre?`${s.cuatrimestre}° cuatrimestre`:'Cuatrimestre pendiente'}</td>
         <td><strong>{s.nombre}</strong>{s.plan_origen&&<small>{s.plan_origen}</small>}{onEdit&&<button className="block text-blue-700 underline mt-2" onClick={()=>onEdit(s)}>Editar materia</button>}</td>
         <td><span className={`academic-tag ${['coincide','confirmado'].includes(s.vinculo?.estado)?'academic-ok':'academic-pending'}`}>{matching[s.vinculo?.estado]||'Por revisar'}</span>
+          {onEdit&&<button className="block text-blue-700 underline my-2" onClick={()=>onEdit(s)}>{s.vinculo?.catedra?'Cambiar cátedra':'Asociar cátedra'}</button>}
           {s.vinculo?.catedra?<p><strong>{s.vinculo.catedra.codigo}</strong> · {s.vinculo.catedra.nombre}</p>:<>
             <p>Referencia en archivo: <strong>{s.codigo_archivo||'Sin código'}</strong></p>
             {s.vinculo?.candidatas?.map(c=><small key={c.id}>Cátedra a revisar: {c.codigo} · {c.nombre}</small>)}</>}
@@ -82,6 +83,7 @@ export default function AcademicPlans({initialLevel='',puedeEditar=false}){
     <header className="academic-intro"><p className="academic-eyebrow">Catálogo académico</p><h2>Carreras y planes de estudio</h2>
       <p>Cada resolución conserva su plan y sus materias. El catálogo es independiente del cuatrimestre de trabajo.</p>
       <p>Completá cada plan y confirmá sus cátedras. En Planificación elegís qué materias ofrecer en cada período.</p>
+      {!puedeEditar&&<p className="bg-amber-50 p-3">Estás en modo consulta. Para asociar cátedras o corregir materias, cerrá sesión e ingresá con la clave de edición.</p>}
       {catalog.source&&<details><summary>Antecedentes del catálogo</summary><small>Fuente: {catalog.source.filename} · revisión {catalog.source.revision}</small></details>}</header>
     {actionError&&<p role="alert">{actionError}</p>}
     {selection?<>

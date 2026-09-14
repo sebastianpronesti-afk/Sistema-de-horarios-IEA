@@ -133,6 +133,14 @@ def edit_catalog(db, institution_id, expected, operation, payload):
         if not subject: reject("Materia no encontrada en el plan",404)
         validate_subject(db,subject,payload.get("changes",{}))
         validate_graph(plan)
+    elif operation == "pending_subject":
+        career = find_career(catalog,payload["career_id"])
+        subject = next((s for s in career.get("materias_sin_plan",[]) if s["id"]==payload["subject_id"]),None)
+        if not subject: reject("Materia pendiente no encontrada",404)
+        changes = payload.get("changes",{})
+        if "correlativa_ids" in changes:
+            reject("Elegí un plan antes de editar sus correlatividades")
+        validate_subject(db,subject,changes)
     elif operation == "move":
         career = find_career(catalog,payload["career_id"])
         target_career,plan = find_plan(catalog,payload["plan_id"])
