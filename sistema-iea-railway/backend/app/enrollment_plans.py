@@ -6,6 +6,7 @@ copied and no plan is inferred. Source fingerprints guard against reused IDs.
 from collections import defaultdict
 import hashlib
 import json
+from sqlalchemy import text
 from app.academic_store import AcademicDocument, academic_catalog, find_career, find_plan, write_document, reject
 from app.models.models import Alumno, Curso, Cuatrimestre, Inscripcion
 
@@ -35,13 +36,20 @@ def context(db,institution,period,catalog=None):
     documents={r.key:(json.loads(r.content),r.revision) for r in db.query(AcademicDocument).filter(
         AcademicDocument.key.startswith(prefix(institution,period),autoescape=True))}
     groups={}
-    query=db.query(Inscripcion,Alumno,Curso).join(Alumno,Alumno.id==Inscripcion.alumno_id).outerjoin(
+    query=db.query(Inscripcion,Alumno,Curso,text('inscripciones.curso_nombre')).join(Alumno,Alumno.id==Inscripcion.alumno_id).outerjoin(
         Curso,Curso.id==Inscripcion.curso_id).filter(Inscripcion.cuatrimestre_id==period)
-    for enrollment,student,course in query:
-        cid=course.id if course else 0
+    course_names={}
+    for enrollment,student,course,raw_course in query:
+        # IEA's importer preserves career in curso_nombre without a Curso FK.
+        # Negative IDs identify exact source-name groups, never catalog plans.
+        informed=(raw_course or '').strip()
+        cid=-(int(token('source-course',informed)[:12],16)+1) if informed else course.id if course else 0
+        course_name=informed or (course.nombre if course else 'Carrera no informada en la inscripción')
+        if cid in course_names and course_names[cid]!=course_name:
+            reject('No se pudieron distinguir los cursos informados. Revisá el origen.',503)
+        course_names[cid]=course_name
         key=(cid,student.id)
         if key not in groups:
-            course_name=course.nombre if course else 'Carrera no informada en la inscripción'
             source=token(period,cid,course_name,student.id,student.dni)
             mapping,mapping_revision=documents.get(course_key(institution,period,cid),({},0))
             mapping_valid=mapping.get('source_token')==token(period,cid,course_name) and mapping.get('career_id') in careers
