@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import unicodedata
+from app.curriculum_bundle import read_bundle
 
 ROOT=Path(__file__).resolve().parent
 
@@ -95,10 +96,14 @@ def load_catalog(institution_id):
     if configured:
         path=Path(configured)
         if not path.is_absolute(): path=ROOT/path
-    elif institution_id=='iea' and (ROOT/'profiles/iea_curriculum.json').is_file():
-        path=ROOT/'profiles/iea_curriculum.json'
     else:
-        return {'schema_version':1,'institution_id':institution_id,'source':None,'careers':[],'articulations':[]}
+        bundle=read_bundle()
+        if bundle is not None:
+            return validate_catalog(bundle,institution_id)
+        if institution_id=='iea' and (ROOT/'profiles/iea_curriculum.json').is_file():
+            path=ROOT/'profiles/iea_curriculum.json'
+        else:
+            return {'schema_version':1,'institution_id':institution_id,'source':None,'careers':[],'articulations':[]}
     return _load(str(path),institution_id)
 
 

@@ -155,8 +155,8 @@ producción: sus fixtures vacían tablas entre casos.
 
 Validación local del 14/09/2026:
 
-- 74 pruebas de backend satisfactorias con el catálogo privado instalado: 18 nuevas del catálogo y 5 nuevas de
-  sus rutas, 3 de configuración con datos ficticios, 4 de compatibilidad de las
+- 78 pruebas de backend satisfactorias con el catálogo privado instalado: 18 nuevas del catálogo y 5 nuevas de
+  sus rutas, 7 de configuración con datos ficticios, 4 de compatibilidad de las
   claves de arranque configurables y las
   44 de reglas, API e importaciones anteriores.
 - 28 pruebas de interfaz satisfactorias, incluidas 8 del catálogo y una de
@@ -204,7 +204,25 @@ guardadas, cambio de contraseña y ausencia de un acceso vacío al faltar una
 variable. Esto conserva el circuito existente; la autenticación integral,
 permisos y operación multiusuario siguen pendientes con ITOESTE.
 
-### Instalación privada del catálogo
+### Configuración privada mediante variables
+
+Railway puede recibir el catálogo sin subir archivos a un volumen. Se comprime
+el JSON con gzip, se codifica en base64 y se divide en fragmentos de hasta
+48.000 caracteres. Solo el backend recibe estas variables privadas:
+
+- `CURRICULUM_CATALOG_GZIP_PARTS`: cantidad de fragmentos, entre 1 y 64.
+- `CURRICULUM_CATALOG_GZIP_PART_01`, `_02`, etc.: fragmentos consecutivos.
+- `CURRICULUM_CATALOG_GZIP_SHA256`: SHA-256 del JSON original sin comprimir.
+
+La carga comprueba integridad, tamaño descomprimido máximo de 16 MiB y esquema.
+Una configuración incompleta produce un error visible. No escribe archivos.
+Una ruta explícita `CURRICULUM_CATALOG_PATH` tiene prioridad sobre las variables;
+sin ruta explícita se utilizan las variables y luego el archivo local opcional.
+Cambiar las variables requiere desplegar el backend. Los valores no se guardan
+en Git ni se incorporan al frontend. Las pruebas incluyen reconstrucción exacta,
+fragmentos incompletos, integridad incorrecta y límites de descompresión.
+
+### Instalación privada alternativa mediante archivo
 
 La publicación del archivo académico fue rechazada por la herramienta sin una
 explicación adicional. Por eso la entrega pública contiene el código y las
