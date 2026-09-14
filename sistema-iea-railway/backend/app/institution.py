@@ -21,6 +21,7 @@ class Institution:
     duracion_clase_minutos: int
     alias_carreras: Mapping[str, str]
     schema_version: int = 1
+    corte_turno_minutos: int = 900
 
     def requiere_docente(self, total: int) -> bool:
         return total >= self.minimo_inscriptos_apertura
@@ -34,7 +35,7 @@ class Institution:
         return {name: getattr(self, name) for name in (
             'schema_version', 'id', 'nombre', 'titulo',
             'minimo_inscriptos_apertura', 'alumnos_por_docente',
-            'duracion_clase_minutos',
+            'duracion_clase_minutos', 'corte_turno_minutos',
         )}
 
 
@@ -47,8 +48,9 @@ def load_institution(path=None) -> Institution:
         'schema_version', 'id', 'nombre', 'titulo', 'minimo_inscriptos_apertura',
         'alumnos_por_docente', 'duracion_clase_minutos', 'alias_carreras',
     }
-    if not isinstance(data, dict) or set(data) != required:
+    if not isinstance(data, dict) or not required.issubset(data) or set(data)-required-{'corte_turno_minutos'}:
         raise ValueError('El perfil institucional debe incluir únicamente los campos del esquema v1')
+    data.setdefault('corte_turno_minutos',900)
     if type(data['schema_version']) is not int or data['schema_version'] != 1:
         raise ValueError('Versión de perfil institucional no soportada')
     for name in ('id', 'nombre', 'titulo'):
@@ -61,6 +63,7 @@ def load_institution(path=None) -> Institution:
         ('minimo_inscriptos_apertura', 100000),
         ('alumnos_por_docente', 100000),
         ('duracion_clase_minutos', 1440),
+        ('corte_turno_minutos',1439),
     ):
         if type(data[name]) is not int or not 1 <= data[name] <= maximum:
             raise ValueError(f'Perfil institucional: {name} debe ser un entero entre 1 y {maximum}')

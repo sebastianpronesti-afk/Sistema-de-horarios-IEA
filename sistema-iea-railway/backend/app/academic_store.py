@@ -178,8 +178,9 @@ def resolved_catalog(db,institution_id):
 def offering(db,institution_id,period_id):
     return read_document(db,f"offering:{institution_id}:{period_id}",lambda:{"plans":{}})
 
-def save_offering(db,institution_id,period_id,plan_id,expected,subject_ids):
-    catalog,_=resolved_catalog(db,institution_id)
+def save_offering(db,institution_id,period_id,plan_id,expected,subject_ids,catalog_revision):
+    catalog,current_revision=resolved_catalog(db,institution_id)
+    if catalog_revision!=current_revision: reject('El plan cambió. Recargá antes de configurar su oferta.',409)
     _,plan=find_plan(catalog,plan_id)
     if not isinstance(subject_ids,list) or any(not isinstance(x,str) for x in subject_ids):
         reject("Seleccioná las materias a ofrecer")

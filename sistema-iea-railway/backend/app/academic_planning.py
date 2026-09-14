@@ -94,6 +94,9 @@ def candidate_reasons(ctx,institution,chair,teacher,day,start,end,availability,e
     reasons=[]
     extra=extras.get(teacher.id,{})
     if not extra.get("activo",True): reasons.append("Docente inactivo")
+    cutoff=institution.corte_turno_minutos
+    if mode=="virtual_tm" and end>cutoff: reasons.append("La clase excede el turno de mañana")
+    if mode=="virtual_tn" and start<cutoff: reasons.append("La clase comienza antes del turno de noche")
     if chair.codigo not in extra.get("refs",set()): reasons.append("La cátedra no está habilitada en la ficha docente")
     if mode=="presencial" and campus not in campuses.get(teacher.id,set()): reasons.append("Docente sin disponibilidad en esa sede")
     # Every half-hour cell touched by the class must be available.
@@ -143,6 +146,8 @@ def save_assignment(db,institution,period,plan_id,subject_id,payload):
     # Serialize writes from this workflow; the legacy APIs still need general concurrency control.
     db.execute(text("SELECT pg_advisory_xact_lock(:key)"),{"key":period})
     ctx=scheduling_context(db,institution,period)
+    if payload.get("catalog_revision")!=ctx["revision"] or payload.get("oferta_revision")!=ctx["offer_revision"]:
+        reject("El plan o su oferta cambiaron. Recargá antes de asignar.",409)
     _,plan=find_plan(ctx["catalog"],plan_id)
     subject=next((s for s in plan["materias"] if s["id"]==subject_id),None)
     if not subject or subject_id not in ctx["offering"]["plans"].get(plan_id,[]): reject("Materia fuera de la oferta seleccionada")

@@ -15,7 +15,7 @@ def view(period:int,plan_id:str,db:Session=Depends(get_db)):
 @router.put('/{period}/planes/{plan_id}/oferta')
 def offer(period:int,plan_id:str,data:dict,db:Session=Depends(get_db)):
     editor(data,db);require_period(db,period)
-    return save_offering(db,INSTITUCION.id,period,plan_id,data.get("revision"),data.get("materia_ids"))
+    return save_offering(db,INSTITUCION.id,period,plan_id,data.get("revision"),data.get("materia_ids"),data.get("catalog_revision"))
 
 @router.get('/{period}/planes/{plan_id}/materias/{subject_id}/sugerencias')
 def suggest(period:int,plan_id:str,subject_id:str,sede_id:int=None,modalidad:str="presencial",db:Session=Depends(get_db)):

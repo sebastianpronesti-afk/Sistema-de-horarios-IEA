@@ -41,11 +41,12 @@ class AcademicWorkflowTests(unittest.TestCase):
         return self.client.post("/api/planes-estudio/editar",json={"clave_edicion":"fixture-editor-only",**data})
     def offer(self,plan="p1",ids=None,revision=0,period=1):
         return self.client.put(f"/api/planificacion/{period}/planes/{plan}/oferta",json={
-            "clave_edicion":"fixture-editor-only","revision":revision,"materia_ids":ids if ids is not None else ["s1"]})
+            "clave_edicion":"fixture-editor-only","revision":revision,"catalog_revision":self.client.get("/api/planes-estudio").json()["revision"],"materia_ids":ids if ids is not None else ["s1"]})
     def assignment(self,**data):
+        view=self.client.get("/api/planificacion/1/planes/p1").json()
         return self.client.post("/api/planificacion/1/planes/p1/materias/s1/asignar",json={
             "clave_edicion":"fixture-editor-only","docente_id":1,"dia":"Lunes","hora_inicio":"09:00","hora_fin":"10:30",
-            "modalidad":"presencial","sede_id":1,**data})
+            "modalidad":"presencial","sede_id":1,"catalog_revision":view["revision"],"oferta_revision":view["oferta_revision"],**data})
     def test_editor_required_and_reader_cannot_write(self):
         for key in (None,"fixture-reader-only","wrong"):
             response=self.client.post("/api/planes-estudio/editar",json={"operation":"plan","plan_id":"p1","revision":0,"changes":{"resolucion":"Nueva"},"clave_edicion":key})
@@ -137,6 +138,12 @@ class AcademicWorkflowTests(unittest.TestCase):
         data=self.client.get("/api/docentes/carga-horaria?cuatrimestre_id=1").json()
         self.assertEqual(data["docentes"][0]["horas"],1.5)
         self.assertEqual(data["docentes"][0]["clases_pendientes"],1)
+    def test_assignment_rejects_changed_catalog_and_turn(self):
+        self.offer()
+        self.assertEqual(self.assignment(catalog_revision=99).status_code,409)
+        self.assertEqual(self.assignment(modalidad="virtual_tn").status_code,422)
+        self.assertEqual(base.sql("SELECT count(*) FROM asignaciones")[0][0],0)
+
     def test_invalid_clock_is_rejected(self):
         self.assertIsNone(minutes("25:00"));self.assertIsNone(minutes("09:99"))
         self.offer();self.assertEqual(self.assignment(hora_fin="08:00").status_code,422)

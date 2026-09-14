@@ -13,7 +13,7 @@ export const GENERAL_MENU=[
   ]},
   {id:'datos',label:'Personas y datos académicos',items:[
     panel('personal','Docentes',[tab('docentes','Fichas docentes'),tab('disponibilidad','Disponibilidad'),tab('necesitan_docente','Asignaciones pendientes','necesitan docente faltantes'),tab('nombres_docentes','Nombres y equivalencias','alias duplicados')]),
-    panel('academicos','Carreras y planes de estudio',[tab('catedras_catalogo','Cátedras','catálogo códigos materias'),tab('planes_estudio','Planes de estudio','carreras resoluciones ministeriales jurisdicción catálogo materias correlatividades dobles titulaciones'),tab('cursos','Carreras y cursos')]),
+    panel('academicos','Carreras y planes de estudio',[tab('catedras_catalogo','Cátedras','catálogo códigos materias'),tab('planes_estudio','Planes de estudio','carreras resoluciones ministeriales jurisdicción catálogo materias correlatividades dobles titulaciones'),tab('cursos','Cursos de inscripción')]),
   ]},
   {id:'archivos',label:'Archivos y seguimiento',items:[panel('importar','Importar datos'),panel('exportar','Exportar'),panel('respaldos','Respaldos y recuperación',[tab('respaldos','Respaldos y recuperación','deshacer importación')]),panel('comparar','Comparar cuatrimestres')]},
 ];
