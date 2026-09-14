@@ -109,9 +109,10 @@ def load_catalog(institution_id):
 
 class Reconciler:
     def __init__(self, catedras):
-        self.codes=defaultdict(list);self.names=defaultdict(list)
+        self.codes=defaultdict(list);self.names=defaultdict(list);self.ids={}
         for row in catedras:
             item={'id':row['id'],'codigo':row['codigo'],'nombre':row['nombre']}
+            self.ids[item['id']]=item
             self.codes[norm(item['codigo'])].append(item);self.names[norm(item['nombre'])].append(item)
 
     def subject(self, raw):
@@ -122,7 +123,9 @@ class Reconciler:
         candidates={r['id']:r for name in names for r in self.names.get(name,[])}
         for r in by_code: candidates[r['id']]=r
         confirmed=None
-        if len(by_code)==1 and norm(by_code[0]['nombre']) in names:
+        if 'catedra_id' in raw:
+            confirmed=self.ids.get(raw['catedra_id']);status='confirmado' if confirmed else 'sin_vinculo'
+        elif len(by_code)==1 and norm(by_code[0]['nombre']) in names:
             confirmed=by_code[0];status='coincide'
         elif by_code: status='revisar_asociacion'
         elif candidates: status='revisar_codigo'
@@ -140,8 +143,8 @@ class Reconciler:
     @staticmethod
     def counts(subjects):
         return {'materias':len(subjects),
-                'vinculadas':sum(s['vinculo']['estado']=='coincide' for s in subjects),
-                'por_revisar':sum(s['vinculo']['estado'] not in ('coincide','espacio_edi') for s in subjects),
+                'vinculadas':sum(s['vinculo']['estado'] in ('coincide','confirmado') for s in subjects),
+                'por_revisar':sum(s['vinculo']['estado'] not in ('coincide','confirmado','espacio_edi') for s in subjects),
                 'datos_academicos_pendientes':sum(s.get('anio') is None or s.get('cuatrimestre') is None for s in subjects)}
 
 

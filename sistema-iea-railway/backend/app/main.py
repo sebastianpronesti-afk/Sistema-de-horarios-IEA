@@ -12,6 +12,7 @@ import re
 from app.institution import INSTITUCION
 from app.import_routes import router as import_router
 from app.curriculum_routes import router as curriculum_router
+from app.academic_routes import router as academic_router
 from app.database import engine, get_db, Base
 from app.models.models import (
     Sede, Cuatrimestre, Catedra, Docente, DocenteSede,
@@ -20,9 +21,10 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title=INSTITUCION.titulo, version="21.0")
+app = FastAPI(title=INSTITUCION.titulo, version="22.0")
 app.include_router(import_router)
 app.include_router(curriculum_router)
+app.include_router(academic_router)
 
 @app.get("/api/institucion")
 def get_institucion():
@@ -1184,6 +1186,8 @@ def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
                            db: Session = Depends(get_db)):
     """Horas semanales acumuladas por docente, sumando todas sus cátedras y sedes.
     Si una clase no tiene hora de fin se usa la duración del perfil institucional."""
+    _require_work_period(db, cuatrimestre_id)
+    from app.academic_planning import interval
     q = db.query(Asignacion).filter(Asignacion.docente_id.isnot(None))
     if cuatrimestre_id: q = q.filter(Asignacion.cuatrimestre_id == cuatrimestre_id)
     asigs = q.all()
@@ -1194,11 +1198,16 @@ def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
         info = por_docente.setdefault(d.id, {
             "docente_id": d.id,
             "nombre": f"{d.apellido or ''}, {d.nombre or ''}".strip(' ,'),
-            "minutos": 0, "clases": 0, "catedras": set(), "sedes": set(), "detalle": [],
+            "minutos": 0, "clases": 0, "pendientes": 0, "estimadas": 0, "catedras": set(), "sedes": set(), "detalle": [],
         })
         ini = hora_a_minutos(a.hora_inicio)
         fin = hora_a_minutos(getattr(a, 'hora_fin', None))
-        dur = (fin - ini) if (ini is not None and fin is not None and fin > ini) else INSTITUCION.duracion_clase_minutos
+        span = interval(a, INSTITUCION.duracion_clase_minutos)
+        if span is None:
+            info["pendientes"] += 1
+            continue
+        dur = span[1] - span[0]
+        if not a.hora_fin: info["estimadas"] += 1
         info["minutos"] += dur
         info["clases"] += 1
         if a.catedra: info["catedras"].add(a.catedra.codigo)
@@ -1215,7 +1224,7 @@ def carga_horaria_docentes(cuatrimestre_id: int = None, limite: int = 20,
         horas = round(info["minutos"] / 60, 1)
         resultado.append({
             "docente_id": info["docente_id"], "nombre": info["nombre"],
-            "horas": horas, "clases": info["clases"],
+            "horas": horas, "clases": info["clases"], "clases_pendientes": info["pendientes"], "clases_estimadas": info["estimadas"],
             "catedras": sorted(info["catedras"]), "cantidad_catedras": len(info["catedras"]),
             "sedes": sorted(info["sedes"]),
             "excede_limite": horas > limite,
