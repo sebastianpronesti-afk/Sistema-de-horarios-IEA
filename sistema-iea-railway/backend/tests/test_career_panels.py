@@ -40,7 +40,9 @@ class CareerPanelTests(unittest.TestCase):
     def test_own_campus_names_with_apostrophes_and_codes_are_supported(self):
         campus="Campus d'Art"
         base.sql("UPDATE plan_carrera SET sede=:s,codigo_catedra='ART101' WHERE sede='Caballito' AND codigo_catedra='c.1'",{'s':campus})
-        base.sql("UPDATE catedras SET codigo='ART101' WHERE id=1")
+        base.sql("INSERT INTO catedras(id,codigo,nombre) VALUES (99,'ART101','Materia de prueba externa')")
+        base.sql("UPDATE inscripciones SET catedra_id=99 WHERE catedra_id=1")
+        base.sql("UPDATE asignaciones SET catedra_id=99 WHERE catedra_id=1")
         base.sql("UPDATE sedes SET nombre=:s WHERE id=1",{'s':campus})
         with base.InstitutionApiTests.profile(self,'institucion-ejemplo.json'):
             for path in ('/api/plan-carrera/sugerencias','/api/sugerencias-armado'):

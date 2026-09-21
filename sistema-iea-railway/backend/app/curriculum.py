@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import unicodedata
 from app.curriculum_bundle import read_bundle
+from app.identity import code_key, plan_identity
 
 ROOT=Path(__file__).resolve().parent
 
@@ -71,7 +72,7 @@ def validate_catalog(data, institution_id):
             unique(plan); notes(plan)
             if plan.get('carrera_id')!=career['id']: raise ValueError('Plan vinculado a una carrera incorrecta')
             texts(plan,('etiqueta','nombre_oficial','resolucion','modalidad','jurisdiccion',
-                        'titulo','situacion','nota_vigencia'))
+                        'titulo','situacion','nota_vigencia','version_plan'))
             positive_or_missing(plan.get('inicio_informado'))
             subjects(plan.get('materias'))
             for module in objects(plan.get('modulos',[])):
@@ -113,13 +114,13 @@ class Reconciler:
         for row in catedras:
             item={'id':row['id'],'codigo':row['codigo'],'nombre':row['nombre']}
             self.ids[item['id']]=item
-            self.codes[norm(item['codigo'])].append(item);self.names[norm(item['nombre'])].append(item)
+            self.codes[code_key(item['codigo'])].append(item);self.names[norm(item['nombre'])].append(item)
 
     def subject(self, raw):
         item=deepcopy(raw)
         names=[norm(raw.get('nombre_sistema_archivo')),norm(raw.get('nombre'))]
         names=[n for n in names if n]
-        by_code=self.codes.get(norm(raw.get('codigo_archivo')),[])
+        by_code=self.codes.get(code_key(raw.get('codigo_archivo')),[])
         candidates={r['id']:r for name in names for r in self.names.get(name,[])}
         for r in by_code: candidates[r['id']]=r
         confirmed=None
@@ -155,6 +156,7 @@ def catalog_summary(catalog,reconciler):
         row['planes']=[];row['materias_sin_plan']=len(career.get('materias_sin_plan',[]))
         for plan in career['planes']:
             parsed=reconciler.plan(plan)
+            parsed['identidad']=plan_identity(career['id'],plan,career['planes'])
             row['planes'].append({k:v for k,v in parsed.items() if k not in ('materias','modulos')})
         result['careers'].append(row)
     for item in catalog['articulations']:

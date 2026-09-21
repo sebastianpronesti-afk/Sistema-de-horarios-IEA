@@ -44,7 +44,7 @@ function Subjects({rows=[],onEdit}){
 }
 
 export default function AcademicPlans({initialLevel='',puedeEditar=false}){
-  const [editing,setEditing]=useState(null),[actionError,setActionError]=useState('');
+  const [editing,setEditing]=useState(null),[actionError,setActionError]=useState(''),[creatingPlan,setCreatingPlan]=useState(false);
   const [catalog,setCatalog]=useState(null),[error,setError]=useState(''),[attempt,setAttempt]=useState(0);
   const [query,setQuery]=useState(''),[level,setLevel]=useState(initialLevel),[jurisdiction,setJurisdiction]=useState(''),[mode,setMode]=useState(''),[status,setStatus]=useState('');
   const [section,setSection]=useState('careers'),[selection,setSelection]=useState(null),[detail,setDetail]=useState(null),[detailError,setDetailError]=useState('');
@@ -68,12 +68,12 @@ export default function AcademicPlans({initialLevel='',puedeEditar=false}){
   },[selection,attempt]);
   const careers=catalog?.careers||[];
   const saved=()=>{setEditing(null);setAttempt(a=>a+1);};
-  const createPlan=async(career)=>{setActionError('');try{await saveAcademic('/api/planes-estudio/editar',{operation:'new_plan',career_id:career.id,revision:catalog.revision});saved();}catch(e){setActionError(e.message);}};
+  const createPlan=async(career)=>{setActionError('');setCreatingPlan(true);try{const result=await saveAcademic('/api/planes-estudio/editar',{operation:'new_plan',career_id:career.id,revision:catalog.revision});saved();if(result.plan_id)open('plan',result.plan_id);}catch(e){setActionError(e.message);}finally{setCreatingPlan(false);}};
   const allPlans=careers.flatMap(c=>c.planes);
   const jurisdictions=[...new Set(allPlans.map(p=>p.jurisdiccion).filter(Boolean))].sort();
   const visible=careers.filter(c=>!level||c.nivel===level).map(c=>({...c,planes:c.planes.filter(p=>
     (!jurisdiction||p.jurisdiccion===jurisdiction)&&(!mode||p.modalidad===mode)&&(!status||p.situacion===status)&&
-    normalized([c.nombre,p.nombre_oficial,p.resolucion,p.etiqueta].join(' ')).includes(normalized(query)))}))
+    normalized([p.id,c.nombre,p.nombre_oficial,p.resolucion,p.etiqueta].join(' ')).includes(normalized(query)))}))
     .filter(c=>c.planes.length||(!jurisdiction&&!mode&&!status&&normalized(c.nombre).includes(normalized(query))));
   const articulations=(catalog?.articulations||[]).filter(a=>normalized(a.nombre).includes(normalized(query)));
   const open=(type,id)=>{setDetail(null);setDetailError('');setSelection({type,id});setEditing(null);};
@@ -91,12 +91,14 @@ export default function AcademicPlans({initialLevel='',puedeEditar=false}){
       {detailError?<div role="alert"><p>{detailError}</p><button onClick={()=>setSelection({...selection})}>Reintentar detalle</button></div>:!detail?<p role="status">Cargando detalle…</p>:<>
         <section className="academic-detail-head"><h3>{detail.carrera||detail.nombre}</h3>
           {selection.type==='plan'&&<><h4>{detail.nombre_oficial||'Nombre oficial pendiente'}</h4>
-            <dl><div><dt>Plan y resolución</dt><dd>{detail.etiqueta} · {detail.resolucion||'Resolución pendiente'}</dd></div>
+            <dl><div><dt>ID permanente</dt><dd><code>{detail.id}</code></dd></div><div><dt>Versión</dt><dd>{detail.version_plan||'1'}</dd></div><div><dt>Plan y resolución</dt><dd>{detail.etiqueta} · {detail.resolucion||'Resolución pendiente'}</dd></div>
               <div><dt>Modalidad</dt><dd>{modality[detail.modalidad]||'Por confirmar'}</dd></div>
               <div><dt>Jurisdicción aprobante</dt><dd>{detail.jurisdiccion||'Por confirmar'}</dd></div>
               <div><dt>Título</dt><dd>{detail.titulo||'Por completar'}</dd></div>
               <div><dt>Situación informada</dt><dd>{situation[detail.situacion]||'Por confirmar'}</dd></div>
               <div><dt>Inicio informado</dt><dd>{detail.inicio_informado||'Sin fecha informada'}</dd></div></dl>
+            {detail.identidad?.estado==='posible_duplicado'&&<p role="status" className="bg-amber-50 p-3">Posible plan duplicado. Coincide su identificación con: {detail.identidad.coincidencias.join(', ')}. Revisá resolución, jurisdicción, modalidad y versión; las materias se conservan.</p>}
+            {detail.identidad?.estado==='incompleta'&&<p>Identificación académica pendiente: {detail.identidad.campos_pendientes.join(', ')}. El ID ya es único y permanece estable.</p>}
             {detail.nota_vigencia&&<p>Nota del archivo: {detail.nota_vigencia}</p>}
             {puedeEditar&&<div className="flex gap-3 my-3"><button className="text-blue-700 underline" onClick={()=>setEditing('plan')}>Editar información del plan</button><button className="text-blue-700 underline" onClick={()=>setEditing({})}>Agregar materia</button></div>}
             <p>{detail.resumen.materias} materias · {detail.resumen.vinculadas} coincidencias con el catálogo de cátedras · {detail.resumen.por_revisar} asociaciones por revisar</p>
@@ -119,7 +121,7 @@ export default function AcademicPlans({initialLevel='',puedeEditar=false}){
     </>:<>
       <div className="academic-summary"><span><strong>{careers.length}</strong> carreras y programas</span><span><strong>{allPlans.length}</strong> planes y propuestas</span><span><strong>{catalog.articulations.length}</strong> registros de dobles titulaciones para revisar</span></div>
       <nav className="academic-switch" aria-label="Contenido del catálogo"><button aria-pressed={section==='careers'} onClick={()=>{setSection('careers');setQuery('');}}>Carreras y planes</button><button aria-pressed={section==='articulations'} onClick={()=>{setSection('articulations');setQuery('');}}>Dobles titulaciones</button></nav>
-      <div className="academic-filters"><label>Buscar carrera o resolución<input type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Ej.: Administración, 261/03…"/></label>
+      <div className="academic-filters"><label>Buscar ID, carrera o resolución<input type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Ej.: Administración, 261/03…"/></label>
         {section==='careers'&&<><label>Nivel<select value={level} onChange={e=>setLevel(e.target.value)}><option value="">Cualquier nivel</option><option value="terciario">Terciario</option><option value="secundario">Secundario</option></select></label>
           <label>Modalidad<select value={mode} onChange={e=>setMode(e.target.value)}><option value="">Cualquier modalidad</option>{Object.entries(modality).map(([v,n])=><option key={v} value={v}>{n}</option>)}</select></label>
           <label>Jurisdicción<select value={jurisdiction} onChange={e=>setJurisdiction(e.target.value)}><option value="">Cualquier jurisdicción</option>{jurisdictions.map(j=><option key={j}>{j}</option>)}</select></label>
@@ -129,9 +131,9 @@ export default function AcademicPlans({initialLevel='',puedeEditar=false}){
       {section==='careers'?<>
         <p role="status">{visible.length} carreras y programas encontrados</p>{puedeEditar&&<EditKey/>}
         {visible.map(c=><section key={c.id} className="academic-career"><h3>{c.nombre}<small>{c.nivel==='secundario'?'Secundario':'Terciario'} · {c.planes.length} planes</small></h3>
-          {puedeEditar&&<button className="text-blue-700 underline my-2" onClick={()=>createPlan(c)}>Agregar plan</button>}{!c.planes.length&&<p>El archivo incluye esta carrera, pero su plan está pendiente de completar.</p>}
+          {puedeEditar&&<button className="text-blue-700 underline my-2" disabled={creatingPlan} onClick={()=>createPlan(c)}>Agregar plan</button>}{!c.planes.length&&<p>El archivo incluye esta carrera, pero su plan está pendiente de completar.</p>}
           <div className="academic-plan-grid">{c.planes.map(p=><button key={p.id} className="academic-plan-card" onClick={()=>open('plan',p.id)}>
-            <span className="academic-plan-mode">{modality[p.modalidad]||'Modalidad por confirmar'}</span><strong>{p.etiqueta} · {p.resolucion||'Resolución pendiente'}</strong>
+            <small>ID: {p.id}</small>{p.identidad?.estado==='posible_duplicado'&&<span className="academic-tag academic-pending">Revisar posible duplicado</span>}<span className="academic-plan-mode">{modality[p.modalidad]||'Modalidad por confirmar'}</span><strong>{p.etiqueta} · {p.resolucion||'Resolución pendiente'}</strong>
             <span>{p.jurisdiccion||'Jurisdicción por confirmar'}</span><span>{p.nombre_oficial||'Nombre oficial pendiente'}</span>
             <span className="academic-tag">{situation[p.situacion]||'Por confirmar'}</span><small>{p.resumen.materias} materias · {p.resumen.por_revisar} asociaciones por revisar</small>
           </button>)}</div>

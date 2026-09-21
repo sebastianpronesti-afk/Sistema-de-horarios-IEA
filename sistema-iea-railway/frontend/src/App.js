@@ -1,3 +1,5 @@
+import IdentityReview from './IdentityReview';
+import {teacherLabel} from './identity';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { InstitutionProvider, useInstitution } from './InstitutionContext';
 import ImportWorkflow, { ImportHistory } from './ImportWorkflow';
@@ -6,7 +8,7 @@ import {choosePeriod} from './periods';
 import AcademicPlans from './AcademicPlans';
 import CurriculumPlanning from './CurriculumPlanning';
 import EnrollmentPlans from './EnrollmentPlans';
-import {rememberEditorKey} from './AcademicEditors';
+import {rememberEditorKey,EditKey,downloadAcademic} from './AcademicEditors';
 
 const API_URL = '';
 
@@ -112,6 +114,7 @@ function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar doce
     if (texto) {
       const b = texto.toLowerCase();
       l = l.filter(d =>
+        teacherLabel(d.id).toLowerCase().includes(b) ||
         `${d.apellido || ''} ${d.nombre || ''}`.toLowerCase().includes(b) ||
         `${d.nombre || ''} ${d.apellido || ''}`.toLowerCase().includes(b) ||
         (d.especialidades || []).some(e => e.includes(b)));
@@ -126,7 +129,7 @@ function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar doce
       <button type="button" onClick={() => { setAbierto(v => !v); setTexto(''); }}
         className="w-full border rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50 flex justify-between items-center">
         <span className={elegido ? '' : 'text-slate-400'}>
-          {elegido ? `${elegido.apellido || ''}${elegido.apellido && elegido.nombre ? ', ' : ''}${elegido.nombre || ''}` : 'Sin asignar'}
+          {elegido ? `${teacherLabel(elegido.id)} · ${elegido.apellido || ''}${elegido.apellido && elegido.nombre ? ', ' : ''}${elegido.nombre || ''}` : 'Sin asignar'}
         </span>
         <span className="text-slate-400 text-xs">▾</span>
       </button>
@@ -148,7 +151,7 @@ function BuscadorDocente({ docentes, valor, onChange, placeholder = 'Buscar doce
               {lista.map(d => (
                 <button key={d.id} onClick={() => { onChange(String(d.id)); setAbierto(false); }}
                   className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${String(d.id) === String(valor) ? 'bg-blue-100 font-bold' : ''}`}>
-                  <span>{d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}</span>
+                  <span>{teacherLabel(d.id)} · {d.apellido || ''}{d.apellido && d.nombre ? ', ' : ''}{d.nombre || ''}</span>
                   {d.activo_cuatrimestre && <span className="ml-2 text-[9px] text-emerald-600">●activo</span>}
                   {d.disponibilidad_resumen && d.disponibilidad_resumen !== 'Sin asignar' &&
                     <span className="ml-2 text-[9px] text-slate-400">{d.disponibilidad_resumen}</span>}
@@ -1184,16 +1187,18 @@ function DocentesView({ sedes=[] }) {
   const recargar=()=>setAttempt(x=>x+1);
   useEffect(()=>{let active=true;const c=new AbortController();Promise.all([apiFetch('/api/docentes',{signal:c.signal}),apiFetch('/api/areas-especialidad',{signal:c.signal})]).then(([d,a])=>{if(active){setDocentes(d);setAreas(a);setError('');}}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;c.abort();};},[attempt]);
   const eliminar=async(d)=>{if(!window.confirm('¿Eliminar la ficha de '+d.apellido+', '+d.nombre+'? Sus clases quedarán sin docente.'))return;try{await apiFetch('/api/docentes/'+d.id,{method:'DELETE'});recargar();}catch(e){setError(e.message);}};
-  const crear=async(form)=>{try{await apiFetch('/api/docentes',{method:'POST',body:JSON.stringify(form)});setModalNuevo(false);recargar();}catch(e){setError(e.message);}};
+  const crear=async(form)=>{await apiFetch('/api/docentes',{method:'POST',body:JSON.stringify(form)});setModalNuevo(false);recargar();};
   const guardarSedes=async(id,ids)=>{try{await apiFetch('/api/docentes/'+id+'/sedes',{method:'PUT',body:JSON.stringify({sede_ids:ids})});setModalSedes(null);recargar();}catch(e){setError(e.message);}};
-  const rows=docentes.filter(d=>[d.apellido,d.nombre,d.dni,d.email].join(' ').toLowerCase().includes(buscar.toLowerCase()));
+  const rows=docentes.filter(d=>[teacherLabel(d.id),d.apellido,d.nombre,d.dni,d.email].join(' ').toLowerCase().includes(buscar.toLowerCase()));
   return <div className="p-8"><h2 className="text-2xl font-bold">Docentes</h2><p className="my-3">Datos de contacto, cátedras habilitadas y notas. La carga horaria se calcula en Planificación a partir de las clases de cada período.</p>
-    <input type="search" aria-label="Buscar docente" placeholder="Nombre, apellido, documento o email" className="border rounded p-3 w-full my-3" value={buscar} onChange={e=>setBuscar(e.target.value)}/>
+    <input type="search" aria-label="Buscar docente" placeholder="ID, nombre, apellido, documento o email" className="border rounded p-3 w-full my-3" value={buscar} onChange={e=>setBuscar(e.target.value)}/>
     {puedeEditar&&<button onClick={()=>setModalNuevo(true)} className="bg-blue-700 text-white px-4 py-2 rounded my-3">Agregar docente</button>}
     {error&&<p role="alert">{error} <button onClick={recargar}>Reintentar</button></p>}
-    <div className="academic-table-wrap"><table className="academic-table"><thead><tr><th>Docente</th><th>Contacto</th><th>Cátedras habilitadas</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>
-      {rows.map(d=><tr key={d.id}><td>{d.apellido}, {d.nombre}<small>{d.dni}</small></td><td>{d.email||'Sin email'}</td><td>{d.catedras_referencia||'Por completar'}</td><td>{d.notas||'—'}</td><td>{puedeEditar&&<><button className="text-blue-700 underline block" onClick={()=>setModalEditar(d)}>Editar ficha</button><button className="text-blue-700 underline block" onClick={()=>setModalSedes(d)}>Sedes disponibles</button><button className="text-red-700 underline block" onClick={()=>eliminar(d)}>Eliminar docente</button></>}</td></tr>)}
+    <div className="academic-table-wrap"><table className="academic-table"><thead><tr><th>ID permanente</th><th>Docente</th><th>Contacto</th><th>Cátedras habilitadas</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>
+      {rows.map(d=><tr key={d.id}><td><code>{teacherLabel(d.id)}</code></td><td>{d.apellido}, {d.nombre}<small>{d.dni||'Documento pendiente'}</small></td><td>{d.email||'Sin email'}</td><td>{d.catedras_referencia||'Por completar'}</td><td>{d.notas||'—'}</td><td>{puedeEditar&&<><button className="text-blue-700 underline block" onClick={()=>setModalEditar(d)}>Editar ficha</button><button className="text-blue-700 underline block" onClick={()=>setModalSedes(d)}>Sedes disponibles</button><button className="text-red-700 underline block" onClick={()=>eliminar(d)}>Eliminar docente</button></>}</td></tr>)}
     </tbody></table></div>
+    {puedeEditar&&<details className="my-3"><summary>Exportar docentes con sus ID</summary><EditKey/><button className="text-blue-700 underline" onClick={async()=>{try{await downloadAcademic('/api/exportar/catalogo-docentes','docentes_con_id.xlsx');}catch(e){setError(e.message);}}}>Descargar planilla de docentes</button></details>}
+    <IdentityReview key={attempt} kind="docentes" onTeacher={id=>{const d=docentes.find(d=>d.id===id);if(d&&puedeEditar)setModalEditar(d);}}/>
     {modalEditar&&<ModalEditarDocente docente={modalEditar} areas={areas} recargar={recargar} onClose={()=>setModalEditar(null)}/>}
     {modalNuevo&&<ModalNuevoDocente onSave={crear} onClose={()=>setModalNuevo(false)}/>}
     {modalSedes&&<ModalEditarSedes docente={modalSedes} sedes={sedes} onSave={guardarSedes} onClose={()=>setModalSedes(null)}/>}
@@ -1203,7 +1208,7 @@ function DocentesView({ sedes=[] }) {
 function GeneralChairs(){
   const [rows,setRows]=useState([]),[error,setError]=useState(''),[query,setQuery]=useState('');
   useEffect(()=>{const c=new AbortController();let active=true;apiFetch('/api/planes-estudio/opciones',{signal:c.signal}).then(d=>{if(active)setRows(d.catedras);}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;c.abort();};},[]);
-  return <div className="academic-catalog"><h2 className="text-2xl font-bold">Catálogo de cátedras</h2><p>Una cátedra conserva su código y puede asociarse a materias de varios planes.</p><label>Buscar cátedra<input className="border rounded p-3 w-full my-3" type="search" value={query} onChange={e=>setQuery(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<table className="academic-table"><thead><tr><th>Código</th><th>Cátedra</th></tr></thead><tbody>{rows.filter(c=>[c.codigo,c.nombre].join(' ').toLowerCase().includes(query.toLowerCase())).map(c=><tr key={c.id}><td>{c.codigo}</td><td>{c.nombre}</td></tr>)}</tbody></table></div>;
+  return <div className="academic-catalog"><h2 className="text-2xl font-bold">Catálogo de cátedras</h2><p>Una cátedra conserva su código y puede asociarse a materias de varios planes.</p><label>Buscar cátedra<input className="border rounded p-3 w-full my-3" type="search" value={query} onChange={e=>setQuery(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<table className="academic-table"><thead><tr><th>ID permanente</th><th>Código</th><th>Cátedra</th></tr></thead><tbody>{rows.filter(c=>[c.id,c.codigo,c.nombre].join(' ').toLowerCase().includes(query.toLowerCase())).map(c=><tr key={c.id}><td>{c.id}</td><td>{c.codigo}</td><td>{c.nombre}</td></tr>)}</tbody></table><IdentityReview kind="catedras"/></div>;
 }
 
 function ModalEditarDocente({ docente, onSave, onClose, areas = [], recargar }) {
@@ -1267,7 +1272,7 @@ function ModalEditarDocente({ docente, onSave, onClose, areas = [], recargar }) 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <h3 className="text-lg font-bold mb-1">Ficha del docente</h3>
+        <h3 className="text-lg font-bold mb-1">Ficha del docente · {teacherLabel(docente.id)}</h3><p>El ID se conserva aunque corrijas el nombre o el documento.</p>
         <p className="text-xs text-slate-500 mb-4">
           Estos datos son permanentes: quedan guardados para todos los cuatrimestres.
         </p>
@@ -1342,23 +1347,15 @@ function ModalEditarDocente({ docente, onSave, onClose, areas = [], recargar }) 
 }
 
 function ModalNuevoDocente({ onSave, onClose }) {
-  const [form, setForm] = useState({ dni: '', nombre: '', apellido: '', email: '' });
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-      <h3 className="text-lg font-bold mb-4">Agregar Docente</h3>
-      <div className="space-y-3">
-        {[{f:'dni',p:'Ej: 20345678'},{f:'nombre',p:''},{f:'apellido',p:''},{f:'email',p:''}].map(({f,p}) => (
-          <div key={f}><label className="text-sm text-slate-600 capitalize">{f} {['dni','nombre','apellido'].includes(f) ? '*' : ''}</label>
-            <input className="w-full border rounded-lg px-3 py-2 mt-1" value={form[f]} onChange={e => setForm({...form, [f]: e.target.value})} placeholder={p} /></div>
-        ))}
-      </div>
-      <div className="flex gap-2 mt-4">
-        <button onClick={() => { if (!form.dni || !form.nombre || !form.apellido) { alert('DNI, Nombre y Apellido son obligatorios'); return; } onSave(form); }}
-          className="flex-1 py-2 bg-amber-500 rounded-lg font-medium">Crear</button>
-        <button onClick={onClose} className="flex-1 py-2 bg-slate-100 rounded-lg">Cancelar</button>
-      </div>
-    </div></div>
-  );
+  const [form,setForm]=useState({dni:'',nombre:'',apellido:'',email:''});
+  const [busy,setBusy]=useState(false),[error,setError]=useState('');
+  const save=async()=>{setBusy(true);setError('');try{await onSave(form);}catch(e){setError(e.message);}finally{setBusy(false);}};
+  return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><section role="dialog" aria-label="Agregar docente" className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+    <h3 className="text-lg font-bold">Agregar docente</h3><p className="my-3">El ID se asigna automáticamente y es permanente. Completá el documento para prevenir duplicados. Si falta, la identidad quedará pendiente de completar.</p>
+    {['dni','nombre','apellido','email'].map(f=><label key={f} className="block my-2 capitalize">{f==='dni'?'Documento (opcional)':f}<input className="w-full border rounded p-2" value={form[f]} onChange={e=>setForm({...form,[f]:e.target.value})}/></label>)}
+    {error&&<p role="alert" className="text-red-700">{error}</p>}
+    <button disabled={busy||(!form.nombre.trim()&&!form.apellido.trim())} onClick={save} className="bg-blue-700 text-white rounded p-2">{busy?'Guardando…':'Crear'}</button> <button disabled={busy} onClick={onClose}>Cancelar</button>
+  </section></div>;
 }
 
 function ModalEditarSedes({ docente, sedes, onSave, onClose }) {

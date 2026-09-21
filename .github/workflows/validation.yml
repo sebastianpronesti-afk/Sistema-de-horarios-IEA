@@ -1,7 +1,7 @@
 name: Validation
 on:
   push:
-    branches: ['codex/planes-planificacion-v22-20260914']
+    branches: [main, 'codex/**']
   pull_request:
     branches: [main]
 permissions:
@@ -24,6 +24,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://test:disposable-test-only@127.0.0.1:5432/test
       TEST_DATABASE_DISPOSABLE: 'yes'
+      IDENTITY_CONCURRENCY_TESTS: 'yes'
       PYTHONPATH: sistema-iea-railway/backend
     steps:
       - uses: actions/checkout@v4

@@ -9,6 +9,9 @@ import io
 import os
 import re
 
+from app.identity import teacher_label, teacher_values, lock_teachers, find_chair, identity_report
+from app.identity_migration import install_identity_guards
+from app.teacher_import import import_teachers
 from app.institution import INSTITUCION
 from app.import_routes import router as import_router
 from app.curriculum_routes import router as curriculum_router
@@ -22,7 +25,7 @@ from app.models.models import (
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title=INSTITUCION.titulo, version="23.0")
+app = FastAPI(title=INSTITUCION.titulo, version="24.0")
 app.include_router(import_router)
 app.include_router(curriculum_router)
 app.include_router(academic_router)
@@ -40,6 +43,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from sqlalchemy.exc import IntegrityError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(IntegrityError)
+async def identity_conflict_handler(request, exc):
+    return JSONResponse(status_code=409,content={"detail":"La operación entra en conflicto con un registro existente. Revisá ID, documento y código; no se guardó el cambio."})
 
 # ==================== HELPERS ====================
 
@@ -409,6 +419,8 @@ def run_migration(db):
     db.execute(text("SELECT comision, carrera, turno FROM asignaciones LIMIT 0"))
     db.execute(text("SELECT datos, restaurada_en FROM importaciones_historial LIMIT 0"))
     db.commit()
+    install_identity_guards(db)
+    resultado.append("✅ Identidades: ID permanente, documentos y códigos sin nuevas duplicaciones")
     return resultado
 
 
@@ -813,6 +825,8 @@ def actualizar_catedra(catedra_id: int, data: dict, db: Session = Depends(get_db
     cat = db.query(Catedra).filter(Catedra.id == catedra_id).first()
     if not cat:
         raise HTTPException(status_code=404, detail="No encontrada")
+    if ("id" in data and data["id"] != cat.id) or ("codigo" in data and data["codigo"] != cat.codigo):
+        raise HTTPException(422,"El ID y el código de cátedra son permanentes")
     if "nombre" in data: cat.nombre = data["nombre"]
     if "link_meet" in data: cat.link_meet = data["link_meet"]
     from sqlalchemy import text as sql_text
@@ -1908,7 +1922,7 @@ def get_docentes(cuatrimestre_id: int = None, orden: str = "apellido",
             disp_list = disp_map.get(d.id, [])
             disp_resumen = f"{len(disp_list)} franjas" if disp_list else "Sin asignar"
             result.append({
-                "id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
+                "id": d.id, "identificador": teacher_label(d.id), "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
                 "email": d.email, "tipo_modalidad": tipo,
                 "horas_asignadas": horas, "notas": ex.get('notas'),
                 "sociedad_cfpea": cfpea, "sociedad_isftea": isftea,
@@ -1924,7 +1938,7 @@ def get_docentes(cuatrimestre_id: int = None, orden: str = "apellido",
                 "sedes": sedes_data, "asignaciones": asigs_data,
             })
         except Exception:
-            result.append({"id": d.id, "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
+            result.append({"id": d.id, "identificador": teacher_label(d.id), "dni": d.dni, "nombre": d.nombre, "apellido": d.apellido,
                 "email": d.email, "tipo_modalidad": "SIN_ASIGNACIONES",
                 "horas_asignadas": 0, "sociedad_cfpea": False, "sociedad_isftea": False,
                 "materias_av": 0, "materias_cab": 0, "materias_vl": 0,
@@ -1935,24 +1949,38 @@ def get_docentes(cuatrimestre_id: int = None, orden: str = "apellido",
                 "sedes": [], "asignaciones": []})
     return result
 
+@app.get("/api/identidades/revision")
+def revisar_identidades(db: Session = Depends(get_db)):
+    return identity_report(db)
+
+@app.post("/api/exportar/catalogo-docentes")
+def exportar_catalogo_docentes(data: dict, db: Session = Depends(get_db)):
+    from app.curriculum_routes import editor
+    editor(data, db)
+    from openpyxl import Workbook
+    wb = Workbook(); sheet = wb.active; sheet.title = 'Docentes'
+    sheet.append(['docente_id','dni','nombre','apellido','email'])
+    for d in db.query(Docente).order_by(Docente.id).all():
+        sheet.append([teacher_label(d.id),d.dni or '',d.nombre or '',d.apellido or '',d.email or ''])
+        for cell in sheet[sheet.max_row]: cell.data_type = 's'
+    sheet.freeze_panes='A2'
+    for column in sheet.columns: sheet.column_dimensions[column[0].column_letter].width=28
+    output=io.BytesIO();wb.save(output);output.seek(0)
+    return StreamingResponse(output,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':'attachment; filename=docentes_con_id.xlsx'})
+
 @app.post("/api/docentes")
 def crear_docente(data: dict, db: Session = Depends(get_db)):
-    """v17.0: el DNI dejó de ser obligatorio. Sólo se exige nombre o apellido."""
-    dni = (data.get("dni") or "").strip() or None
-    nombre = (data.get("nombre") or "").strip()
-    apellido = (data.get("apellido") or "").strip()
-    if not nombre and not apellido:
-        raise HTTPException(status_code=400, detail="Indicá al menos nombre o apellido")
-    if dni and db.query(Docente).filter(Docente.dni == dni).first():
-        raise HTTPException(status_code=400, detail="Ese DNI ya está cargado en otro docente")
-    d = Docente(dni=dni, nombre=nombre, apellido=apellido, email=data.get("email"))
+    lock_teachers(db)
+    clean = teacher_values(db, data)
+    d = Docente(**clean)
     db.add(d); db.commit()
     if data.get("especialidades"):
         crudo = data["especialidades"]
         if isinstance(crudo, str): crudo = [x.strip() for x in crudo.split(',')]
         elegidas = [x for x in crudo if x in AREAS_VALIDAS]
         if elegidas: sql_set(db, "docentes", "especialidades", ','.join(elegidas), d.id)
-    return {"id": d.id, "ok": True}
+    return {"id": d.id, "identificador": teacher_label(d.id), "ok": True}
 
 @app.get("/api/docentes/{docente_id}/ficha")
 def get_ficha_docente(docente_id: int, db: Session = Depends(get_db)):
@@ -1961,7 +1989,7 @@ def get_ficha_docente(docente_id: int, db: Session = Depends(get_db)):
     from sqlalchemy import text
     d = db.query(Docente).filter(Docente.id == docente_id).first()
     if not d: raise HTTPException(status_code=404, detail="No encontrado")
-    ficha = {"id": d.id, "nombre": d.nombre or "", "apellido": d.apellido or "",
+    ficha = {"id": d.id, "identificador": teacher_label(d.id), "nombre": d.nombre or "", "apellido": d.apellido or "",
              "dni": d.dni or "", "email": d.email or "",
              "especialidades": [], "catedras_referencia": "", "notas": ""}
     try:
@@ -1985,19 +2013,11 @@ def guardar_ficha_docente(docente_id: int, data: dict, db: Session = Depends(get
     d = db.query(Docente).filter(Docente.id == docente_id).first()
     if not d: raise HTTPException(status_code=404, detail="No encontrado")
 
-    for campo in ["nombre", "apellido", "email"]:
-        if campo in data: setattr(d, campo, (data[campo] or "").strip() or None)
-    if "dni" in data:
-        nuevo_dni = str(data["dni"] or "").strip() or None
-        if nuevo_dni and nuevo_dni != d.dni:
-            otro = db.query(Docente).filter(Docente.dni == nuevo_dni, Docente.id != docente_id).first()
-            if otro: raise HTTPException(status_code=400, detail="Ese DNI ya pertenece a otro docente")
-        d.dni = nuevo_dni
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error guardando datos básicos: {str(e)[:150]}")
+    lock_teachers(db)
+    db.refresh(d)
+    clean = teacher_values(db, data, d)
+    for field, value in clean.items(): setattr(d, field, value)
+    db.commit()
 
     if "especialidades" in data:
         crudo = data["especialidades"]
@@ -2025,17 +2045,11 @@ def actualizar_docente(docente_id: int, data: dict, db: Session = Depends(get_db
     if not d: raise HTTPException(status_code=404, detail="No encontrado")
     guardados = []; fallidos = []
 
-    # Campos del modelo ORM
-    for field in ["nombre", "apellido", "email", "dni"]:
-        if field in data:
-            valor = data[field]
-            if field == "dni":
-                valor = (str(valor).strip() or None) if valor is not None else None
-            setattr(d, field, valor)
-    try:
-        db.commit(); guardados.append("datos_basicos")
-    except Exception:
-        db.rollback(); fallidos.append("datos_basicos")
+    lock_teachers(db)
+    db.refresh(d)
+    clean = teacher_values(db, data, d)
+    for field, value in clean.items(): setattr(d, field, value)
+    db.commit(); guardados.append("datos_basicos")
 
     # Numéricos: tolera "" y None sin romper
     for fld in ['horas_asignadas', 'materias_av', 'materias_cab', 'materias_vl']:
@@ -2149,6 +2163,10 @@ async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(
         for name in wb.sheetnames:
             if "catedr" in name.lower() or "cátedr" in name.lower(): ws = wb[name]; break
         if ws is None: ws = wb[wb.sheetnames[0]]
+        first_header = str(ws.cell(1,1).value or '').strip().lower().replace('ó','o')
+        explicit_code = first_header in ('codigo','codigo catedra','codigo de catedra','codigo_materia')
+        from sqlalchemy import text
+        db.execute(text('LOCK TABLE catedras IN SHARE ROW EXCLUSIVE MODE'))
         creadas = actualizadas = 0
         for row in ws.iter_rows(min_row=2, values_only=True):
             vals = [str(c).strip() if c is not None else "" for c in row]
@@ -2164,16 +2182,19 @@ async def importar_catedras(file: UploadFile = File(...), db: Session = Depends(
                         if m: codigo, nombre = m.group(1), m.group(2).strip()
                         else: codigo, nombre = f"c.{num}", vals[1]
                 except: pass
+            if not codigo and explicit_code and len(vals)>=2 and vals[0] and vals[1]:
+                codigo, nombre = vals[0], vals[1]
             if codigo:
-                ex = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+                ex = find_chair(db, codigo)
                 if ex:
                     if nombre and nombre != ex.nombre: ex.nombre = nombre; actualizadas += 1
                 else:
-                    db.add(Catedra(codigo=codigo, nombre=nombre or f"Cátedra {codigo}")); creadas += 1
+                    db.add(Catedra(codigo=codigo, nombre=nombre or f"Cátedra {codigo}")); db.flush(); creadas += 1
         db.commit(); wb.close()
         return {"creadas": creadas, "actualizadas": actualizadas}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=400, detail="No se pudo importar el catálogo. Revisá los códigos y posibles duplicados.") from e
 
 @app.post("/api/importar/apertura-catedras")
 async def importar_apertura_catedras(file: UploadFile = File(...), cuatrimestre_id: int = 1, db: Session = Depends(get_db)):
@@ -2197,7 +2218,7 @@ async def importar_apertura_catedras(file: UploadFile = File(...), cuatrimestre_
                     if num > 0: codigo = f"c.{num}"; nombre = vals[1] if len(vals) > 1 else None
                 except: pass
             if not codigo: continue
-            catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            catedra = find_chair(db, codigo)
             if not catedra:
                 if nombre: catedra = Catedra(codigo=codigo, nombre=nombre); db.add(catedra); db.flush()
                 else: continue
@@ -2236,49 +2257,7 @@ async def importar_cursos(file: UploadFile = File(...), db: Session = Depends(ge
 
 @app.post("/api/importar/docentes")
 async def importar_docentes(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    try:
-        content = await file.read()
-        wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-        ws = wb[wb.sheetnames[0]]
-        headers = [str(c.value).lower().strip() if c.value else "" for c in ws[1]]
-        col_map = {"dni": -1, "nombre": -1, "apellido": -1, "email": -1}
-        for i, h in enumerate(headers):
-            if any(x in h for x in ["dni", "documento"]): col_map["dni"] = i
-            elif h in ["nombre", "nombres"]: col_map["nombre"] = i
-            elif "apellido" in h: col_map["apellido"] = i
-            elif any(x in h for x in ["mail", "email", "correo"]): col_map["email"] = i
-        es_combinado = any("apellido y nombre" in h or "apellido, nombre" in h for h in headers)
-        creados = actualizados = 0; errores = []
-        for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-            vals = [str(c).strip() if c is not None else "" for c in row]
-            if es_combinado:
-                dni = vals[0].replace(".", "").replace("-", "").replace(" ", "") if vals else ""
-                if dni.endswith(".0"): dni = dni[:-2]
-                parts = (vals[1] if len(vals) > 1 else "").split(",", 1)
-                apellido = parts[0].strip().title()
-                nombre = parts[1].strip().title() if len(parts) > 1 else ""
-                email = vals[2] if len(vals) > 2 else None
-            else:
-                def gv(k):
-                    idx = col_map.get(k, -1)
-                    return vals[idx] if 0 <= idx < len(vals) and vals[idx] else None
-                dni = (gv("dni") or (vals[0] if vals else "")).replace(".", "").replace("-", "").replace(" ", "")
-                if dni.endswith(".0"): dni = dni[:-2]
-                nombre = gv("nombre") or ""; apellido = gv("apellido") or ""; email = gv("email")
-            if not dni or len(dni) < 7: continue
-            ex = db.query(Docente).filter(Docente.dni == dni).first()
-            if ex:
-                if nombre: ex.nombre = nombre
-                if apellido: ex.apellido = apellido
-                if email: ex.email = email
-                actualizados += 1
-            else:
-                if not nombre and not apellido: continue
-                db.add(Docente(dni=dni, nombre=nombre, apellido=apellido, email=email)); creados += 1
-        db.commit(); wb.close()
-        return {"creados": creados, "actualizados": actualizados, "errores": errores[:10]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error: {str(e)}")
+    return import_teachers(db, await file.read())
 
 @app.post("/api/importar/catedra-cursos")
 async def importar_catedra_cursos(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -2295,7 +2274,7 @@ async def importar_catedra_cursos(file: UploadFile = File(...), db: Session = De
             codigo = m.group(1) if m else (f"c.{vals[0]}" if vals[0] else None)
             turno = m.group(3) if m else None
             if not codigo or not curso_nombre: continue
-            catedra = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            catedra = find_chair(db, codigo)
             if not catedra: continue
             curso = db.query(Curso).filter(Curso.nombre == curso_nombre).first()
             if not curso:
@@ -2324,7 +2303,7 @@ async def importar_links_meet(file: UploadFile = File(...), db: Session = Depend
                 if re.match(r'^c\.\d+', v, re.IGNORECASE): codigo = v
                 elif 'meet.google.com' in v or 'http' in v: link = v
             if not codigo or not link: continue
-            cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
+            cat = find_chair(db, codigo)
             if cat: cat.link_meet = link; actualizados += 1
         db.commit(); wb.close()
         return {"actualizados": actualizados, "errores": errores[:10]}
@@ -2468,23 +2447,20 @@ async def importar_alumnos_bce_bea(files: List[UploadFile] = File(...), cuatrime
                 "error": "No se pudo identificar la cátedra. El archivo debe llamarse como 'c_2028_Nombre.xlsx' o traer la materia en la columna D."})
             resumen.append(detalle); continue
 
-        # 3) Buscar o crear la cátedra
+        # A missing code stays pending; never invent an institutional code.
         cat = None; catedra_creada = False
-        if codigo:
-            cat = db.query(Catedra).filter(Catedra.codigo == codigo).first()
-        if not cat and nombre_materia:
-            for c in db.query(Catedra).all():
-                if (c.nombre or '').strip().lower() == nombre_materia.strip().lower():
-                    cat = c; break
-        if not cat:
-            try:
-                cat = Catedra(codigo=codigo or f"c.BCE{abs(hash(nombre_materia)) % 9999}",
-                              nombre=nombre_materia or "Cátedra BCE/BEA")
-                db.add(cat); db.commit(); db.refresh(cat); catedra_creada = True
-            except Exception as e:
-                db.rollback()
-                detalle.update({"ok": False, "error": f"No se pudo crear la cátedra: {str(e)[:120]}"})
-                resumen.append(detalle); continue
+        if not codigo:
+            detalle.update({"ok":False,"error":"Falta el código de cátedra. Indicá el código existente en el nombre del archivo; no se crean códigos automáticamente."})
+            resumen.append(detalle); continue
+        try:
+            cat = find_chair(db, codigo)
+            if not cat:
+                cat = Catedra(codigo=codigo,nombre=nombre_materia or "Cátedra BCE/BEA")
+                db.add(cat); db.commit(); db.refresh(cat); catedra_creada=True
+        except Exception:
+            db.rollback()
+            detalle.update({"ok":False,"error":"No se pudo resolver el código de cátedra; revisá posibles duplicados."})
+            resumen.append(detalle); continue
 
         # 4) Reunir alumnos por DNI (sin repetir)
         alumnos = {}   # dni -> (nombre, apellido)
@@ -2700,39 +2676,7 @@ async def importar_plan_carrera(file: UploadFile = File(...)):
 # ===== v15.0: Importar docentes desde archivo CUIT =====
 @app.post("/api/importar/docentes-cuit")
 async def importar_docentes_cuit(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    from openpyxl import load_workbook
-    import io
-    content = await file.read()
-    wb = load_workbook(io.BytesIO(content), read_only=True)
-    nuevos = 0; existentes = 0; errores = []
-    for ws in wb.worksheets:
-        for row in ws.iter_rows(values_only=True):
-            vals = list(row)
-            if len(vals) < 2: continue
-            cuit = str(vals[0] or '').strip()
-            nombre_completo = str(vals[1] or '').strip()
-            if not nombre_completo or nombre_completo == 'None' or ',' not in nombre_completo: continue
-            # Extract DNI from CUIT
-            dni_digits = cuit.replace('-', '')
-            dni = dni_digits[2:-1] if len(dni_digits) >= 10 else dni_digits
-            # Parse "APELLIDO, NOMBRE"
-            parts = nombre_completo.split(',', 1)
-            apellido = parts[0].strip()
-            nombre = parts[1].strip() if len(parts) > 1 else ''
-            # Check if exists
-            existing = db.query(Docente).filter(Docente.dni == dni).first()
-            if existing:
-                # Update name if needed
-                if not existing.nombre or existing.nombre != nombre: existing.nombre = nombre
-                if not existing.apellido or existing.apellido != apellido: existing.apellido = apellido
-                existentes += 1
-            else:
-                doc = Docente(nombre=nombre, apellido=apellido, dni=dni)
-                db.add(doc)
-                nuevos += 1
-    db.commit()
-    wb.close()
-    return {"nuevos": nuevos, "actualizados": existentes}
+    return import_teachers(db, await file.read(), cuit=True)
 
 # ===== v16.0: Auto-asignar cátedras de referencia desde asignaciones actuales =====
 @app.post("/api/docentes/auto-referencia")
@@ -3669,7 +3613,7 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
 
     headers = ["CODIGO", "MATERIA", "DIA", "HORA INICIO", "HORA FIN", "SEDE", "DOCENTE",
                "LINK MEET", "— INSCRIPTOS —", "TOTAL", "TM", "TN", "CIED",
-               "AVELL", "CABA", "VTE LOPEZ", "SUGERENCIA", "ASIGNACION_ID", "COMISION", "CARRERA", "TURNO", "MODALIDAD", "RECIBE_ALUMNOS_PRESENCIALES", "PERIODO_ID"]
+               "AVELL", "CABA", "VTE LOPEZ", "SUGERENCIA", "ASIGNACION_ID", "COMISION", "CARRERA", "TURNO", "MODALIDAD", "RECIBE_ALUMNOS_PRESENCIALES", "PERIODO_ID", "DOCENTE_ID"]
     ws.append(headers)
     for i, _ in enumerate(headers, 1):
         c = ws.cell(row=1, column=i)
@@ -3691,10 +3635,8 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
             if not existentes and not inscriptos_sede.get(cat.id): continue
         filas_cat = existentes if existentes else [None]
         for a in filas_cat:
-            try: num = int(cat.codigo.replace('c.', ''))
-            except Exception: num = cat.codigo
             ws.append([
-                num, cat.nombre,
+                cat.codigo, cat.nombre,
                 (a.dia if a else "") or "",
                 (a.hora_inicio if a else "") or "",
                 (getattr(a, 'hora_fin', None) if a else "") or "",
@@ -3704,15 +3646,16 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
                 "", total, d["tm"], d["tn"], d["cied"], d["av"], d["cab"], d["vl"], sugerencia,
                 a.id if a else "", a.comision if a else "", a.carrera if a else "", a.turno if a else "",
                 a.modalidad if a else "", bool(a.recibe_alumnos_presenciales) if a else False, cuatrimestre_id,
+                teacher_label(a.docente_id) if a and a.docente_id else "",
             ])
             for col in range(1, len(headers) + 1):
                 c = ws.cell(row=fila, column=col)
                 c.border = borde
-                if col <= 8 or 19 <= col <= 23: c.fill = edit_fill
+                if col <= 8 or 19 <= col <= 23 or col==25: c.fill = edit_fill
                 else: c.fill = info_fill
             fila += 1; escritas += 1
 
-    anchos = [9, 38, 12, 13, 12, 15, 28, 34, 4, 9, 7, 7, 8, 8, 8, 11, 22, 16, 16, 30, 16, 22, 22, 14]
+    anchos = [14, 38, 12, 13, 12, 15, 28, 34, 4, 9, 7, 7, 8, 8, 8, 11, 22, 16, 16, 30, 16, 22, 22, 14, 18]
     for i, w in enumerate(anchos, 1):
         ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
     ws.freeze_panes = "C2"
@@ -3722,7 +3665,7 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
     for linea in [
         [f"PLANILLA DE TRABAJO — Armado de horarios{' — ' + sede if sede else ''}"],
         [""],
-        ["Columnas AMARILLAS (A-H y S-W): datos editables."],
+        ["Columnas AMARILLAS (A-H, S-W e Y): datos editables. Conservá los códigos de cátedra."],
         ["Columnas CELESTES (I-R y X): información e identificadores. Conservá los IDs al editar registros existentes."],
         [""],
         ["Cómo completar:"],
@@ -3731,7 +3674,8 @@ def exportar_planilla_trabajo(cuatrimestre_id: int = None, solo_dictadas: bool =
         ["HORA INICIO", "Formato 08:00 — se admiten medias horas (08:30, 09:30, etc.)"],
         ["HORA FIN", f"Formato 09:30. Si se deja vacío, la estimación es de {INSTITUCION.duracion_clase_minutos} minutos."],
         ["SEDE", "Usá un nombre del catálogo de sedes o Remoto si no corresponde una sede física."],
-        ["DOCENTE", "Nombre tal como figura en la sección Docentes."],
+        ["DOCENTE", "Nombre de referencia. Para cambiar la persona, cambiá también DOCENTE_ID."],
+        ["DOCENTE_ID", "Identificador permanente (ej.: DOC-000001). Tomalo del catálogo de docentes; no inventes uno. Para dejar una clase sin docente, vaciá DOCENTE_ID y DOCENTE."],
         ["", "Un docente vacío queda pendiente. Para una clase pregrabada, indicá modalidad asincronica."],
         ["ASIGNACION_ID", "Conservá el ID para cambiar día, hora o docente del mismo registro. No copies el ID al crear otra franja."],
         ["COMISION", "Nombre de comisión; una comisión puede tener varias franjas con distintos IDs."],
