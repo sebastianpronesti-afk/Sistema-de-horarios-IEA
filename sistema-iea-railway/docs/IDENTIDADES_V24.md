@@ -18,7 +18,7 @@ El ID del plan no depende de datos que puedan corregirse. Una etiqueta diferente
 
 ## Comportamiento de las pantallas
 
-- Docentes: ID visible y buscable, también en los selectores. Exportación de docentes con ID para editar/reimportar.
+- Docentes: ID visible y buscable, también en los selectores. Exportación de docentes con ID para editar/reimportar, con clave de edición verificada por el servidor y enviada en el cuerpo de la solicitud, nunca en la URL.
 - Revisión de identidades: grupos por documento repetido, nombres coincidentes y documento pendiente/inválido. Cada ID permite abrir su ficha cuando se dispone de edición. No hay fusión ni borrado automático.
 - Planes: ID visible, búsqueda por ID, versión editable, aviso de identificación incompleta o posible duplicado anterior. Las asociaciones, correlatividades, confirmaciones de alumnos y ofertas conservan sus claves.
 - Un nuevo plan vacío reutiliza el mismo borrador si se vuelve a solicitar antes de configurarlo.
