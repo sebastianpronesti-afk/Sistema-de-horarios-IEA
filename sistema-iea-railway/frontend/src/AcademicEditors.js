@@ -12,6 +12,14 @@ export async function saveAcademic(path,data,method='POST'){
   if(!response.ok)throw new Error(typeof result?.detail==='string'?result.detail:'No se pudo guardar el cambio');
   return result;
 }
+export async function downloadAcademic(path,filename){
+  if(!sessionKey)throw new Error('Ingresá la clave de edición para exportar');
+  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clave_edicion:sessionKey})});
+  if(!response.ok){const data=await response.json().catch(()=>null);throw new Error(typeof data?.detail==='string'?data.detail:'No se pudo exportar');}
+  const url=URL.createObjectURL(await response.blob());
+  const anchor=document.createElement('a');anchor.href=url;anchor.download=filename;document.body.appendChild(anchor);anchor.click();anchor.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
 function TextField({label,value,onChange,type='text'}){
   return <label className="block">{label}<input type={type} value={value??''} onChange={e=>onChange(e.target.value)} className="border rounded p-2 block w-full"/></label>;
 }
