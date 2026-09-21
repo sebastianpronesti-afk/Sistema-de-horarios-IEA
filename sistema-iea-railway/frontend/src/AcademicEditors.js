@@ -16,13 +16,13 @@ function TextField({label,value,onChange,type='text'}){
   return <label className="block">{label}<input type={type} value={value??''} onChange={e=>onChange(e.target.value)} className="border rounded p-2 block w-full"/></label>;
 }
 export function PlanEditor({plan,revision,onSaved,onClose}){
-  const fields={etiqueta:'Identificación del plan',nombre_oficial:'Nombre oficial',resolucion:'Resolución',jurisdiccion:'Jurisdicción',titulo:'Título otorgado',nota_vigencia:'Observaciones de vigencia'};
-  const [form,setForm]=useState(()=>Object.fromEntries([...Object.keys(fields),'modalidad','situacion','inicio_informado'].map(k=>[k,plan[k]??''])));
+  const fields={etiqueta:'Identificación del plan',nombre_oficial:'Nombre oficial',resolucion:'Resolución',version_plan:'Versión dentro de la resolución',jurisdiccion:'Jurisdicción',titulo:'Título otorgado',nota_vigencia:'Observaciones de vigencia'};
+  const [form,setForm]=useState(()=>Object.fromEntries([...Object.keys(fields),'modalidad','situacion','inicio_informado'].map(k=>[k,plan[k]??(k==='version_plan'?'1':'')])));
   const [error,setError]=useState(''),[busy,setBusy]=useState(false);
   const set=(key,value)=>setForm({...form,[key]:value});
   const save=async()=>{setBusy(true);setError('');try{await saveAcademic('/api/planes-estudio/editar',{operation:'plan',plan_id:plan.id,revision,changes:{...form,inicio_informado:form.inicio_informado===''?null:Number(form.inicio_informado)}});onSaved();}catch(e){setError(e.message);}finally{setBusy(false);}};
   return <section role="dialog" aria-label="Editar plan" className="bg-slate-50 border rounded p-5 my-4">
-    <h3 className="font-bold text-xl">Editar información del plan</h3><div className="grid md:grid-cols-2 gap-3">{Object.entries(fields).map(([k,label])=><TextField key={k} label={label} value={form[k]} onChange={v=>set(k,v)}/>)}
+    <h3 className="font-bold text-xl">Editar información del plan</h3><p>ID permanente: <code>{plan.id}</code></p><p className="my-3">La carrera, resolución, jurisdicción, modalidad y versión permiten detectar planes repetidos. Cambiar la etiqueta no crea una versión diferente.</p><div className="grid md:grid-cols-2 gap-3">{Object.entries(fields).map(([k,label])=><TextField key={k} label={label} value={form[k]} onChange={v=>set(k,v)}/>)}
     <label>Modalidad<select className="border rounded p-2 block w-full" value={form.modalidad} onChange={e=>set('modalidad',e.target.value)}><option value="">Por confirmar</option><option value="presencial">Presencial</option><option value="distancia">A distancia</option></select></label>
     <label>Situación<select className="border rounded p-2 block w-full" value={form.situacion} onChange={e=>set('situacion',e.target.value)}>{Object.entries({por_confirmar:'Por confirmar',vigente_informado:'Vigente informado',anterior:'Anterior',no_ofertado:'No ofertado',futuro:'Futuro'}).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label>
     <TextField label="Año de inicio informado" type="number" value={form.inicio_informado} onChange={v=>set('inicio_informado',v)}/></div>

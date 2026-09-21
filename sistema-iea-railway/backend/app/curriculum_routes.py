@@ -5,6 +5,7 @@ from app.models.models import Catedra
 from app.institution import INSTITUCION
 from app.curriculum import load_catalog, Reconciler, catalog_summary
 from app.academic_store import read_document, edit_catalog
+from app.identity import plan_identity
 
 router=APIRouter(prefix='/api/planes-estudio',tags=['Planes de estudio'])
 
@@ -70,5 +71,6 @@ def detail(ident:str,db:Session=Depends(get_db)):
     for career in catalog['careers']:
         for plan in career['planes']:
             if plan['id']==ident:
-                return {'revision':catalog['_revision'],**reconciler.plan(plan),'carrera':career['nombre'],'nivel':career['nivel']}
+                return {'revision':catalog['_revision'],**reconciler.plan(plan),'carrera':career['nombre'],'nivel':career['nivel'],
+                        'identidad':plan_identity(career['id'],plan,career['planes'])}
     raise HTTPException(404,'Plan de estudios no encontrado')

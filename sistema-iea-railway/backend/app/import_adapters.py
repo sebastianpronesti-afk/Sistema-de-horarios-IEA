@@ -24,7 +24,7 @@ FIELDS = {
     'comision': ['comision', 'grupo'], 'turno': ['turno'],
     'dia': ['dia', 'dia semana'], 'hora_inicio': ['hora inicio', 'hora', 'inicio'],
     'hora_fin': ['hora fin', 'fin'], 'docente': ['docente', 'profesor'],
-    'docente_id': ['docente_id', 'id docente'], 'docente_dni': ['dni docente'],
+    'docente_id': ['docente_id', 'id docente'], 'docente_dni': ['docente_dni', 'dni docente'],
     'modalidad': ['modalidad'], 'link_meet': ['link meet', 'link_meet', 'meet'],
     'recibe_alumnos_presenciales': ['recibe alumnos presenciales', 'recibe_alumnos_presenciales'],
     'dni': ['dni', 'documento', 'documento alumno'], 'alumno': ['alumno', 'apellido y nombre'],

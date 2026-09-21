@@ -75,7 +75,7 @@ def recover(history_id:int, data:dict, db:Session=Depends(get_db)):
 
 
 TEMPLATES = {
-    'horarios':['asignacion_id','codigo_materia','materia','carrera','sede','periodo_id','comision','turno','dia','hora_inicio','hora_fin','docente_id','docente','modalidad','link_meet','recibe_alumnos_presenciales'],
+    'horarios':['asignacion_id','codigo_materia','materia','carrera','sede','periodo_id','comision','turno','dia','hora_inicio','hora_fin','docente_id','docente_dni','docente','modalidad','link_meet','recibe_alumnos_presenciales'],
     'inscripciones':['codigo_materia','dni','nombre','apellido','email','carrera','sede','periodo_id','turno','modalidad','es_edi','edi_materia'],
     'plan':['codigo_materia','materia','carrera','sede','anno','dia_tm','hora_tm','dia_tn','hora_tn'],
 }
@@ -89,6 +89,7 @@ def template(tipo:Kind):
     instructions=workbook.create_sheet('Instructivo')
     instructions.append(['Completá las columnas de Datos; conservá los encabezados.'])
     instructions.append(['Usá códigos de materias y sedes que ya existan en el sistema.'])
+    instructions.append(['Usá docente_id (número o DOC-000001). Para una nueva alta se requiere documento y nombre. No se crean docentes solo por su nombre.'])
     instructions.append(['En horarios, conservá asignacion_id al editar. Sin ID, un cambio de día u hora crea otra franja. Una comisión puede tener varias franjas.'])
     instructions.append(['En inscripciones, reemplazar elimina inscripciones ausentes del alcance, sin borrar personas.'])
     instructions.append(['El plan es compartido entre períodos y se reemplaza solamente en las sedes seleccionadas.'])

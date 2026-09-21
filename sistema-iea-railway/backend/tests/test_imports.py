@@ -65,6 +65,23 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(before,self.state())
         self.assertEqual(base.sql('SELECT count(*) FROM importaciones_historial')[0][0],0)
 
+    def test_unknown_teacher_name_does_not_create_an_unidentified_duplicate(self):
+        before=self.state()
+        content=self.file([['codigo','dia','hora','sede','docente'],['c.1','Jueves','18:00','Caballito','Nombre no identificado']])
+        preview=self.preview(content)
+        self.assertFalse(preview['puede_aplicar'])
+        self.assertIn('docente_id',preview['errores'][0]['mensaje'])
+        self.assertEqual(before,self.state())
+
+    def test_teacher_public_id_resolves_and_conflicting_document_blocks_import(self):
+        content=self.file([['codigo','dia','hora','sede','docente_id','docente_dni'],['c.1','Jueves','18:00','Caballito','DOC-000001','99.000.001']])
+        preview=self.preview(content)
+        self.assertTrue(preview['puede_aplicar'],preview['errores'])
+        self.assertEqual(self.apply(preview,content).status_code,200)
+        self.assertEqual(base.sql('SELECT count(*) FROM docentes')[0][0],1)
+        conflict=self.file([['codigo','dia','hora','sede','docente_id','docente_dni'],['c.1','Jueves','18:00','Caballito','DOC-000001','99700002']])
+        self.assertFalse(self.preview(conflict)['puede_aplicar'])
+
     def test_partial_replace_preserves_other_campus_and_period(self):
         options=self.options(mode='reemplazar')
         before=base.sql('SELECT * FROM asignaciones WHERE id IN (2,3) ORDER BY id')
@@ -120,7 +137,7 @@ class ImportTests(unittest.TestCase):
         finally: base.sql('ALTER TABLE historial_temporal_prueba RENAME TO importaciones_historial')
 
     def test_failure_mid_import_rolls_back_everything(self):
-        content=self.file([['codigo','dia','hora','sede','docente'],['c.1','Jueves','18:00','Caballito','Nueva Persona Ficticia']])
+        content=self.file([['codigo','dia','hora','sede','docente','docente_dni'],['c.1','Jueves','18:00','Caballito','Nueva Persona Ficticia','99700002']])
         preview=self.preview(content); before=self.state()
         real=service.write_row; calls=[]
         def fail_second(*args):
@@ -134,8 +151,8 @@ class ImportTests(unittest.TestCase):
 
     def test_restore_recovers_all_affected_fields_and_new_entities(self):
         before=self.state()
-        content=self.file([['asignacion_id','codigo','dia','hora','hora fin','sede','docente','modalidad','link meet','recibe alumnos presenciales'],
-                          [1,'c.1','Jueves','20:00','21:00','Caballito','Nueva Persona Ficticia','presencial','https://example.invalid/nuevo','no']])
+        content=self.file([['asignacion_id','codigo','dia','hora','hora fin','sede','docente','modalidad','link meet','recibe alumnos presenciales','docente_dni'],
+                          [1,'c.1','Jueves','20:00','21:00','Caballito','Nueva Persona Ficticia','presencial','https://example.invalid/nuevo','no','99700002']])
         result=self.apply(self.preview(content),content)
         self.assertEqual(result.status_code,200,result.text[:400])
         restored,preview=self.restore(result.json()['historial_id'])
@@ -212,6 +229,8 @@ class ImportTests(unittest.TestCase):
             if not sheet.cell(row,headers['ASIGNACION_ID']).value: sheet.delete_rows(row)
         self.assertEqual(sheet.max_row,2)
         self.assertEqual(sheet.cell(2,headers['ASIGNACION_ID']).value,1)
+        self.assertEqual(sheet.cell(2,headers['DOCENTE_ID']).value,'DOC-000001')
+        self.assertEqual(sheet.cell(2,headers['CODIGO']).value,'c.1')
         self.assertEqual(sheet.cell(2,headers['SEDE']).value,'Caballito')
         sheet.cell(2,headers['HORA INICIO'],'18:30')
         output=io.BytesIO(); workbook.save(output); content=output.getvalue()
@@ -254,7 +273,7 @@ class ImportTests(unittest.TestCase):
     def test_custom_institution_csv_with_its_own_campus_and_codes(self):
         profile=base.load_institution(base.PROFILES/'institucion-ejemplo.json')
         base.sql("UPDATE sedes SET nombre='Campus Norte' WHERE id=1")
-        base.sql("UPDATE catedras SET codigo='ALG101' WHERE id=1")
+        base.sql("INSERT INTO catedras(codigo,nombre) VALUES ('ALG101','Álgebra de prueba')")
         content='Subject;Campus name;Weekday;Begin;Mode\nALG101;Campus Norte;Martes;11:15;presencial\n'.encode()
         mapping={'codigo_materia':'Subject','sede':'Campus name','dia':'Weekday','hora_inicio':'Begin','modalidad':'Mode'}
         options=self.options(formato='estandar')
@@ -287,7 +306,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(self.restore(result['historial_id'])[0].status_code,200)
 
     def test_restore_preserves_new_references_and_corrupt_history_blocks(self):
-        content=self.file([['codigo','sede','dia','hora','docente'],['c.1','Caballito','Jueves','15:00','Nuevo Docente Ficticio']])
+        content=self.file([['codigo','sede','dia','hora','docente','docente_dni'],['c.1','Caballito','Jueves','15:00','Nuevo Docente Ficticio','99700002']])
         result=self.apply(self.preview(content),content).json()
         teacher_id=base.sql("SELECT id FROM docentes WHERE nombre='Nuevo Docente Ficticio'")[0][0]
         base.sql("INSERT INTO docente_alias(alias,docente_id) VALUES ('Alias posterior',:id)",{'id':teacher_id})

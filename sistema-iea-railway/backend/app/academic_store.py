@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.database import Base
 from app.curriculum import load_catalog, validate_catalog, Reconciler
 from app.models.models import Catedra
+from app.identity import plan_key
 
 class AcademicDocument(Base):
     __tablename__ = "academic_documents"
@@ -120,13 +121,22 @@ def edit_catalog(db, institution_id, expected, operation, payload):
     catalog, revision = academic_catalog(db,institution_id)
     if revision != expected: reject("El catálogo cambió. Recargá antes de guardar.",409)
     if operation == "plan":
-        _, plan = find_plan(catalog,payload["plan_id"])
+        career, plan = find_plan(catalog,payload["plan_id"])
+        old_key = plan_key(career['id'], plan)
         changes = payload.get("changes",{})
-        allowed = {"etiqueta","nombre_oficial","resolucion","modalidad","jurisdiccion","titulo","situacion","nota_vigencia","inicio_informado"}
+        allowed = {"etiqueta","nombre_oficial","resolucion","modalidad","jurisdiccion","titulo","situacion","nota_vigencia","inicio_informado","version_plan"}
         if set(changes)-allowed: reject("Campos del plan no admitidos")
+        for field, value in changes.items():
+            if field != 'inicio_informado' and (not isinstance(value,str) or len(value)>2000):
+                reject('Datos de identificación del plan inválidos')
         if changes.get("modalidad") not in (None,"","presencial","distancia"):
             reject("Modalidad inválida")
         plan.update(changes)
+        key = plan_key(career['id'], plan)
+        if key and key != old_key:
+            duplicates = [p['id'] for p in career['planes'] if p['id'] != plan['id'] and plan_key(career['id'],p) == key]
+            if duplicates:
+                reject('Ya existe un plan con esa carrera, resolución, jurisdicción, modalidad y versión: ' + ', '.join(duplicates),409)
     elif operation == "subject":
         _,plan = find_plan(catalog,payload["plan_id"])
         subject = next((s for s in plan["materias"] if s["id"]==payload["subject_id"]),None)
@@ -153,10 +163,16 @@ def edit_catalog(db, institution_id, expected, operation, payload):
         validate_graph(plan)
     elif operation == "new_plan":
         career = find_career(catalog,payload["career_id"])
+        # Reuse the same unconfigured draft instead of creating copies on repeated clicks.
+        draft = next((p for p in career['planes'] if p.get('borrador_identidad')
+                      and not p.get('materias') and not any(p.get(k) for k in ('resolucion','jurisdiccion','modalidad','nombre_oficial'))),None)
+        if draft:
+            return {'ok':True,'revision':revision,'plan_id':draft['id'],'existente':True}
         plan = {"id":str(uuid4()),"carrera_id":career["id"],"etiqueta":"Plan nuevo",
                 "nombre_oficial":"","resolucion":"","modalidad":"","jurisdiccion":"",
                 "titulo":"","situacion":"por_confirmar","inicio_informado":None,
-                "nota_vigencia":"","materias":[],"modulos":[],"observaciones":[]}
+                "nota_vigencia":"","materias":[],"modulos":[],"observaciones":[],
+                "version_plan":"1","borrador_identidad":True}
         career["planes"].append(plan)
     elif operation == "new_subject":
         _,plan = find_plan(catalog,payload["plan_id"])
@@ -170,7 +186,7 @@ def edit_catalog(db, institution_id, expected, operation, payload):
     try: validate_catalog(catalog,institution_id)
     except ValueError as exc: reject(str(exc))
     revision=write_document(db,"catalog:"+institution_id,expected,catalog,operation)
-    return {"ok":True,"revision":revision}
+    return {"ok":True,"revision":revision,**({'plan_id':plan['id']} if operation=='new_plan' else {})}
 
 def resolved_catalog(db,institution_id):
     catalog,revision=academic_catalog(db,institution_id)

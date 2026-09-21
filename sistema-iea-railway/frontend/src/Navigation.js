@@ -57,7 +57,7 @@ export function Navigation({profile,activeView,onNavigate,footer,counts={}}){
     </button>;
   });
   return <aside className="app-sidebar">
-    <div className="app-brand"><h1>{profile.titulo}</h1><p>Planificación académica · v23.0</p></div>
+    <div className="app-brand"><h1>{profile.titulo}</h1><p>Planificación académica · v24.0</p></div>
     <label className="app-menu-search">Buscar en el menú
       <input type="search" value={query} placeholder="Ej.: docentes, horarios, EDI…" onChange={e=>setQuery(e.target.value)}
         onKeyDown={e=>{if(e.key==='Enter'&&query&&results[0]){e.preventDefault();navigate(results[0].id);}if(e.key==='Escape')setQuery('');}} />

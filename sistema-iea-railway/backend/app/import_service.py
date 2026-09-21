@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from app.import_adapters import parse_file, norm, code, clock, dni, FIELDS
 from app.institution import INSTITUCION
+from app.identity import teacher_id, document_key, code_key, full_name, name_key
 
 TABLES = ('alumnos', 'asignaciones', 'catedra_curso', 'catedra_dictado', 'catedras',
           'cuatrimestres', 'cursos', 'docente_alias', 'docente_disponibilidad',
@@ -99,7 +100,8 @@ class Planner:
         self.errors.append({'hoja':raw.get('_hoja',''),'fila':raw.get('_fila',0),'mensaje':message})
 
     def resolve(self, table, field, value, label):
-        matches = [r for r in self.rows(table) if norm(r.get(field)) == norm(value)]
+        normalizer = code_key if table=='catedras' and field=='codigo' else norm
+        matches = [r for r in self.rows(table) if normalizer(r.get(field)) == normalizer(value)]
         if len(matches) != 1: raise ValueError(f'{label} desconocido o ambiguo: {value}')
         return matches[0]
 
@@ -135,25 +137,47 @@ class Planner:
         return True
 
     def teacher(self, raw):
+        document = document_key(raw.get('docente_dni'), strict=True)
         if raw.get('docente_id'):
-            found = [r for r in self.rows('docentes') if str(r['id']) == raw['docente_id']]
+            ident = teacher_id(raw['docente_id'])
+            found = [r for r in self.rows('docentes') if r['id'] == ident]
             if len(found)!=1: raise ValueError('El ID de docente no existe')
             teacher = found[0]
-        elif raw.get('docente_dni'):
-            teacher = self.resolve('docentes','dni',dni(raw['docente_dni']),'DNI docente')
+            if document and document_key(teacher.get('dni')) != document:
+                raise ValueError('El ID y el documento del docente no coinciden')
+        elif document:
+            matches = [r for r in self.rows('docentes') if document_key(r.get('dni')) == document]
+            if len(matches)>1: raise ValueError('Documento docente ambiguo; revisá las fichas e indicá su ID')
+            if matches: teacher=matches[0]
+            else:
+                name=raw.get('docente','').strip()
+                if not name or len(name)>100: raise ValueError('Una nueva alta necesita documento y nombre de docente válido')
+                keys={name_key(name)}
+                if any(keys & {full_name(r.get('nombre'),r.get('apellido')),full_name(r.get('apellido'),r.get('nombre'))}
+                       and not document_key(r.get('dni')) for r in self.rows('docentes')):
+                    raise ValueError('Hay una ficha sin documento con ese nombre; completá su identidad antes de importar')
+                teacher=self.put('docentes',None,{'dni':document,'nombre':name,'apellido':'','activo':True},raw)
+                self.warnings.append('Se creará un docente identificado por documento; revisá el alta antes de confirmar')
         elif raw.get('docente'):
             key = norm(raw['docente'])
             ids = {r['id'] for r in self.rows('docentes') if key in
                    {norm(f"{r.get('nombre') or ''} {r.get('apellido') or ''}"),
-                    norm(f"{r.get('apellido') or ''} {r.get('nombre') or ''}"), norm(r.get('apellido'))}}
+                    norm(f"{r.get('apellido') or ''} {r.get('nombre') or ''}")}}
             ids.update(r['docente_id'] for r in self.rows('docente_alias') if norm(r['alias'])==key)
             if len(ids)>1: raise ValueError('Nombre docente ambiguo; usá docente_id o DNI docente')
             if ids: teacher = next(r for r in self.rows('docentes') if r['id']==next(iter(ids)))
             else:
-                if len(raw['docente']) > 100: raise ValueError('El nombre de docente supera 100 caracteres')
-                teacher = self.put('docentes', None, {'dni':None,'nombre':raw['docente'],'apellido':'','activo':True}, raw)
-                self.warnings.append(f"Se creará el docente {raw['docente']}; revisá el nombre antes de confirmar")
+                raise ValueError('Docente no identificado. Usá docente_id o documento; un nombre solo no permite dar una nueva alta')
+            self.warnings.append('Se identificó un docente existente por nombre o alias. Conservá su docente_id en futuras planillas; los nombres repetidos requieren ID.')
         else: return None
+        if raw.get('docente_id') and raw.get('docente'):
+            key=norm(raw['docente'])
+            named={r['id'] for r in self.rows('docentes') if key in
+                   {norm(f"{r.get('nombre') or ''} {r.get('apellido') or ''}"),
+                    norm(f"{r.get('apellido') or ''} {r.get('nombre') or ''}")}}
+            named.update(r['docente_id'] for r in self.rows('docente_alias') if norm(r['alias'])==key)
+            if named and teacher['id'] not in named:
+                raise ValueError('El nombre corresponde a otro docente. Corregí DOCENTE_ID y el nombre antes de importar')
         if teacher.get('activo') is False: raise ValueError('El docente está inactivo')
         return teacher['id']
 
@@ -244,9 +268,9 @@ class Planner:
             if day and norm(day) not in DAY_NAMES: raise ValueError('Día del plan desconocido')
             values['dia_'+shift] = DAY_NAMES.get(norm(day)) if day else None
             values['hora_'+shift] = clock(raw.get('hora_'+shift))
-        identity = (norm(campus_name),norm(values['carrera']),norm(values['anno']),norm(values['codigo_catedra']))
+        identity = (norm(campus_name),norm(values['carrera']),norm(values['anno']),code_key(values['codigo_catedra']))
         if not self.unique(('plan',*identity), values): return
-        matches = [r for r in self.rows('plan_carrera') if (norm(r['sede']),norm(r['carrera']),norm(r['anno']),norm(r['codigo_catedra']))==identity]
+        matches = [r for r in self.rows('plan_carrera') if (norm(r['sede']),norm(r['carrera']),norm(r['anno']),code_key(r['codigo_catedra']))==identity]
         if len(matches)>1: raise ValueError('Hay materias repetidas en el plan vigente; revisá sus identificadores')
         after = self.put('plan_carrera',matches[0] if matches else None,values,raw)
         self.matched.add(after['id']); self.records.append(raw)
