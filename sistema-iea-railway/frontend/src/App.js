@@ -8,7 +8,7 @@ import {choosePeriod} from './periods';
 import AcademicPlans from './AcademicPlans';
 import CurriculumPlanning from './CurriculumPlanning';
 import EnrollmentPlans from './EnrollmentPlans';
-import {rememberEditorKey} from './AcademicEditors';
+import {rememberEditorKey,EditKey,downloadAcademic} from './AcademicEditors';
 
 const API_URL = '';
 
@@ -1197,7 +1197,7 @@ function DocentesView({ sedes=[] }) {
     <div className="academic-table-wrap"><table className="academic-table"><thead><tr><th>ID permanente</th><th>Docente</th><th>Contacto</th><th>Cátedras habilitadas</th><th>Notas</th><th>Acciones</th></tr></thead><tbody>
       {rows.map(d=><tr key={d.id}><td><code>{teacherLabel(d.id)}</code></td><td>{d.apellido}, {d.nombre}<small>{d.dni||'Documento pendiente'}</small></td><td>{d.email||'Sin email'}</td><td>{d.catedras_referencia||'Por completar'}</td><td>{d.notas||'—'}</td><td>{puedeEditar&&<><button className="text-blue-700 underline block" onClick={()=>setModalEditar(d)}>Editar ficha</button><button className="text-blue-700 underline block" onClick={()=>setModalSedes(d)}>Sedes disponibles</button><button className="text-red-700 underline block" onClick={()=>eliminar(d)}>Eliminar docente</button></>}</td></tr>)}
     </tbody></table></div>
-    <a className="text-blue-700 underline block my-3" href="/api/exportar/catalogo-docentes">Exportar docentes con sus ID</a>
+    {puedeEditar&&<details className="my-3"><summary>Exportar docentes con sus ID</summary><EditKey/><button className="text-blue-700 underline" onClick={async()=>{try{await downloadAcademic('/api/exportar/catalogo-docentes','docentes_con_id.xlsx');}catch(e){setError(e.message);}}}>Descargar planilla de docentes</button></details>}
     <IdentityReview key={attempt} kind="docentes" onTeacher={id=>{const d=docentes.find(d=>d.id===id);if(d&&puedeEditar)setModalEditar(d);}}/>
     {modalEditar&&<ModalEditarDocente docente={modalEditar} areas={areas} recargar={recargar} onClose={()=>setModalEditar(null)}/>}
     {modalNuevo&&<ModalNuevoDocente onSave={crear} onClose={()=>setModalNuevo(false)}/>}
