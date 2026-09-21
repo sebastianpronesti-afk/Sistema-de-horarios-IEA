@@ -81,7 +81,9 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(base.sql("SELECT dni FROM docentes WHERE id<>1"),[('99700002',)])
 
     def test_teacher_export_roundtrip_preserves_identifiers(self):
-        response=self.client.get('/api/exportar/catalogo-docentes')
+        for key in (None,'fixture-reader-only','incorrect'):
+            self.assertEqual(self.client.post('/api/exportar/catalogo-docentes',json={'clave_edicion':key}).status_code,401)
+        response=self.client.post('/api/exportar/catalogo-docentes',json={'clave_edicion':'fixture-editor-only'})
         self.assertEqual(response.status_code,200)
         sheet=load_workbook(io.BytesIO(response.content)).active
         self.assertEqual(sheet.cell(2,1).value,'DOC-000001')
@@ -163,7 +165,7 @@ class IdentityTests(unittest.TestCase):
         for _ in range(2):
             response=self.client.post('/api/importar/catedras',files=file)
             self.assertEqual(response.status_code,200,response.text)
-        self.assertEqual(base.sql("SELECT codigo FROM catedras WHERE codigo IN ('MAT-01','MAT01','c.001') ORDER BY codigo"),[('MAT-01',),('MAT01',),('c.001',)])
+        self.assertCountEqual(base.sql("SELECT codigo FROM catedras WHERE codigo IN ('MAT-01','MAT01','c.001')"),[('MAT-01',),('MAT01',),('c.001',)])
 
     def test_plan_identity_is_stable_and_complete_duplicate_is_rejected(self):
         fields={'resolucion':'RES 123/26','jurisdiccion':'CABA','modalidad':'presencial','version_plan':'1'}
