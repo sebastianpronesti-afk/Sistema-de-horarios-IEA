@@ -1953,8 +1953,10 @@ def get_docentes(cuatrimestre_id: int = None, orden: str = "apellido",
 def revisar_identidades(db: Session = Depends(get_db)):
     return identity_report(db)
 
-@app.get("/api/exportar/catalogo-docentes")
-def exportar_catalogo_docentes(db: Session = Depends(get_db)):
+@app.post("/api/exportar/catalogo-docentes")
+def exportar_catalogo_docentes(data: dict, db: Session = Depends(get_db)):
+    from app.curriculum_routes import editor
+    editor(data, db)
     from openpyxl import Workbook
     wb = Workbook(); sheet = wb.active; sheet.title = 'Docentes'
     sheet.append(['docente_id','dni','nombre','apellido','email'])
